@@ -1,15 +1,24 @@
 import { listCategories } from "@lib/data/categories";
 import { listCollections } from "@lib/data/collections";
+import { listRegions } from "@lib/data/regions";
+import { listLocales } from "@lib/data/locales";
+import { getLocale } from "@lib/data/locale-actions";
 import { Text, clx } from "@modules/common/components/ui";
 
 import LocalizedClientLink from "@modules/common/components/localized-client-link";
 import MedusaCTA from "@modules/layout/components/medusa-cta";
+import RegionLanguageSelect from "@modules/layout/components/region-language-select";
 
 export default async function Footer() {
   const { collections } = await listCollections({
     fields: "*products",
   });
   const productCategories = await listCategories();
+  const [regions, locales, currentLocale] = await Promise.all([
+    listRegions(),
+    listLocales(),
+    getLocale(),
+  ]);
 
   return (
     <footer className="border-t border-ui-border-base w-full">
@@ -145,10 +154,17 @@ export default async function Footer() {
             </div>
           </div>
         </div>
-        <div className="flex w-full mb-16 justify-between text-ui-fg-muted">
-          <Text className="txt-compact-small">
-            © {new Date().getFullYear()} Medusa Store. All rights reserved.
-          </Text>
+        <div className="flex flex-col gap-y-6 small:flex-row w-full mb-16 justify-between items-start small:items-center text-ui-fg-muted">
+          <div className="flex flex-col gap-y-4 small:flex-row small:items-center small:gap-x-8">
+            <Text className="txt-compact-small">
+              © {new Date().getFullYear()} Medusa Store. All rights reserved.
+            </Text>
+            <RegionLanguageSelect
+              regions={regions}
+              locales={locales}
+              currentLocale={currentLocale}
+            />
+          </div>
           <MedusaCTA />
         </div>
       </div>
