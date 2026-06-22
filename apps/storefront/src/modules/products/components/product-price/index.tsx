@@ -18,17 +18,20 @@ export default function ProductPrice({
   const selectedPrice = variant ? variantPrice : cheapestPrice
 
   if (!selectedPrice) {
-    return <div className="block w-32 h-9 bg-gray-100 animate-pulse" />
+    return <div className="block h-9 w-32 animate-pulse rounded bg-cream-muted" />
   }
 
   return (
-    <div className="flex flex-col text-ui-fg-base">
+    <div className="flex flex-col text-ink">
       <span
-        className={clx("text-xl-semi", {
-          "text-ui-fg-interactive": selectedPrice.price_type === "sale",
-        })}
+        className={clx(
+          "font-bricolage text-[34px] font-bold leading-none tracking-[-0.02em]",
+          {
+            "text-coral": selectedPrice.price_type === "sale",
+          }
+        )}
       >
-        {!variant && "From "}
+        {!variant && "Desde "}
         <span
           data-testid="product-price"
           data-value={selectedPrice.calculated_price_number}
@@ -37,21 +40,19 @@ export default function ProductPrice({
         </span>
       </span>
       {selectedPrice.price_type === "sale" && (
-        <>
-          <p>
-            <span className="text-ui-fg-subtle">Original: </span>
-            <span
-              className="line-through"
-              data-testid="original-product-price"
-              data-value={selectedPrice.original_price_number}
-            >
-              {selectedPrice.original_price}
-            </span>
-          </p>
-          <span className="text-ui-fg-interactive">
-            -{selectedPrice.percentage_diff}%
+        <p className="mt-1.5 font-mono text-[13px] text-ink-muted">
+          <span>Antes: </span>
+          <span
+            className="line-through"
+            data-testid="original-product-price"
+            data-value={selectedPrice.original_price_number}
+          >
+            {selectedPrice.original_price}
           </span>
-        </>
+          <span className="ml-2 text-coral">
+            −{selectedPrice.percentage_diff}%
+          </span>
+        </p>
       )}
     </div>
   )

@@ -3,7 +3,7 @@
 import { addToCart } from "@lib/data/cart"
 import { useIntersection } from "@lib/hooks/use-in-view"
 import { HttpTypes } from "@medusajs/types"
-import { Button } from "@modules/common/components/ui"
+import { clx } from "@modules/common/components/ui"
 import Divider from "@modules/common/components/divider"
 import OptionSelect from "@modules/products/components/product-actions/option-select"
 import { isEqual } from "lodash"
@@ -38,6 +38,7 @@ export default function ProductActions({
 
   const [options, setOptions] = useState<Record<string, string | undefined>>({})
   const [isAdding, setIsAdding] = useState(false)
+  const [quantity, setQuantity] = useState(1)
   const countryCode = useParams().countryCode as string
 
   // If there is only 1 variant, preselect the options
@@ -128,12 +129,15 @@ export default function ProductActions({
 
     await addToCart({
       variantId: selectedVariant.id,
-      quantity: 1,
+      quantity,
       countryCode,
     })
 
     setIsAdding(false)
   }
+
+  const decrement = () => setQuantity((q) => Math.max(1, q - 1))
+  const increment = () => setQuantity((q) => q + 1)
 
   return (
     <>
@@ -162,26 +166,64 @@ export default function ProductActions({
 
         <ProductPrice product={product} variant={selectedVariant} />
 
-        <Button
-          onClick={handleAddToCart}
-          disabled={
+        {(() => {
+          const isDisabled =
             !inStock ||
             !selectedVariant ||
             !!disabled ||
             isAdding ||
             !isValidVariant
-          }
-          variant="primary"
-          className="w-full h-10"
-          isLoading={isAdding}
-          data-testid="add-product-button"
-        >
-          {!selectedVariant && !options
-            ? "Select variant"
-            : !inStock || !isValidVariant
-            ? "Out of stock"
-            : "Add to cart"}
-        </Button>
+
+          const label =
+            !inStock || !isValidVariant ? "Agotado" : "Agregar al carrito"
+
+          return (
+            <div className="mt-4 flex max-w-[420px] items-stretch gap-3">
+              {/* Quantity stepper (wireframe lines 358-364) */}
+              <div className="flex items-center rounded-xl border-[1.5px] border-ink">
+                <button
+                  type="button"
+                  onClick={decrement}
+                  disabled={quantity <= 1 || isAdding}
+                  aria-label="Disminuir cantidad"
+                  className="flex h-12 w-12 items-center justify-center rounded-l-[10px] text-xl transition-colors hover:bg-cream focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink disabled:opacity-40 motion-reduce:transition-none"
+                >
+                  −
+                </button>
+                <span
+                  aria-live="polite"
+                  className="min-w-[48px] border-x-[1.5px] border-ink px-2 text-center font-bricolage text-base font-bold tabular-nums"
+                  data-testid="product-quantity"
+                >
+                  {quantity}
+                </span>
+                <button
+                  type="button"
+                  onClick={increment}
+                  disabled={isAdding}
+                  aria-label="Aumentar cantidad"
+                  className="flex h-12 w-12 items-center justify-center rounded-r-[10px] text-xl transition-colors hover:bg-cream focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink disabled:opacity-40 motion-reduce:transition-none"
+                >
+                  +
+                </button>
+              </div>
+
+              {/* Add to cart */}
+              <button
+                type="button"
+                onClick={handleAddToCart}
+                disabled={isDisabled}
+                aria-label={label}
+                className={clx(
+                  "flex h-12 flex-1 items-center justify-center rounded-xl bg-coral px-6 text-[15px] font-semibold text-white transition-colors hover:bg-coral-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none motion-reduce:active:scale-100"
+                )}
+                data-testid="add-product-button"
+              >
+                {isAdding ? "Agregando…" : label}
+              </button>
+            </div>
+          )
+        })()}
         <MobileActions
           product={product}
           variant={selectedVariant}
