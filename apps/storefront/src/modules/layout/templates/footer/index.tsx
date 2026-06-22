@@ -1,171 +1,151 @@
 import { listCategories } from "@lib/data/categories";
-import { listCollections } from "@lib/data/collections";
 import { listRegions } from "@lib/data/regions";
 import { listLocales } from "@lib/data/locales";
 import { getLocale } from "@lib/data/locale-actions";
-import { Text, clx } from "@modules/common/components/ui";
 
 import LocalizedClientLink from "@modules/common/components/localized-client-link";
-import MedusaCTA from "@modules/layout/components/medusa-cta";
 import RegionLanguageSelect from "@modules/layout/components/region-language-select";
 
+// Editorial "Tienda" column. We prefer the REAL category handles when they
+// exist in the catalog, mapping by handle (with a title fallback). If a handle
+// is not found we still link to it — these are the seeded top-level handles.
+const STORE_LINKS: { label: string; handle: string; match: string[] }[] = [
+  { label: "Polvos frappé", handle: "polvos-frappe", match: ["polvo"] },
+  { label: "Jarabes", handle: "jarabes", match: ["jarabe"] },
+  { label: "Botes & tapas", handle: "botes-y-tapas", match: ["bote", "tapa"] },
+  {
+    label: "Popotes",
+    handle: "popotes-y-tapioca",
+    match: ["popote", "tapioca"],
+  },
+];
+
+const BUSINESS_LINKS = ["Mayoreo", "Facturación", "Envíos", "Contacto"];
+const SOCIAL_LINKS = ["Instagram", "TikTok", "WhatsApp"];
+
 export default async function Footer() {
-  const { collections } = await listCollections({
-    fields: "*products",
-  });
-  const productCategories = await listCategories();
+  const productCategories = await listCategories().catch(() => []);
   const [regions, locales, currentLocale] = await Promise.all([
     listRegions(),
     listLocales(),
     getLocale(),
   ]);
 
+  // Resolve each editorial store link to a real category handle when available.
+  const storeLinks = STORE_LINKS.map((link) => {
+    const found = productCategories?.find((c) => {
+      const handle = (c.handle ?? "").toLowerCase();
+      const name = (c.name ?? "").toLowerCase();
+      return (
+        handle === link.handle ||
+        link.match.some((m) => handle.includes(m) || name.includes(m))
+      );
+    });
+    return {
+      label: link.label,
+      handle: found?.handle ?? link.handle,
+    };
+  });
+
+  const currentYear = new Date().getFullYear();
+
   return (
-    <footer className="border-t border-ui-border-base w-full">
-      <div className="content-container flex flex-col w-full">
-        <div className="flex flex-col gap-y-6 xsmall:flex-row items-start justify-between py-40">
-          <div>
+    <footer className="w-full bg-ink text-cream-muted">
+      <div className="mx-auto max-w-[1180px] px-6 pt-12 pb-9">
+        {/* Top row */}
+        <div className="flex flex-wrap justify-between gap-10">
+          {/* Left block — wordmark + description */}
+          <div className="max-w-[280px]">
             <LocalizedClientLink
               href="/"
-              className="txt-compact-xlarge-plus text-ui-fg-subtle hover:text-ui-fg-base uppercase"
+              className="font-bricolage text-2xl font-extrabold tracking-[-0.02em] text-white"
             >
-              Medusa Store
+              MANDO <span className="text-coral">OFICIAL</span>
             </LocalizedClientLink>
+            <p className="mt-3 font-hanken text-sm leading-relaxed text-cream-muted">
+              Insumos para cafeterías en todo México. Polvos, jarabes, botes y
+              tapioca.
+            </p>
           </div>
-          <div className="text-small-regular gap-10 md:gap-x-16 grid grid-cols-2 sm:grid-cols-3">
-            {productCategories && productCategories?.length > 0 && (
-              <div className="flex flex-col gap-y-2">
-                <span className="txt-small-plus txt-ui-fg-base">
-                  Categories
-                </span>
-                <ul
-                  className="grid grid-cols-1 gap-2"
-                  data-testid="footer-categories"
-                >
-                  {productCategories?.slice(0, 6).map((c) => {
-                    if (c.parent_category) {
-                      return;
-                    }
 
-                    const children =
-                      c.category_children?.map((child) => ({
-                        name: child.name,
-                        handle: child.handle,
-                        id: child.id,
-                      })) || null;
+          {/* Right block — link columns */}
+          <div className="flex flex-wrap gap-x-[52px] gap-y-8">
+            {/* Tienda — real category routes */}
+            <div>
+              <div className="mb-3 font-mono text-[11px] uppercase tracking-[0.1em] text-cream-soft">
+                Tienda
+              </div>
+              <ul className="flex flex-col gap-[9px] font-hanken text-sm">
+                {storeLinks.map((link) => (
+                  <li key={link.handle}>
+                    <LocalizedClientLink
+                      href={`/categories/${link.handle}`}
+                      className="text-cream-muted transition-colors hover:text-white"
+                    >
+                      {link.label}
+                    </LocalizedClientLink>
+                  </li>
+                ))}
+              </ul>
+            </div>
 
-                    return (
-                      <li
-                        className="flex flex-col gap-2 text-ui-fg-subtle txt-small"
-                        key={c.id}
-                      >
-                        <LocalizedClientLink
-                          className={clx(
-                            "hover:text-ui-fg-base",
-                            children && "txt-small-plus"
-                          )}
-                          href={`/categories/${c.handle}`}
-                          data-testid="category-link"
-                        >
-                          {c.name}
-                        </LocalizedClientLink>
-                        {children && (
-                          <ul className="grid grid-cols-1 ml-3 gap-2">
-                            {children &&
-                              children.map((child) => (
-                                <li key={child.id}>
-                                  <LocalizedClientLink
-                                    className="hover:text-ui-fg-base"
-                                    href={`/categories/${child.handle}`}
-                                    data-testid="category-link"
-                                  >
-                                    {child.name}
-                                  </LocalizedClientLink>
-                                </li>
-                              ))}
-                          </ul>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
+            {/* Negocio — placeholder links */}
+            <div>
+              <div className="mb-3 font-mono text-[11px] uppercase tracking-[0.1em] text-cream-soft">
+                Negocio
               </div>
-            )}
-            {collections && collections.length > 0 && (
-              <div className="flex flex-col gap-y-2">
-                <span className="txt-small-plus txt-ui-fg-base">
-                  Collections
-                </span>
-                <ul
-                  className={clx(
-                    "grid grid-cols-1 gap-2 text-ui-fg-subtle txt-small",
-                    {
-                      "grid-cols-2": (collections?.length || 0) > 3,
-                    }
-                  )}
-                >
-                  {collections?.slice(0, 6).map((c) => (
-                    <li key={c.id}>
-                      <LocalizedClientLink
-                        className="hover:text-ui-fg-base"
-                        href={`/collections/${c.handle}`}
-                      >
-                        {c.title}
-                      </LocalizedClientLink>
-                    </li>
-                  ))}
-                </ul>
+              <ul className="flex flex-col gap-[9px] font-hanken text-sm">
+                {BUSINESS_LINKS.map((label) => (
+                  <li key={label}>
+                    <a
+                      href="#"
+                      className="text-cream-muted transition-colors hover:text-white"
+                    >
+                      {label}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            {/* Síguenos — placeholder links */}
+            <div>
+              <div className="mb-3 font-mono text-[11px] uppercase tracking-[0.1em] text-cream-soft">
+                Síguenos
               </div>
-            )}
-            <div className="flex flex-col gap-y-2">
-              <span className="txt-small-plus txt-ui-fg-base">Medusa</span>
-              <ul className="grid grid-cols-1 gap-y-2 text-ui-fg-subtle txt-small">
-                <li>
-                  <a
-                    href="https://github.com/medusajs"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="hover:text-ui-fg-base"
-                  >
-                    GitHub
-                  </a>
-                </li>
-                <li>
-                  <a
-                    href="https://docs.medusajs.com"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="hover:text-ui-fg-base"
-                  >
-                    Documentation
-                  </a>
-                </li>
-                <li>
-                  <a
-                    href="https://github.com/medusajs/dtc-starter"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="hover:text-ui-fg-base"
-                  >
-                    Source code
-                  </a>
-                </li>
+              <ul className="flex flex-col gap-[9px] font-hanken text-sm">
+                {SOCIAL_LINKS.map((label) => (
+                  <li key={label}>
+                    <a
+                      href="#"
+                      className="text-cream-muted transition-colors hover:text-white"
+                    >
+                      {label}
+                    </a>
+                  </li>
+                ))}
               </ul>
             </div>
           </div>
         </div>
-        <div className="flex flex-col gap-y-6 small:flex-row w-full mb-16 justify-between items-start small:items-center text-ui-fg-muted">
-          <div className="flex flex-col gap-y-4 small:flex-row small:items-center small:gap-x-8">
-            <Text className="txt-compact-small">
-              © {new Date().getFullYear()} Medusa Store. All rights reserved.
-            </Text>
-            <RegionLanguageSelect
-              regions={regions}
-              locales={locales}
-              currentLocale={currentLocale}
-            />
+
+        {/* Bottom bar */}
+        <div className="mt-9 flex flex-wrap items-center justify-between gap-x-8 gap-y-4 border-t border-[#36322b] pt-5 font-mono text-[11px] text-cream-soft">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+            <span>© {currentYear} Mando Oficial</span>
+            {/* Preserved region/language selector — logic & data untouched.
+                Only the trigger buttons are recolored for the dark footer; the
+                dropdown panel keeps its own bg-white/text-black so the country
+                list stays legible (it renders inline, not in a portal). */}
+            <div className="[&_button]:!text-cream-soft">
+              <RegionLanguageSelect
+                regions={regions}
+                locales={locales}
+                currentLocale={currentLocale}
+              />
+            </div>
           </div>
-          <MedusaCTA />
+          <span>Hecho en México 🇲🇽</span>
         </div>
       </div>
     </footer>

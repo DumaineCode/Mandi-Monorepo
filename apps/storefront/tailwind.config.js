@@ -33,6 +33,21 @@ module.exports = {
           80: "#1F2937",
           90: "#111827",
         },
+        cream: "#F4EFE4",
+        paper: "#FCFAF3",
+        ink: "#1b1814",
+        coral: {
+          DEFAULT: "#FF5A3C",
+          hover: "#ff6e54",
+          light: "#FF8A73",
+        },
+        teal: "#138A74",
+        gold: "#F2B544",
+        line: "#E4DCCB",
+        "ink-muted": "#8C8473",
+        "ink-soft": "#6E6657",
+        "cream-muted": "#CDC5B4",
+        "cream-soft": "#9d9686",
       },
       borderRadius: {
         none: "0px",
@@ -68,8 +83,15 @@ module.exports = {
           "Ubuntu",
           "sans-serif",
         ],
+        bricolage: ["var(--font-bricolage)", "sans-serif"],
+        hanken: ["var(--font-hanken)", "sans-serif"],
+        mono: ["var(--font-space-mono)", "monospace"],
       },
       keyframes: {
+        scrollx: {
+          from: { transform: "translateX(0)" },
+          to: { transform: "translateX(-50%)" },
+        },
         ring: {
           "0%": { transform: "rotate(0deg)" },
           "100%": { transform: "rotate(360deg)" },
@@ -141,6 +163,7 @@ module.exports = {
         },
       },
       animation: {
+        marquee: "scrollx 30s linear infinite",
         ring: "ring 2.2s cubic-bezier(0.5, 0, 0.5, 1) infinite",
         "fade-in-right":
           "fade-in-right 0.3s cubic-bezier(0.5, 0, 0.5, 1) forwards",
