@@ -1,3 +1,4 @@
+import { retrieveCart } from "@lib/data/cart"
 import { listProductsWithSort } from "@lib/data/products"
 import { getRegion } from "@lib/data/regions"
 import ProductPreview from "@modules/products/components/product-preview"
@@ -64,18 +65,44 @@ export default async function PaginatedProducts({
     countryCode,
   })
 
+  // Fetch the cart once so each card can reflect the REAL cart quantity for its
+  // single variant. Build a variant_id -> { lineId, quantity } lookup map (O(1)).
+  const cart = await retrieveCart().catch(() => null)
+  const cartLineByVariant = new Map<
+    string,
+    { lineId: string; quantity: number }
+  >()
+  for (const item of cart?.items ?? []) {
+    const variantId = item.variant_id ?? item.variant?.id
+    if (variantId) {
+      cartLineByVariant.set(variantId, {
+        lineId: item.id,
+        quantity: item.quantity,
+      })
+    }
+  }
+
   const totalPages = Math.ceil(count / PRODUCT_LIMIT)
 
   return (
     <>
       <ul
-        className="grid grid-cols-2 w-full small:grid-cols-3 medium:grid-cols-4 gap-x-6 gap-y-8"
+        className="grid w-full grid-cols-2 gap-4 small:grid-cols-3 medium:grid-cols-4"
         data-testid="products-list"
       >
         {products.map((p) => {
+          const variantId = p.variants?.[0]?.id
+          const cartLine = variantId
+            ? cartLineByVariant.get(variantId)
+            : undefined
           return (
             <li key={p.id}>
-              <ProductPreview product={p} region={region} />
+              <ProductPreview
+                product={p}
+                region={region}
+                countryCode={countryCode}
+                cartLine={cartLine}
+              />
             </li>
           )
         })}

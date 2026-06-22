@@ -27,7 +27,7 @@ export function Pagination({
     router.push(`${pathname}?${params.toString()}`)
   }
 
-  // Function to render a page button
+  // Function to render a page button (Tienda C pills: active = coral, inactive = border-line)
   const renderPageButton = (
     p: number,
     label: string | number,
@@ -35,9 +35,15 @@ export function Pagination({
   ) => (
     <button
       key={p}
-      className={clx("txt-xlarge-plus text-ui-fg-muted", {
-        "text-ui-fg-base hover:text-ui-fg-subtle": isCurrent,
-      })}
+      aria-label={`Ir a la página ${label}`}
+      aria-current={isCurrent ? "page" : undefined}
+      className={clx(
+        "flex h-[38px] w-[38px] items-center justify-center rounded-[10px] font-semibold transition-colors",
+        {
+          "bg-coral text-white": isCurrent,
+          "border border-line text-ink hover:border-ink": !isCurrent,
+        }
+      )}
       disabled={isCurrent}
       onClick={() => handlePageChange(p)}
     >
@@ -49,7 +55,7 @@ export function Pagination({
   const renderEllipsis = (key: string) => (
     <span
       key={key}
-      className="txt-xlarge-plus text-ui-fg-muted items-center cursor-default"
+      className="flex h-[38px] w-[38px] cursor-default items-center justify-center text-ink-muted"
     >
       ...
     </span>
