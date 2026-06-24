@@ -6,10 +6,10 @@ import LocalizedClientLink from "@modules/common/components/localized-client-lin
 const WholesaleBand = () => {
   return (
     <section className="mx-auto max-w-[1180px] px-6 pb-2.5 pt-10 small:pt-14">
-      <div className="relative flex flex-col gap-6 overflow-hidden rounded-[22px] bg-teal p-8 text-white small:flex-row small:items-center small:gap-8 small:p-11">
+      <div className="relative flex flex-col gap-6 overflow-hidden rounded-[22px] bg-teal p-8 text-ink small:flex-row small:items-center small:gap-8 small:p-11">
         <div
           aria-hidden
-          className="pointer-events-none absolute -right-10 -top-10 h-[220px] w-[220px] rounded-full bg-white/10"
+          className="pointer-events-none absolute -right-10 -top-10 h-[220px] w-[220px] rounded-full bg-ink/5"
         />
         <div className="relative flex-1">
           <p className="font-mono text-xs uppercase tracking-[0.14em] opacity-80">
@@ -25,7 +25,7 @@ const WholesaleBand = () => {
         </div>
         <LocalizedClientLink
           href="/store"
-          className="relative inline-flex shrink-0 items-center justify-center self-start whitespace-nowrap rounded-xl bg-white px-7 py-4 font-semibold text-teal transition-colors hover:bg-cream small:self-auto"
+          className="relative inline-flex shrink-0 items-center justify-center self-start whitespace-nowrap rounded-xl bg-ink px-7 py-4 font-semibold text-white transition-colors hover:bg-ink/90 small:self-auto"
         >
           Quiero mayoreo →
         </LocalizedClientLink>

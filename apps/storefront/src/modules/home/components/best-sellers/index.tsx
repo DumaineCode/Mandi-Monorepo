@@ -125,7 +125,7 @@ const BestSellers = async ({ countryCode }: { countryCode: string }) => {
                   </span>
                   <span
                     aria-hidden
-                    className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-coral text-xl text-white transition-colors group-hover:bg-coral-hover"
+                    className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-coral text-xl text-coral-foreground transition-colors group-hover:bg-coral-hover"
                   >
                     +
                   </span>

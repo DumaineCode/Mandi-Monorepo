@@ -13,7 +13,7 @@ const TICKER_ITEMS = [
 
 const AnnouncementTicker = () => {
   return (
-    <div className="overflow-hidden whitespace-nowrap bg-teal text-cream">
+    <div className="overflow-hidden whitespace-nowrap bg-teal text-ink">
       <div className="flex w-max animate-marquee py-[9px] font-mono text-[11px] uppercase tracking-[0.08em] motion-reduce:animate-none small:text-xs">
         {TICKER_ITEMS.map((item) => (
           <span key={item} className="px-[21px]">

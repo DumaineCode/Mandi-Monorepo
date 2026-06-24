@@ -28,7 +28,7 @@ const Newsletter = () => {
           />
           <button
             type="button"
-            className="shrink-0 rounded-[11px] bg-coral px-6 py-3.5 font-semibold text-white transition-colors hover:bg-coral-hover"
+            className="shrink-0 rounded-[11px] bg-coral px-6 py-3.5 font-semibold text-coral-foreground transition-colors hover:bg-coral-hover"
           >
             Unirme
           </button>

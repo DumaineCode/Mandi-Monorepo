@@ -1,8 +1,8 @@
 import LocalizedClientLink from "@modules/common/components/localized-client-link"
 
 // Home hero (ref wireframe lines 38-121). Server component — fully static.
-// The transparent global header is overlaid on top of this section, so the
-// content gets generous top padding (pt-28) to clear the ~64px nav.
+// The global header is a solid sticky bar that occupies its own layout space
+// above this section, so the hero only needs normal section padding.
 const Hero = () => {
   return (
     <section className="relative overflow-hidden bg-ink text-cream">
@@ -12,7 +12,7 @@ const Hero = () => {
         className="pointer-events-none absolute -left-[120px] -top-20 h-[420px] w-[420px] rounded-full blur-[20px]"
         style={{
           background:
-            "radial-gradient(circle, rgba(255,90,60,.55), transparent 65%)",
+            "radial-gradient(circle, rgba(101,59,103,.55), transparent 65%)",
         }}
       />
       <div
@@ -20,7 +20,7 @@ const Hero = () => {
         className="pointer-events-none absolute -bottom-[120px] -right-[100px] h-[480px] w-[480px] rounded-full blur-[24px]"
         style={{
           background:
-            "radial-gradient(circle, rgba(19,138,116,.5), transparent 65%)",
+            "radial-gradient(circle, rgba(155,213,231,.5), transparent 65%)",
         }}
       />
       <div
@@ -33,7 +33,7 @@ const Hero = () => {
       />
 
       {/* hero body */}
-      <div className="relative z-[2] mx-auto grid max-w-[1180px] grid-cols-1 items-center gap-10 px-6 pb-16 pt-28 small:grid-cols-[1.05fr_.95fr] small:pb-[70px] small:pt-32">
+      <div className="relative z-[2] mx-auto grid max-w-[1180px] grid-cols-1 items-center gap-10 px-6 pb-16 pt-16 small:grid-cols-[1.05fr_.95fr] small:pb-[70px] small:pt-20">
         {/* LEFT */}
         <div>
           <div className="inline-flex items-center gap-2 rounded-full border border-cream/20 px-3.5 py-1.5 font-mono text-[11px] uppercase tracking-[0.14em] text-cream-muted">
@@ -43,7 +43,7 @@ const Hero = () => {
 
           <h1 className="mt-5 font-bricolage text-[44px] font-extrabold leading-[.94] tracking-[-0.035em] small:text-[64px] large:text-[78px]">
             El{" "}
-            <span className="inline-block -rotate-[1.6deg] rounded-lg bg-coral px-3 text-ink">
+            <span className="inline-block -rotate-[1.6deg] rounded-lg bg-coral px-3 text-coral-foreground">
               sabor
             </span>{" "}
             que tu menú estaba esperando.
@@ -57,7 +57,7 @@ const Hero = () => {
           <div className="mt-7 flex flex-wrap gap-3">
             <LocalizedClientLink
               href="/store"
-              className="inline-flex items-center gap-2 rounded-xl bg-coral px-6 py-4 text-base font-semibold text-white transition-colors hover:bg-coral-hover"
+              className="inline-flex items-center gap-2 rounded-xl bg-coral px-6 py-4 text-base font-semibold text-coral-foreground transition-colors hover:bg-coral-hover"
             >
               Explorar la tienda →
             </LocalizedClientLink>
@@ -147,7 +147,7 @@ const Hero = () => {
           </div>
 
           {/* best seller tag */}
-          <div className="absolute bottom-[18px] right-[34px] -rotate-[4deg] rounded-[7px] bg-coral px-[11px] py-1.5 font-mono text-[10px] uppercase tracking-[0.1em] text-white">
+          <div className="absolute bottom-[18px] right-[34px] -rotate-[4deg] rounded-[7px] bg-coral px-[11px] py-1.5 font-mono text-[10px] uppercase tracking-[0.1em] text-coral-foreground">
             ★ best seller
           </div>
         </div>

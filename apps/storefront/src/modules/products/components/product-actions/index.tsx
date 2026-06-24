@@ -215,7 +215,7 @@ export default function ProductActions({
                 disabled={isDisabled}
                 aria-label={label}
                 className={clx(
-                  "flex h-12 flex-1 items-center justify-center rounded-xl bg-coral px-6 text-[15px] font-semibold text-white transition-colors hover:bg-coral-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none motion-reduce:active:scale-100"
+                  "flex h-12 flex-1 items-center justify-center rounded-xl bg-coral px-6 text-[15px] font-semibold text-coral-foreground transition-colors hover:bg-coral-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2 active:scale-[0.99] disabled:pointer-events-none disabled:opacity-50 motion-reduce:transition-none motion-reduce:active:scale-100"
                 )}
                 data-testid="add-product-button"
               >

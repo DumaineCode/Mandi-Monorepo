@@ -17,7 +17,7 @@ const ITEMS = FLAVORS.flatMap((flavor) => [flavor, "✦"])
 
 const FlavorMarquee = () => {
   return (
-    <div className="overflow-hidden border-t-2 border-ink bg-coral text-ink">
+    <div className="overflow-hidden border-t-2 border-ink bg-coral text-coral-foreground">
       <div className="flex w-max animate-[scrollx_22s_linear_infinite] py-3 font-bricolage text-[22px] font-extrabold uppercase motion-reduce:animate-none">
         {ITEMS.map((item, i) => (
           <span key={`a-${i}`} className="px-[22px]">

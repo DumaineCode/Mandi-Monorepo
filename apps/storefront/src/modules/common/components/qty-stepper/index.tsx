@@ -85,7 +85,7 @@ export default function QtyStepper({
           disabled={disabled}
           aria-label="Aumentar cantidad"
           className={clx(
-            "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-coral text-lg text-white",
+            "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-coral text-lg text-coral-foreground",
             "transition-colors hover:bg-coral-hover disabled:opacity-60",
             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-1 focus-visible:ring-offset-paper",
             "motion-reduce:transition-none"

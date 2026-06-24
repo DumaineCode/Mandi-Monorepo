@@ -14,7 +14,7 @@ const EmptyCartMessage = () => {
       </p>
       <LocalizedClientLink
         href="/store"
-        className="rounded-xl bg-coral px-6 py-3 font-semibold text-white transition-colors hover:bg-coral-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2 focus-visible:ring-offset-cream motion-reduce:transition-none"
+        className="rounded-xl bg-coral px-6 py-3 font-semibold text-coral-foreground transition-colors hover:bg-coral-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2 focus-visible:ring-offset-cream motion-reduce:transition-none"
       >
         Explorar productos
       </LocalizedClientLink>

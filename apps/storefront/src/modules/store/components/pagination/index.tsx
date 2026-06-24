@@ -40,7 +40,7 @@ export function Pagination({
       className={clx(
         "flex h-[38px] w-[38px] items-center justify-center rounded-[10px] font-semibold transition-colors",
         {
-          "bg-coral text-white": isCurrent,
+          "bg-coral text-coral-foreground": isCurrent,
           "border border-line text-ink hover:border-ink": !isCurrent,
         }
       )}

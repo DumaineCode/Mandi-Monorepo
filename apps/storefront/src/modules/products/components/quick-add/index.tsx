@@ -91,7 +91,7 @@ export default function QuickAddButton({
         disabled={isPending}
         aria-label="Agregar al carrito"
         className={clx(
-          "flex h-11 w-full items-center justify-center rounded-xl bg-coral text-xl font-semibold text-white",
+          "flex h-11 w-full items-center justify-center rounded-xl bg-coral text-xl font-semibold text-coral-foreground",
           "transition-[background-color,transform] duration-200 hover:bg-coral-hover",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2 focus-visible:ring-offset-paper",
           "motion-safe:active:scale-[0.98] disabled:opacity-60",
