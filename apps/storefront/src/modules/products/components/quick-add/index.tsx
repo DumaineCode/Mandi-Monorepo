@@ -2,6 +2,7 @@
 
 import { addToCart, deleteLineItem, updateLineItem } from "@lib/data/cart"
 import { clx } from "@modules/common/components/ui"
+import QtyStepper from "@modules/common/components/qty-stepper"
 import { useEffect, useState, useTransition } from "react"
 
 type QuickAddButtonProps = {
@@ -104,47 +105,12 @@ export default function QuickAddButton({
 
   // Has quantity → full-width stepper bar [−] · qty · [+].
   return (
-    <div
-      className={clx(
-        "flex h-11 w-full items-center justify-between rounded-xl border border-line bg-paper p-1",
-        "transition-[opacity,background-color] duration-200 motion-reduce:transition-none",
-        { "opacity-70": isPending }
-      )}
-    >
-      <button
-        type="button"
-        onClick={handleDecrease}
-        disabled={isPending}
-        aria-label="Disminuir cantidad"
-        className={clx(
-          "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-lg text-ink",
-          "transition-colors hover:bg-cream hover:text-coral disabled:opacity-60",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral",
-          "motion-reduce:transition-none"
-        )}
-      >
-        −
-      </button>
-      <span
-        aria-live="polite"
-        className="flex-1 text-center font-bricolage text-base font-bold tabular-nums text-ink"
-      >
-        {displayQty}
-      </span>
-      <button
-        type="button"
-        onClick={handleIncrease}
-        disabled={isPending}
-        aria-label="Aumentar cantidad"
-        className={clx(
-          "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-coral text-lg text-white",
-          "transition-colors hover:bg-coral-hover disabled:opacity-60",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-1 focus-visible:ring-offset-paper",
-          "motion-reduce:transition-none"
-        )}
-      >
-        +
-      </button>
-    </div>
+    <QtyStepper
+      quantity={displayQty}
+      onIncrease={handleIncrease}
+      onDecrease={handleDecrease}
+      disabled={isPending}
+      size="md"
+    />
   )
 }

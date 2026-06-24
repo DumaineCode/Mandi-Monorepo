@@ -1,9 +1,6 @@
 "use client"
 
-import { Button, Heading } from "@modules/common/components/ui"
-
 import CartTotals from "@modules/common/components/cart-totals"
-import Divider from "@modules/common/components/divider"
 import DiscountCode from "@modules/checkout/components/discount-code"
 import LocalizedClientLink from "@modules/common/components/localized-client-link"
 import { HttpTypes } from "@medusajs/types"
@@ -26,19 +23,28 @@ const Summary = ({ cart }: SummaryProps) => {
   const step = getCheckoutStep(cart)
 
   return (
-    <div className="flex flex-col gap-y-4">
-      <Heading level="h2" className="text-[2rem] leading-[2.75rem]">
-        Summary
-      </Heading>
-      <DiscountCode cart={cart} />
-      <Divider />
+    <div className="flex flex-col rounded-[18px] border-2 border-ink bg-paper p-6">
+      <h2 className="mb-4 font-bricolage text-2xl font-extrabold tracking-[-0.02em] text-ink">
+        Resumen
+      </h2>
+
       <CartTotals totals={cart} />
+
+      <div className="mb-5 mt-3">
+        <DiscountCode cart={cart} />
+      </div>
+
       <LocalizedClientLink
         href={"/checkout?step=" + step}
         data-testid="checkout-button"
+        className="flex h-12 w-full items-center justify-center rounded-xl bg-coral font-semibold text-white transition-colors hover:bg-coral-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2 focus-visible:ring-offset-paper motion-reduce:transition-none"
       >
-        <Button className="w-full h-10">Go to checkout</Button>
+        Ir a pagar →
       </LocalizedClientLink>
+
+      <p className="mt-3 text-center font-mono text-[11px] text-ink-muted">
+        Pago seguro · factura disponible
+      </p>
     </div>
   )
 }
