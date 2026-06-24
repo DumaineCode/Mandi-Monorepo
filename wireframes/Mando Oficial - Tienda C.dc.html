@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600..800&family=Hanken+Grotesk:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#F4EFE4}
+  ::selection{background:#FF5A3C;color:#fff}
+  @keyframes scrollx{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+</style>
+</helmet>
+
+<div style="font-family:'Hanken Grotesk',sans-serif;color:#1b1814;background:#F4EFE4;min-height:100vh;padding-bottom:96px">
+
+  <!-- ============================== HOME C ============================== -->
+  <sc-if value="{{ isHome }}" hint-placeholder-val="{{ true }}">
+  <div data-screen-label="Home — Editorial">
+
+    <!-- announcement ticker -->
+    <sc-if value="{{ ticker }}" hint-placeholder-val="{{ true }}">
+    <div style="background:#138A74;color:#EAF6F1;overflow:hidden;white-space:nowrap">
+      <div style="display:inline-flex;gap:42px;padding:9px 0;width:max-content;animation:scrollx 30s linear infinite;font-family:'Space Mono',monospace;font-size:12px;letter-spacing:.08em;text-transform:uppercase">
+        <span>✦ Envío 24 h a todo México</span><span>✦ Precios de mayoreo</span><span>✦ +500 cafeterías</span><span>✦ +40 sabores</span><span>✦ Compra mínima baja</span><span>✦ Soporte por WhatsApp</span><span>✦ Envío 24 h a todo México</span><span>✦ Precios de mayoreo</span><span>✦ +500 cafeterías</span><span>✦ +40 sabores</span><span>✦ Compra mínima baja</span><span>✦ Soporte por WhatsApp</span>
+      </div>
+    </div>
+    </sc-if>
+
+    <!-- HERO -->
+    <div style="position:relative;background:#1b1814;color:#F4EFE4;overflow:hidden">
+      <!-- decorative glows -->
+      <div style="position:absolute;left:-120px;top:-80px;width:420px;height:420px;border-radius:50%;background:radial-gradient(circle,rgba(255,90,60,.55),transparent 65%);filter:blur(20px);pointer-events:none"></div>
+      <div style="position:absolute;right:-100px;bottom:-120px;width:480px;height:480px;border-radius:50%;background:radial-gradient(circle,rgba(19,138,116,.5),transparent 65%);filter:blur(24px);pointer-events:none"></div>
+      <div style="position:absolute;right:38%;top:18%;width:14px;height:14px;border-radius:50%;background:#F2B544"></div>
+      <div style="position:absolute;left:46%;bottom:20%;width:9px;height:9px;border-radius:50%;background:#FF5A3C"></div>
+
+      <!-- nav -->
+      <div style="position:relative;z-index:3;max-width:1180px;margin:0 auto;display:flex;align-items:center;gap:26px;padding:22px 24px">
+        <div onClick="{{ goHome }}" style="display:flex;flex-direction:column;line-height:1;cursor:pointer">
+          <span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:24px;letter-spacing:-.02em">MANDO</span>
+          <span style="font-family:'Space Mono',monospace;font-size:9px;letter-spacing:.42em;color:#FF8A73;margin-top:2px">OFICIAL</span>
+        </div>
+        <div style="flex:1;display:flex;gap:26px;justify-content:center;font-size:15px;color:#CFC7B6">
+          <span onClick="{{ goCatalog }}" style="cursor:pointer" style-hover="cursor:pointer;color:#F4EFE4">Tienda</span>
+          <span style="cursor:pointer" style-hover="cursor:pointer;color:#F4EFE4">Sabores</span>
+          <span style="cursor:pointer" style-hover="cursor:pointer;color:#F4EFE4">Mayoreo</span>
+          <span style="cursor:pointer" style-hover="cursor:pointer;color:#F4EFE4">Nosotros</span>
+        </div>
+        <div onClick="{{ goCart }}" style="display:flex;align-items:center;gap:9px;background:#FF5A3C;color:#fff;border-radius:999px;padding:9px 16px;font-size:14px;font-weight:600;cursor:pointer" style-hover="display:flex;align-items:center;gap:9px;background:#ff6e54;color:#fff;border-radius:999px;padding:9px 16px;font-size:14px;font-weight:600;cursor:pointer">
+          <span>Carrito</span><span style="background:#1b1814;color:#fff;font-family:'Space Mono',monospace;font-size:11px;border-radius:999px;padding:1px 7px">{{ cartCount }}</span>
+        </div>
+      </div>
+
+      <!-- hero body -->
+      <div style="position:relative;z-index:2;max-width:1180px;margin:0 auto;padding:34px 24px 70px;display:grid;grid-template-columns:1.05fr .95fr;gap:40px;align-items:center">
+        <!-- left -->
+        <div>
+          <div style="display:inline-flex;align-items:center;gap:8px;border:1px solid rgba(244,239,228,.22);border-radius:999px;padding:6px 14px;font-family:'Space Mono',monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#CFC7B6">
+            <span style="width:7px;height:7px;border-radius:50%;background:#FF5A3C"></span>Insumos para cafeterías · Mayoreo
+          </div>
+          <h1 style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:78px;line-height:.94;letter-spacing:-.035em;margin:20px 0 0">
+            El <span style="display:inline-block;background:#FF5A3C;color:#1b1814;padding:0 12px;border-radius:8px;transform:rotate(-1.6deg)">sabor</span> que tu menú estaba esperando.
+          </h1>
+          <p style="font-size:18px;line-height:1.55;color:#CDC5B4;max-width:430px;margin:24px 0 0">
+            Polvos, jarabes y todo para frappés y tapioca — calidad de mayoreo y pedido en minutos. Hecho para baristas que no se conforman.
+          </p>
+          <div style="display:flex;gap:12px;margin-top:30px;flex-wrap:wrap">
+            <div onClick="{{ goCatalog }}" style="background:#FF5A3C;color:#fff;border-radius:12px;padding:15px 26px;font-size:16px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:9px" style-hover="background:#ff6e54;color:#fff;border-radius:12px;padding:15px 26px;font-size:16px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:9px;transform:translateY(-1px)">Explorar la tienda →</div>
+            <div style="border:1.5px solid rgba(244,239,228,.35);color:#F4EFE4;border-radius:12px;padding:15px 24px;font-size:16px;font-weight:500;cursor:pointer" style-hover="border:1.5px solid rgba(244,239,228,.7);color:#fff;border-radius:12px;padding:15px 24px;font-size:16px;font-weight:500;cursor:pointer">Ver sabor del mes</div>
+          </div>
+          <div style="display:flex;gap:26px;margin-top:38px;align-items:center">
+            <div><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:26px">+40</div><div style="font-family:'Space Mono',monospace;font-size:11px;color:#9d9686;text-transform:uppercase;letter-spacing:.06em">sabores</div></div>
+            <div style="width:1px;height:34px;background:rgba(244,239,228,.18)"></div>
+            <div><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:26px">24 h</div><div style="font-family:'Space Mono',monospace;font-size:11px;color:#9d9686;text-transform:uppercase;letter-spacing:.06em">envío</div></div>
+            <div style="width:1px;height:34px;background:rgba(244,239,228,.18)"></div>
+            <div><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:26px">+500</div><div style="font-family:'Space Mono',monospace;font-size:11px;color:#9d9686;text-transform:uppercase;letter-spacing:.06em">cafeterías</div></div>
+          </div>
+        </div>
+
+        <!-- right collage -->
+        <div style="position:relative;height:470px">
+          <!-- main product card -->
+          <div style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%) rotate(-3deg);width:340px;background:#FCFAF3;border-radius:22px;padding:14px;box-shadow:0 30px 60px rgba(0,0,0,.4)">
+            <div style="height:300px;border-radius:14px;background:repeating-linear-gradient(135deg,#ECE4D5 0,#ECE4D5 11px,#F5F0E5 11px,#F5F0E5 22px);display:flex;align-items:flex-end;justify-content:center;padding-bottom:16px">
+              <span style="font-family:'Space Mono',monospace;font-size:11px;color:#A99E86;text-transform:uppercase;letter-spacing:.08em">foto · producto</span>
+            </div>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 6px 4px">
+              <div><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:18px;color:#1b1814">Polvo Taro</div><div style="font-family:'Space Mono',monospace;font-size:11px;color:#8C8473">1 kg · cremoso</div></div>
+              <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:20px;color:#1b1814">$189</div>
+            </div>
+          </div>
+
+          <sc-if value="{{ floatingBadges }}" hint-placeholder-val="{{ true }}">
+          <!-- price sticker -->
+          <div style="position:absolute;right:2px;top:14px;width:78px;height:78px;border-radius:50%;background:#F2B544;color:#1b1814;display:flex;flex-direction:column;align-items:center;justify-content:center;transform:rotate(11deg);box-shadow:0 10px 24px rgba(0,0,0,.3);border:2px solid #1b1814">
+            <span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:19px;line-height:1">$189</span>
+            <span style="font-family:'Space Mono',monospace;font-size:9px">/kg</span>
+          </div>
+          <!-- flavor pills -->
+          <div style="position:absolute;left:-6px;top:54px;display:flex;align-items:center;gap:8px;background:#FCFAF3;color:#1b1814;border-radius:999px;padding:7px 13px 7px 9px;box-shadow:0 10px 22px rgba(0,0,0,.28);transform:rotate(-5deg)">
+            <span style="width:18px;height:18px;border-radius:50%;background:#B79CE0"></span><span style="font-weight:600;font-size:14px">Taro</span>
+          </div>
+          <div style="position:absolute;right:6px;bottom:120px;display:flex;align-items:center;gap:8px;background:#FCFAF3;color:#1b1814;border-radius:999px;padding:7px 13px 7px 9px;box-shadow:0 10px 22px rgba(0,0,0,.28);transform:rotate(4deg)">
+            <span style="width:18px;height:18px;border-radius:50%;background:#8FB96A"></span><span style="font-weight:600;font-size:14px">Matcha</span>
+          </div>
+          <div style="position:absolute;left:18px;bottom:30px;display:flex;align-items:center;gap:8px;background:#FCFAF3;color:#1b1814;border-radius:999px;padding:7px 13px 7px 9px;box-shadow:0 10px 22px rgba(0,0,0,.28);transform:rotate(-3deg)">
+            <span style="width:18px;height:18px;border-radius:50%;background:#F2A03D"></span><span style="font-weight:600;font-size:14px">Mango</span>
+          </div>
+          <!-- best seller tag -->
+          <div style="position:absolute;right:34px;bottom:18px;background:#FF5A3C;color:#fff;font-family:'Space Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;padding:6px 11px;border-radius:7px;transform:rotate(-4deg)">★ best seller</div>
+          </sc-if>
+        </div>
+      </div>
+
+      <!-- marquee -->
+      <div style="position:relative;z-index:2;background:#FF5A3C;color:#1b1814;overflow:hidden;border-top:2px solid #1b1814">
+        <div style="display:inline-flex;gap:0;width:max-content;animation:scrollx 22s linear infinite;font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:22px;text-transform:uppercase;padding:12px 0">
+          <span style="padding:0 22px">Taro</span><span style="padding:0 22px">✦</span><span style="padding:0 22px">Matcha</span><span style="padding:0 22px">✦</span><span style="padding:0 22px">Mango</span><span style="padding:0 22px">✦</span><span style="padding:0 22px">Chai</span><span style="padding:0 22px">✦</span><span style="padding:0 22px">Fresa</span><span style="padding:0 22px">✦</span><span style="padding:0 22px">Cookies</span><span style="padding:0 22px">✦</span><span style="padding:0 22px">Coco</span><span style="padding:0 22px">✦</span>
+          <span style="padding:0 22px">Taro</span><span style="padding:0 22px">✦</span><span style="padding:0 22px">Matcha</span><span style="padding:0 22px">✦</span><span style="padding:0 22px">Mango</span><span style="padding:0 22px">✦</span><span style="padding:0 22px">Chai</span><span style="padding:0 22px">✦</span><span style="padding:0 22px">Fresa</span><span style="padding:0 22px">✦</span><span style="padding:0 22px">Cookies</span><span style="padding:0 22px">✦</span><span style="padding:0 22px">Coco</span><span style="padding:0 22px">✦</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- CATEGORÍAS -->
+    <div style="max-width:1180px;margin:0 auto;padding:64px 24px 10px">
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:24px">
+        <div>
+          <div style="font-family:'Space Mono',monospace;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#FF5A3C">01 — Categorías</div>
+          <h2 style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:42px;letter-spacing:-.03em;margin:8px 0 0">Explora por categoría</h2>
+        </div>
+        <span onClick="{{ goCatalog }}" style="font-size:15px;color:#1b1814;border-bottom:2px solid #FF5A3C;padding-bottom:2px;cursor:pointer">Ver todo el catálogo →</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px">
+        <div onClick="{{ goCatalog }}" style="border-radius:18px;overflow:hidden;cursor:pointer;background:#FCFAF3;border:1px solid #E4DCCB" style-hover="border-radius:18px;overflow:hidden;cursor:pointer;background:#FCFAF3;border:1px solid #1b1814;transform:translateY(-3px)">
+          <div style="height:140px;background:repeating-linear-gradient(135deg,#F1D9CF 0,#F1D9CF 11px,#FBEBE3 11px,#FBEBE3 22px)"></div>
+          <div style="padding:15px 16px"><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:19px">Polvos frappé</div><div style="font-family:'Space Mono',monospace;font-size:11px;color:#8C8473;margin-top:3px">22 sabores</div></div>
+        </div>
+        <div onClick="{{ goCatalog }}" style="border-radius:18px;overflow:hidden;cursor:pointer;background:#FCFAF3;border:1px solid #E4DCCB" style-hover="border-radius:18px;overflow:hidden;cursor:pointer;background:#FCFAF3;border:1px solid #1b1814;transform:translateY(-3px)">
+          <div style="height:140px;background:repeating-linear-gradient(135deg,#D7E9D2 0,#D7E9D2 11px,#ECF6E8 11px,#ECF6E8 22px)"></div>
+          <div style="padding:15px 16px"><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:19px">Jarabes</div><div style="font-family:'Space Mono',monospace;font-size:11px;color:#8C8473;margin-top:3px">14 perfiles</div></div>
+        </div>
+        <div onClick="{{ goCatalog }}" style="border-radius:18px;overflow:hidden;cursor:pointer;background:#FCFAF3;border:1px solid #E4DCCB" style-hover="border-radius:18px;overflow:hidden;cursor:pointer;background:#FCFAF3;border:1px solid #1b1814;transform:translateY(-3px)">
+          <div style="height:140px;background:repeating-linear-gradient(135deg,#D6E4F0 0,#D6E4F0 11px,#EAF1F9 11px,#EAF1F9 22px)"></div>
+          <div style="padding:15px 16px"><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:19px">Botes &amp; tapas</div><div style="font-family:'Space Mono',monospace;font-size:11px;color:#8C8473;margin-top:3px">9 medidas</div></div>
+        </div>
+        <div onClick="{{ goCatalog }}" style="border-radius:18px;overflow:hidden;cursor:pointer;background:#FCFAF3;border:1px solid #E4DCCB" style-hover="border-radius:18px;overflow:hidden;cursor:pointer;background:#FCFAF3;border:1px solid #1b1814;transform:translateY(-3px)">
+          <div style="height:140px;background:repeating-linear-gradient(135deg,#F4E6C5 0,#F4E6C5 11px,#FBF3DE 11px,#FBF3DE 22px)"></div>
+          <div style="padding:15px 16px"><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:19px">Popotes tapioca</div><div style="font-family:'Space Mono',monospace;font-size:11px;color:#8C8473;margin-top:3px">3 tipos</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SABOR DEL MES -->
+    <div style="max-width:1180px;margin:0 auto;padding:56px 24px 10px">
+      <div style="border-radius:22px;overflow:hidden;border:1px solid #E4DCCB;display:grid;grid-template-columns:1fr 1fr;background:#FCFAF3">
+        <div style="background:repeating-linear-gradient(135deg,#F1D9CF 0,#F1D9CF 13px,#FBEBE3 13px,#FBEBE3 26px);min-height:340px;display:flex;align-items:flex-end;padding:20px"><span style="font-family:'Space Mono',monospace;font-size:11px;color:#C08A77;text-transform:uppercase;letter-spacing:.08em">foto · producto destacado</span></div>
+        <div style="padding:48px 44px;display:flex;flex-direction:column;justify-content:center">
+          <div style="font-family:'Space Mono',monospace;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#FF5A3C">Sabor del mes</div>
+          <h3 style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:46px;letter-spacing:-.03em;line-height:1;margin:14px 0 12px">Taro cremoso</h3>
+          <p style="font-size:17px;line-height:1.55;color:#6E6657;margin:0 0 22px;max-width:360px">Rendidor, color increíble y disuelve sin grumos. Listo para tu carta de verano — ~40 bebidas por kilo.</p>
+          <div style="display:flex;align-items:center;gap:16px">
+            <span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:28px">$189</span>
+            <div onClick="{{ goProduct }}" style="background:#1b1814;color:#fff;border-radius:11px;padding:13px 24px;font-size:15px;font-weight:600;cursor:pointer" style-hover="background:#33302a;color:#fff;border-radius:11px;padding:13px 24px;font-size:15px;font-weight:600;cursor:pointer">Ver producto →</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MÁS VENDIDOS -->
+    <div style="max-width:1180px;margin:0 auto;padding:56px 24px 10px">
+      <div style="display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:24px">
+        <div>
+          <div style="font-family:'Space Mono',monospace;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#FF5A3C">02 — Top ventas</div>
+          <h2 style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:42px;letter-spacing:-.03em;margin:8px 0 0">Los más pedidos</h2>
+        </div>
+        <span onClick="{{ goCatalog }}" style="font-size:15px;color:#1b1814;border-bottom:2px solid #FF5A3C;padding-bottom:2px;cursor:pointer">Ver todos →</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px">
+        <sc-for list="{{ bestSellers }}" as="p" hint-placeholder-count="4">
+          <div onClick="{{ goProduct }}" style="border:1px solid #E4DCCB;border-radius:16px;overflow:hidden;background:#FCFAF3;cursor:pointer" style-hover="border:1px solid #1b1814;border-radius:16px;overflow:hidden;background:#FCFAF3;cursor:pointer;transform:translateY(-3px)">
+            <div style="height:150px;background:repeating-linear-gradient(135deg,#ECE4D5 0,#ECE4D5 11px,#F5F0E5 11px,#F5F0E5 22px)"></div>
+            <div style="padding:14px 15px">
+              <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:16px;line-height:1.15">{{ p.name }}</div>
+              <div style="font-family:'Space Mono',monospace;font-size:11px;color:#8C8473;margin-top:4px">{{ p.tag }}</div>
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px">
+                <span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:18px">{{ p.price }}</span>
+                <span onClick="{{ addToCart }}" style="width:36px;height:36px;border-radius:10px;background:#FF5A3C;color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer" style-hover="width:36px;height:36px;border-radius:10px;background:#ff6e54;color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer">+</span>
+              </div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <!-- MAYOREO BAND -->
+    <div style="max-width:1180px;margin:0 auto;padding:56px 24px 10px">
+      <div style="background:#138A74;color:#fff;border-radius:22px;padding:44px 46px;display:flex;align-items:center;gap:30px;position:relative;overflow:hidden">
+        <div style="position:absolute;right:-40px;top:-40px;width:220px;height:220px;border-radius:50%;background:rgba(255,255,255,.08)"></div>
+        <div style="flex:1;position:relative">
+          <div style="font-family:'Space Mono',monospace;font-size:12px;letter-spacing:.14em;text-transform:uppercase;opacity:.8">Para negocios</div>
+          <h3 style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:40px;letter-spacing:-.03em;margin:10px 0 8px">¿Tienes cafetería?</h3>
+          <p style="font-size:17px;opacity:.92;margin:0;max-width:440px">Precios de mayoreo, factura y envío programado a todo México. Asesoría de carta incluida.</p>
+        </div>
+        <div style="background:#fff;color:#138A74;border-radius:12px;padding:15px 28px;font-size:16px;font-weight:600;cursor:pointer;position:relative" style-hover="background:#F4EFE4;color:#138A74;border-radius:12px;padding:15px 28px;font-size:16px;font-weight:600;cursor:pointer;position:relative">Quiero mayoreo →</div>
+      </div>
+    </div>
+
+    <!-- NUMBERS + TESTIMONIAL -->
+    <div style="max-width:1180px;margin:0 auto;padding:56px 24px 10px">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);border-top:2px solid #1b1814;border-bottom:2px solid #1b1814">
+        <div style="padding:26px 10px;text-align:center;border-right:1px solid #E4DCCB"><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:40px;letter-spacing:-.02em">+40</div><div style="font-family:'Space Mono',monospace;font-size:12px;color:#8C8473;text-transform:uppercase;letter-spacing:.06em">sabores</div></div>
+        <div style="padding:26px 10px;text-align:center;border-right:1px solid #E4DCCB"><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:40px;letter-spacing:-.02em">24 h</div><div style="font-family:'Space Mono',monospace;font-size:12px;color:#8C8473;text-transform:uppercase;letter-spacing:.06em">envío nacional</div></div>
+        <div style="padding:26px 10px;text-align:center"><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:40px;letter-spacing:-.02em">+500</div><div style="font-family:'Space Mono',monospace;font-size:12px;color:#8C8473;text-transform:uppercase;letter-spacing:.06em">cafeterías</div></div>
+      </div>
+      <div style="text-align:center;padding:44px 24px 10px">
+        <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:30px;line-height:1.3;letter-spacing:-.02em;max-width:680px;margin:0 auto">“Cambiamos toda nuestra barra de frappés a Mando. El color y el sabor <span style="color:#FF5A3C">venden solos</span>.”</div>
+        <div style="font-family:'Space Mono',monospace;font-size:13px;color:#8C8473;margin-top:16px">— Café Lupita · CDMX</div>
+      </div>
+    </div>
+
+    <!-- NEWSLETTER -->
+    <div style="max-width:1180px;margin:0 auto;padding:40px 24px 64px">
+      <div style="background:#1b1814;color:#F4EFE4;border-radius:22px;padding:40px 44px;display:flex;align-items:center;gap:30px;flex-wrap:wrap">
+        <div style="flex:1;min-width:260px">
+          <h3 style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:30px;letter-spacing:-.02em;margin:0 0 6px">Recetas + promos a tu correo</h3>
+          <p style="font-size:15px;color:#CDC5B4;margin:0">Sin spam. Cancela cuando quieras.</p>
+        </div>
+        <div style="display:flex;gap:10px;flex:1;min-width:280px">
+          <div style="flex:1;background:#2a2620;border:1px solid #4a463e;border-radius:11px;padding:14px 16px;font-family:'Space Mono',monospace;font-size:13px;color:#9d9686">tu@correo.com</div>
+          <div style="background:#FF5A3C;color:#fff;border-radius:11px;padding:14px 24px;font-size:15px;font-weight:600;cursor:pointer" style-hover="background:#ff6e54;color:#fff;border-radius:11px;padding:14px 24px;font-size:15px;font-weight:600;cursor:pointer">Unirme</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FOOTER -->
+    <div style="background:#1b1814;color:#CDC5B4;padding:48px 24px 36px">
+      <div style="max-width:1180px;margin:0 auto;display:flex;gap:40px;flex-wrap:wrap;justify-content:space-between">
+        <div style="max-width:280px">
+          <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:24px;color:#fff;letter-spacing:-.02em">MANDO <span style="color:#FF5A3C">OFICIAL</span></div>
+          <p style="font-size:14px;line-height:1.6;margin:12px 0 0">Insumos para cafeterías en todo México. Polvos, jarabes, botes y tapioca.</p>
+        </div>
+        <div style="display:flex;gap:52px;flex-wrap:wrap">
+          <div><div style="font-family:'Space Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#7d7567;margin-bottom:12px">Tienda</div><div style="display:flex;flex-direction:column;gap:9px;font-size:14px"><span>Polvos frappé</span><span>Jarabes</span><span>Botes &amp; tapas</span><span>Popotes</span></div></div>
+          <div><div style="font-family:'Space Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#7d7567;margin-bottom:12px">Negocio</div><div style="display:flex;flex-direction:column;gap:9px;font-size:14px"><span>Mayoreo</span><span>Facturación</span><span>Envíos</span><span>Contacto</span></div></div>
+          <div><div style="font-family:'Space Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:#7d7567;margin-bottom:12px">Síguenos</div><div style="display:flex;flex-direction:column;gap:9px;font-size:14px"><span>Instagram</span><span>TikTok</span><span>WhatsApp</span></div></div>
+        </div>
+      </div>
+      <div style="max-width:1180px;margin:34px auto 0;padding-top:20px;border-top:1px solid #36322b;font-family:'Space Mono',monospace;font-size:11px;color:#7d7567;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px"><span>© 2026 Mando Oficial</span><span>Hecho en México 🇲🇽</span></div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ============================== CATÁLOGO ============================== -->
+  <sc-if value="{{ isCat }}" hint-placeholder-val="{{ false }}">
+  <div data-screen-label="Catálogo">
+    <div style="position:sticky;top:0;z-index:5;background:rgba(244,239,228,.92);backdrop-filter:blur(8px);border-bottom:1px solid #E4DCCB">
+      <div style="max-width:1180px;margin:0 auto;display:flex;align-items:center;gap:22px;padding:16px 24px">
+        <div onClick="{{ goHome }}" style="display:flex;flex-direction:column;line-height:1;cursor:pointer"><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:22px;letter-spacing:-.02em">MANDO</span><span style="font-family:'Space Mono',monospace;font-size:8px;letter-spacing:.42em;color:#FF5A3C;margin-top:2px">OFICIAL</span></div>
+        <div style="flex:1;display:flex;align-items:center;gap:10px;background:#FCFAF3;border:1px solid #E4DCCB;border-radius:999px;padding:10px 18px;max-width:460px"><span style="color:#A99E86">🔍</span><span style="font-family:'Space Mono',monospace;font-size:13px;color:#A99E86">buscar polvos, jarabes, botes…</span></div>
+        <span style="font-size:15px;color:#6E6657">Mayoreo</span>
+        <div onClick="{{ goCart }}" style="display:flex;align-items:center;gap:8px;background:#1b1814;color:#fff;border-radius:999px;padding:9px 16px;font-size:14px;font-weight:600;cursor:pointer">Carrito<span style="background:#FF5A3C;font-family:'Space Mono',monospace;font-size:11px;border-radius:999px;padding:1px 7px">{{ cartCount }}</span></div>
+      </div>
+    </div>
+
+    <div style="background:#1b1814;color:#F4EFE4;padding:40px 24px">
+      <div style="max-width:1180px;margin:0 auto">
+        <div style="font-family:'Space Mono',monospace;font-size:12px;color:#9d9686">Inicio / Polvos para frappé</div>
+        <h1 style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:52px;letter-spacing:-.03em;margin:10px 0 0">Polvos para frappé</h1>
+        <p style="font-size:16px;color:#CDC5B4;margin:10px 0 0">22 sabores · rendidores, disuelven sin grumos, color de menú premium.</p>
+      </div>
+    </div>
+
+    <div style="max-width:1180px;margin:0 auto;padding:22px 24px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span style="background:#FF5A3C;color:#fff;border-radius:999px;padding:8px 16px;font-size:14px;font-weight:600;cursor:pointer">Todos</span>
+      <span style="background:#FCFAF3;border:1px solid #E4DCCB;border-radius:999px;padding:8px 16px;font-size:14px;cursor:pointer" style-hover="background:#fff;border:1px solid #1b1814;border-radius:999px;padding:8px 16px;font-size:14px;cursor:pointer">Frutales</span>
+      <span style="background:#FCFAF3;border:1px solid #E4DCCB;border-radius:999px;padding:8px 16px;font-size:14px;cursor:pointer" style-hover="background:#fff;border:1px solid #1b1814;border-radius:999px;padding:8px 16px;font-size:14px;cursor:pointer">Cremosos</span>
+      <span style="background:#FCFAF3;border:1px solid #E4DCCB;border-radius:999px;padding:8px 16px;font-size:14px;cursor:pointer" style-hover="background:#fff;border:1px solid #1b1814;border-radius:999px;padding:8px 16px;font-size:14px;cursor:pointer">Té</span>
+      <span style="background:#FCFAF3;border:1px solid #E4DCCB;border-radius:999px;padding:8px 16px;font-size:14px;cursor:pointer" style-hover="background:#fff;border:1px solid #1b1814;border-radius:999px;padding:8px 16px;font-size:14px;cursor:pointer">Café</span>
+      <div style="flex:1"></div>
+      <span style="font-family:'Space Mono',monospace;font-size:13px;color:#6E6657;border:1px solid #E4DCCB;border-radius:9px;padding:8px 14px;cursor:pointer">Ordenar: Populares ▾</span>
+    </div>
+
+    <div style="max-width:1180px;margin:0 auto;padding:22px 24px 64px">
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px">
+        <sc-for list="{{ catalogItems }}" as="p" hint-placeholder-count="9">
+          <div onClick="{{ goProduct }}" style="border:1px solid #E4DCCB;border-radius:16px;overflow:hidden;background:#FCFAF3;cursor:pointer" style-hover="border:1px solid #1b1814;border-radius:16px;overflow:hidden;background:#FCFAF3;cursor:pointer;transform:translateY(-3px)">
+            <div style="height:150px;background:repeating-linear-gradient(135deg,#ECE4D5 0,#ECE4D5 11px,#F5F0E5 11px,#F5F0E5 22px);position:relative">
+              <sc-if value="{{ p.badge }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;left:10px;top:10px;background:#1b1814;color:#fff;font-family:'Space Mono',monospace;font-size:10px;text-transform:uppercase;letter-spacing:.06em;padding:4px 9px;border-radius:6px">{{ p.badge }}</span></sc-if>
+            </div>
+            <div style="padding:14px 15px">
+              <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:16px;line-height:1.15">{{ p.name }}</div>
+              <div style="font-family:'Space Mono',monospace;font-size:11px;color:#8C8473;margin-top:4px">{{ p.tag }}</div>
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-top:12px">
+                <span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:18px">{{ p.price }}</span>
+                <span onClick="{{ addToCart }}" style="width:36px;height:36px;border-radius:10px;background:#FF5A3C;color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer" style-hover="width:36px;height:36px;border-radius:10px;background:#ff6e54;color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;cursor:pointer">+</span>
+              </div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+      <div style="display:flex;justify-content:center;gap:8px;margin-top:34px">
+        <span style="width:38px;height:38px;border-radius:10px;background:#FF5A3C;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:600">1</span>
+        <span style="width:38px;height:38px;border-radius:10px;border:1px solid #E4DCCB;display:flex;align-items:center;justify-content:center;cursor:pointer">2</span>
+        <span style="width:38px;height:38px;border-radius:10px;border:1px solid #E4DCCB;display:flex;align-items:center;justify-content:center;cursor:pointer">3</span>
+        <span style="width:38px;height:38px;border-radius:10px;border:1px solid #E4DCCB;display:flex;align-items:center;justify-content:center;cursor:pointer">→</span>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ============================== PRODUCTO ============================== -->
+  <sc-if value="{{ isProd }}" hint-placeholder-val="{{ false }}">
+  <div data-screen-label="Producto">
+    <div style="position:sticky;top:0;z-index:5;background:rgba(244,239,228,.92);backdrop-filter:blur(8px);border-bottom:1px solid #E4DCCB">
+      <div style="max-width:1180px;margin:0 auto;display:flex;align-items:center;gap:22px;padding:16px 24px">
+        <div onClick="{{ goHome }}" style="display:flex;flex-direction:column;line-height:1;cursor:pointer"><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:22px;letter-spacing:-.02em">MANDO</span><span style="font-family:'Space Mono',monospace;font-size:8px;letter-spacing:.42em;color:#FF5A3C;margin-top:2px">OFICIAL</span></div>
+        <div style="flex:1;display:flex;gap:24px;justify-content:center;font-size:15px;color:#6E6657"><span onClick="{{ goCatalog }}" style="cursor:pointer">Tienda</span><span>Sabores</span><span>Mayoreo</span></div>
+        <div onClick="{{ goCart }}" style="display:flex;align-items:center;gap:8px;background:#1b1814;color:#fff;border-radius:999px;padding:9px 16px;font-size:14px;font-weight:600;cursor:pointer">Carrito<span style="background:#FF5A3C;font-family:'Space Mono',monospace;font-size:11px;border-radius:999px;padding:1px 7px">{{ cartCount }}</span></div>
+      </div>
+    </div>
+
+    <div style="max-width:1180px;margin:0 auto;padding:18px 24px 0;font-family:'Space Mono',monospace;font-size:12px;color:#8C8473"><span onClick="{{ goCatalog }}" style="cursor:pointer">Inicio / Polvos</span> / Polvo Taro 1 kg</div>
+
+    <div style="max-width:1180px;margin:0 auto;padding:18px 24px 0;display:grid;grid-template-columns:1fr 1fr;gap:40px">
+      <!-- gallery -->
+      <div>
+        <div style="height:420px;border-radius:20px;background:repeating-linear-gradient(135deg,#ECE4D5 0,#ECE4D5 13px,#F5F0E5 13px,#F5F0E5 26px);display:flex;align-items:flex-end;justify-content:center;padding-bottom:18px;position:relative">
+          <span style="position:absolute;left:16px;top:16px;background:#FF5A3C;color:#fff;font-family:'Space Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding:5px 11px;border-radius:7px">★ best seller</span>
+          <span style="font-family:'Space Mono',monospace;font-size:11px;color:#A99E86;text-transform:uppercase;letter-spacing:.08em">imagen principal</span>
+        </div>
+        <div style="display:flex;gap:12px;margin-top:12px">
+          <div style="width:84px;height:84px;border-radius:12px;border:2px solid #1b1814;background:repeating-linear-gradient(135deg,#ECE4D5 0,#ECE4D5 9px,#F5F0E5 9px,#F5F0E5 18px)"></div>
+          <div style="width:84px;height:84px;border-radius:12px;border:1px solid #E4DCCB;background:repeating-linear-gradient(135deg,#ECE4D5 0,#ECE4D5 9px,#F5F0E5 9px,#F5F0E5 18px)"></div>
+          <div style="width:84px;height:84px;border-radius:12px;border:1px solid #E4DCCB;background:repeating-linear-gradient(135deg,#ECE4D5 0,#ECE4D5 9px,#F5F0E5 9px,#F5F0E5 18px)"></div>
+        </div>
+      </div>
+      <!-- info -->
+      <div>
+        <h1 style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:46px;letter-spacing:-.03em;margin:0 0 6px">Polvo Taro 1 kg</h1>
+        <div style="font-family:'Space Mono',monospace;font-size:13px;color:#8C8473">★★★★☆ · 38 reseñas · cremoso · frutal</div>
+        <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:34px;margin:18px 0">{{ priceFor }}</div>
+
+        <div style="font-family:'Space Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#8C8473;margin-bottom:9px">Tamaño · {{ sizeLabel }}</div>
+        <div style="display:flex;gap:10px;margin-bottom:22px">
+          <span onClick="{{ onSize1 }}" style="{{ size1 }}">1 kg</span>
+          <span onClick="{{ onSize3 }}" style="{{ size3 }}">3 kg</span>
+          <span onClick="{{ onSize10 }}" style="{{ size10 }}">10 kg · mayoreo</span>
+        </div>
+
+        <div style="display:flex;gap:12px;align-items:stretch;margin-bottom:20px">
+          <div style="display:flex;align-items:center;border:1.5px solid #1b1814;border-radius:12px;overflow:hidden">
+            <span onClick="{{ dec }}" style="padding:13px 18px;cursor:pointer;font-size:18px">−</span>
+            <span style="padding:13px 16px;border-left:1.5px solid #1b1814;border-right:1.5px solid #1b1814;font-weight:600;min-width:48px;text-align:center">{{ qty }}</span>
+            <span onClick="{{ inc }}" style="padding:13px 18px;cursor:pointer;font-size:18px">+</span>
+          </div>
+          <div onClick="{{ goCart }}" style="flex:1;background:#FF5A3C;color:#fff;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:600;cursor:pointer" style-hover="flex:1;background:#ff6e54;color:#fff;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:600;cursor:pointer">Agregar al carrito</div>
+        </div>
+
+        <div style="border-top:1px solid #E4DCCB;padding-top:18px;font-size:16px;line-height:1.6;color:#4f4a40">Polvo concentrado para frappé. Rinde ~40 bebidas por kilo, disuelve fácil en frío y da un color intenso que se ve increíble en la barra.</div>
+        <div style="display:flex;gap:10px;margin-top:18px;flex-wrap:wrap">
+          <span style="display:flex;align-items:center;gap:7px;background:#FCFAF3;border:1px solid #E4DCCB;border-radius:10px;padding:9px 13px;font-size:13px">🚚 Envío 24 h</span>
+          <span style="display:flex;align-items:center;gap:7px;background:#FCFAF3;border:1px solid #E4DCCB;border-radius:10px;padding:9px 13px;font-size:13px">📦 Precio de mayoreo</span>
+          <span style="display:flex;align-items:center;gap:7px;background:#FCFAF3;border:1px solid #E4DCCB;border-radius:10px;padding:9px 13px;font-size:13px">↩ Devolución 30 días</span>
+        </div>
+      </div>
+    </div>
+
+    <div style="max-width:1180px;margin:0 auto;padding:48px 24px 64px">
+      <h3 style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:30px;letter-spacing:-.02em;margin:0 0 18px">Combínalo con…</h3>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:16px">
+        <sc-for list="{{ related }}" as="p" hint-placeholder-count="4">
+          <div style="border:1px solid #E4DCCB;border-radius:16px;overflow:hidden;background:#FCFAF3;cursor:pointer" style-hover="border:1px solid #1b1814;border-radius:16px;overflow:hidden;background:#FCFAF3;cursor:pointer;transform:translateY(-3px)">
+            <div style="height:130px;background:repeating-linear-gradient(135deg,#ECE4D5 0,#ECE4D5 11px,#F5F0E5 11px,#F5F0E5 22px)"></div>
+            <div style="padding:13px 14px"><div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:15px">{{ p.name }}</div><div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span style="font-family:'Space Mono',monospace;font-size:13px;color:#6E6657">{{ p.price }}</span><span style="width:30px;height:30px;border-radius:9px;border:1px solid #1b1814;display:flex;align-items:center;justify-content:center;font-size:17px">+</span></div></div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ============================== CARRITO ============================== -->
+  <sc-if value="{{ isCart }}" hint-placeholder-val="{{ false }}">
+  <div data-screen-label="Carrito">
+    <div style="position:sticky;top:0;z-index:5;background:rgba(244,239,228,.92);backdrop-filter:blur(8px);border-bottom:1px solid #E4DCCB">
+      <div style="max-width:1180px;margin:0 auto;display:flex;align-items:center;gap:22px;padding:16px 24px">
+        <div onClick="{{ goHome }}" style="display:flex;flex-direction:column;line-height:1;cursor:pointer"><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:22px;letter-spacing:-.02em">MANDO</span><span style="font-family:'Space Mono',monospace;font-size:8px;letter-spacing:.42em;color:#FF5A3C;margin-top:2px">OFICIAL</span></div>
+        <div style="flex:1"></div>
+        <div onClick="{{ goCatalog }}" style="font-size:15px;color:#6E6657;cursor:pointer">← Seguir comprando</div>
+      </div>
+    </div>
+
+    <div style="max-width:1180px;margin:0 auto;padding:34px 24px 64px">
+      <h1 style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:44px;letter-spacing:-.03em;margin:0 0 24px">Tu carrito <span style="color:#8C8473;font-weight:600;font-size:24px">· {{ cartCount }} productos</span></h1>
+      <div style="display:grid;grid-template-columns:1.55fr 1fr;gap:28px;align-items:start">
+        <!-- line items -->
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <sc-for list="{{ cartItems }}" as="it" hint-placeholder-count="3">
+            <div style="border:1px solid #E4DCCB;border-radius:16px;padding:16px;display:flex;gap:16px;align-items:center;background:#FCFAF3">
+              <div style="width:84px;height:84px;border-radius:12px;background:repeating-linear-gradient(135deg,#ECE4D5 0,#ECE4D5 9px,#F5F0E5 9px,#F5F0E5 18px);flex:none"></div>
+              <div style="flex:1">
+                <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:18px">{{ it.name }}</div>
+                <div style="font-family:'Space Mono',monospace;font-size:12px;color:#8C8473;margin-top:3px">{{ it.opt }}</div>
+              </div>
+              <div style="display:flex;align-items:center;border:1.5px solid #1b1814;border-radius:10px;overflow:hidden">
+                <span style="padding:8px 13px;cursor:pointer">−</span>
+                <span style="padding:8px 13px;border-left:1.5px solid #1b1814;border-right:1.5px solid #1b1814;font-weight:600">{{ it.qty }}</span>
+                <span style="padding:8px 13px;cursor:pointer">+</span>
+              </div>
+              <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:18px;width:84px;text-align:right">{{ it.price }}</div>
+            </div>
+          </sc-for>
+          <div style="font-family:'Space Mono',monospace;font-size:12px;color:#138A74;padding:4px 4px 0">✦ Te faltan $850 para envío gratis en mayoreo</div>
+        </div>
+        <!-- summary -->
+        <div style="border:2px solid #1b1814;border-radius:18px;padding:24px;background:#FCFAF3;position:sticky;top:90px">
+          <div style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:24px;letter-spacing:-.02em;margin-bottom:18px">Resumen</div>
+          <div style="display:flex;justify-content:space-between;font-size:16px;margin-bottom:10px"><span style="color:#6E6657">Subtotal</span><span style="font-family:'Space Mono',monospace">$650.00</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:16px;margin-bottom:10px"><span style="color:#6E6657">Envío</span><span style="font-family:'Space Mono',monospace;color:#138A74">Gratis</span></div>
+          <div style="display:flex;gap:8px;margin:16px 0">
+            <div style="flex:1;background:#fff;border:1px solid #E4DCCB;border-radius:10px;padding:11px 13px;font-family:'Space Mono',monospace;font-size:13px;color:#A99E86">Código de cupón</div>
+            <div style="background:#1b1814;color:#fff;border-radius:10px;padding:11px 16px;font-size:14px;font-weight:600;cursor:pointer">Aplicar</div>
+          </div>
+          <div style="border-top:1px solid #E4DCCB;padding-top:14px;display:flex;justify-content:space-between;align-items:baseline;margin-bottom:18px"><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:700;font-size:22px">Total</span><span style="font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:26px">$650.00</span></div>
+          <div style="background:#FF5A3C;color:#fff;border-radius:12px;padding:15px;text-align:center;font-size:17px;font-weight:600;cursor:pointer" style-hover="background:#ff6e54;color:#fff;border-radius:12px;padding:15px;text-align:center;font-size:17px;font-weight:600;cursor:pointer">Ir a pagar →</div>
+          <div style="text-align:center;font-family:'Space Mono',monospace;font-size:11px;color:#8C8473;margin-top:12px">Pago seguro · factura disponible</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <!-- ============================== SCREEN SWITCHER ============================== -->
+  <div style="position:fixed;left:50%;bottom:18px;transform:translateX(-50%);z-index:40;display:flex;align-items:center;gap:4px;background:#1b1814;border-radius:999px;padding:5px;box-shadow:0 12px 30px rgba(0,0,0,.3)">
+    <span style="font-family:'Space Mono',monospace;font-size:10px;color:#7d7567;text-transform:uppercase;letter-spacing:.1em;padding:0 8px 0 10px">Vista</span>
+    <button onClick="{{ goHome }}" style="{{ swHome }}">Home</button>
+    <button onClick="{{ goCatalog }}" style="{{ swCat }}">Catálogo</button>
+    <button onClick="{{ goProduct }}" style="{{ swProd }}">Producto</button>
+    <button onClick="{{ goCart }}" style="{{ swCart }}">Carrito</button>
+  </div>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{
+  &quot;$preview&quot;: { &quot;width&quot;: 1240, &quot;height&quot;: 2600 },
+  &quot;ticker&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot; },
+  &quot;floatingBadges&quot;: { &quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: true, &quot;tsType&quot;: &quot;boolean&quot; }
+}">
+class Component extends DCLogic {
+  state = { screen: 'home', size: '1 kg', qty: 2 };
+  go(s) { return () => { this.setState({ screen: s }); if (typeof window !== 'undefined') window.scrollTo({ top: 0 }); }; }
+  setSize(s) { return () => this.setState({ size: s }); }
+  bump(d) { return () => this.setState(st => ({ qty: Math.max(1, st.qty + d) })); }
+  renderVals() {
+    const sc = this.state.screen;
+    const swBase = "font-family:'Space Mono',monospace;font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:8px 14px;border-radius:999px;cursor:pointer;border:none;background:transparent;color:#cfc7b6;";
+    const swAct = "font-family:'Space Mono',monospace;font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:8px 14px;border-radius:999px;cursor:pointer;border:none;background:#FF5A3C;color:#fff;";
+    const sw = k => (sc === k ? swAct : swBase);
+
+    const szBase = "border:1.5px solid #E4DCCB;border-radius:11px;padding:11px 18px;font-size:15px;cursor:pointer;background:#FCFAF3;color:#1b1814;";
+    const szAct = "border:1.5px solid #1b1814;border-radius:11px;padding:11px 18px;font-size:15px;cursor:pointer;background:#1b1814;color:#fff;";
+    const sz = k => (this.state.size === k ? szAct : szBase);
+    const prices = { '1 kg': '$189.00', '3 kg': '$525.00', '10 kg': '$1,590.00' };
+
+    return {
+      isHome: sc === 'home', isCat: sc === 'catalog', isProd: sc === 'product', isCart: sc === 'cart',
+      goHome: this.go('home'), goCatalog: this.go('catalog'), goProduct: this.go('product'), goCart: this.go('cart'),
+      addToCart: this.go('cart'),
+      swHome: sw('home'), swCat: sw('catalog'), swProd: sw('product'), swCart: sw('cart'),
+      ticker: this.props.ticker ?? true,
+      floatingBadges: this.props.floatingBadges ?? true,
+      cartCount: 3,
+      qty: this.state.qty, inc: this.bump(1), dec: this.bump(-1),
+      sizeLabel: this.state.size, priceFor: prices[this.state.size],
+      size1: sz('1 kg'), size3: sz('3 kg'), size10: sz('10 kg'),
+      onSize1: this.setSize('1 kg'), onSize3: this.setSize('3 kg'), onSize10: this.setSize('10 kg'),
+      bestSellers: [
+        { name: 'Polvo Taro 1 kg', tag: 'cremoso · frutal', price: '$189' },
+        { name: 'Jarabe Caramelo 1 L', tag: 'clásico dulce', price: '$129' },
+        { name: 'Popotes tapioca x50', tag: 'biodegradable', price: '$95' },
+        { name: 'Bote PET 2 L', tag: 'con tapa hermética', price: '$59' },
+      ],
+      catalogItems: [
+        { name: 'Polvo Taro 1 kg', tag: 'cremoso · frutal', price: '$189', badge: 'Best seller' },
+        { name: 'Polvo Matcha 1 kg', tag: 'té · cremoso', price: '$245', badge: '' },
+        { name: 'Polvo Mango 1 kg', tag: 'frutal', price: '$189', badge: '' },
+        { name: 'Polvo Chai 1 kg', tag: 'té · especiado', price: '$199', badge: 'Nuevo' },
+        { name: 'Polvo Fresa 1 kg', tag: 'frutal', price: '$179', badge: '' },
+        { name: 'Cookies & cream 1 kg', tag: 'cremoso', price: '$209', badge: '' },
+        { name: 'Polvo Vainilla 1 kg', tag: 'cremoso', price: '$169', badge: '' },
+        { name: 'Polvo Café 1 kg', tag: 'café', price: '$219', badge: '' },
+        { name: 'Polvo Coco 1 kg', tag: 'cremoso · tropical', price: '$185', badge: '' },
+      ],
+      related: [
+        { name: 'Popotes tapioca x50', price: '$95' },
+        { name: 'Perlas de tapioca 1 kg', price: '$110' },
+        { name: 'Bote PET 2 L', price: '$59' },
+        { name: 'Jarabe Caramelo 1 L', price: '$129' },
+      ],
+      cartItems: [
+        { name: 'Polvo Taro 1 kg', opt: 'Tamaño · 1 kg', qty: 2, price: '$378' },
+        { name: 'Popotes tapioca x50', opt: 'Color · Negro', qty: 1, price: '$95' },
+        { name: 'Bote PET 2 L', opt: 'Con tapa', qty: 3, price: '$177' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>
