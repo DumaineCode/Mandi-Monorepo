@@ -1,0 +1,11 @@
+/*
+ * Hide Medusa's default branding on the login screen only.
+ * The login container uses `min-h-dvh w-dvw`; inside it, the first two
+ * children of the `max-w-[280px]` column are the Medusa logo (AvatarBox)
+ * and the "Welcome to Medusa" title/hint block. Our login.before widget
+ * renders below them and provides the Mandi branding instead.
+ */
+.min-h-dvh.w-dvw .max-w-\[280px\] > *:nth-child(1),
+.min-h-dvh.w-dvw .max-w-\[280px\] > *:nth-child(2) {
+  display: none !important;
+}
