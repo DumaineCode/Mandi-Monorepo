@@ -1,0 +1,32 @@
+# Build context is the repo root, so this ignore list keeps the context small
+# and prevents stale/host-specific artifacts from leaking into the image.
+
+# Dependencies (reinstalled fresh inside the image)
+node_modules
+**/node_modules
+
+# Medusa build output (regenerated inside the builder stage)
+**/.medusa
+
+# Framework / build artifacts
+**/.next
+**/out
+**/dist
+**/build
+**/.turbo
+**/coverage
+
+# Secrets & local env (injected by Dokploy at runtime instead)
+**/.env
+**/.env.*
+*.pem
+
+# Git & tooling
+.git
+.gitignore
+**/.DS_Store
+
+# Editor / OS noise
+.idea
+.vscode
+*.log
