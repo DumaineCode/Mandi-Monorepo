@@ -219,17 +219,41 @@ describe("OpenpayPaymentProviderService.getWebhookActionAndData", () => {
       expect(result.action).toBe("failed")
     })
 
-    it("returns not_supported without capturing when the re-fetch fails", async () => {
+    it("THROWS when the re-fetch fails transiently so Medusa responds 5xx and Openpay redelivers", async () => {
+      // Persistent 5xx — exhausts the client's single bounded retry too.
+      fetchMock.mockResolvedValue(
+        jsonResponse({ error_code: 1001, description: "upstream down" }, 500)
+      )
+      const service = makeService()
+
+      await expect(
+        service.getWebhookActionAndData(makePayload(succeededBody(), VALID_AUTH))
+      ).rejects.toThrow()
+    })
+
+    it("THROWS on a non-transient re-fetch failure as well (redelivery over silent ack)", async () => {
       fetchMock.mockResolvedValueOnce(
         jsonResponse({ error_code: 1001, description: "not found" }, 404)
       )
       const service = makeService()
 
+      await expect(
+        service.getWebhookActionAndData(makePayload(succeededBody(), VALID_AUTH))
+      ).rejects.toThrow()
+    })
+
+    it("still acks bad auth quietly — auth failures NEVER throw", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({ error_code: 1001, description: "upstream down" }, 500)
+      )
+      const service = makeService()
+
       const result = await service.getWebhookActionAndData(
-        makePayload(succeededBody(), VALID_AUTH)
+        makePayload(succeededBody(), "Basic bogus")
       )
 
       expect(result).toEqual({ action: "not_supported" })
+      expect(fetchMock).not.toHaveBeenCalled()
     })
 
     it("returns not_supported when the event carries no transaction id", async () => {
@@ -348,6 +372,38 @@ describe("OpenpayPaymentProviderService.getWebhookActionAndData", () => {
         })
       }
     )
+
+    it("late charge.failed for a charge already completed → captured (out-of-order redelivery)", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse(fetchedCharge({ status: "completed" }))
+      )
+      const service = makeService()
+
+      const result = await service.getWebhookActionAndData(
+        makePayload({ ...succeededBody(), type: "charge.failed" }, VALID_AUTH)
+      )
+
+      expect(result).toEqual({
+        action: "captured",
+        data: { session_id: SESSION_ID, amount: 150.5 },
+      })
+    })
+
+    it("chargeback.created still maps to failed even when the charge shows completed", async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse(fetchedCharge({ status: "completed" }))
+      )
+      const service = makeService()
+
+      const result = await service.getWebhookActionAndData(
+        makePayload({ ...succeededBody(), type: "chargeback.created" }, VALID_AUTH)
+      )
+
+      expect(result).toEqual({
+        action: "failed",
+        data: { session_id: SESSION_ID, amount: 150.5 },
+      })
+    })
 
     it.each(["chargeback.created", "chargeback.accepted"])(
       "%s → failed",

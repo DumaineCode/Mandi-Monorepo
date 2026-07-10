@@ -67,8 +67,13 @@ const NOT_SUPPORTED = { action: "not_supported" as const }
 /**
  * Correlation by PREFIX (fix 4): charges carry `{session_id}-{n}` in order_id,
  * so the trailing attempt-nonce is stripped to recover the session id.
+ *
+ * INVARIANT: session ids must never end in `-digits` or the prefix strip would
+ * mangle them (documented by the format-invariant unit test).
  */
-const sessionIdFromOrderId = (orderId: string | undefined): string | null => {
+export const sessionIdFromOrderId = (
+  orderId: string | undefined
+): string | null => {
   if (!orderId) {
     return null
   }
@@ -97,7 +102,24 @@ type SessionData = {
   charge_id?: string
   charge_status?: string
   redirect_url?: string
+  /** Charge-creation attempt counter persisted in session data (multi-instance safe). */
+  attempt?: number
   [key: string]: unknown
+}
+
+/**
+ * Keys only the provider itself may set. Client-supplied values for these are
+ * stripped in initiate/update so a foreign charge_id can never be replayed
+ * into a session (charge replay guard).
+ */
+const stripProviderOwnedFields = (data: SessionData): SessionData => {
+  const {
+    charge_id: _chargeId,
+    charge_status: _chargeStatus,
+    redirect_url: _redirectUrl,
+    ...rest
+  } = data
+  return rest
 }
 
 const toAmountNumber = (amount: BigNumberInput | undefined): number => {
@@ -148,17 +170,6 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
   protected readonly options_: OpenpayOptions
   protected readonly client_: OpenpayClient
   private readonly logger_?: WebhookLogger
-  /**
-   * In-memory attempt counters keyed by session id (fix 4). Openpay rejects
-   * duplicate order_id values, so each charge attempt for the same session
-   * gets an incremented `{session_id}-{n}` nonce.
-   *
-   * TODO(sandbox-verify): S2.0c may replace this with a persisted or
-   * provider-side attempt lookup once sandbox credentials are available;
-   * worst case after a process restart is a duplicate-order_id rejection
-   * that the customer retries.
-   */
-  private readonly attemptCounters_ = new Map<string, number>()
 
   constructor(
     cradle: Record<string, unknown>,
@@ -187,7 +198,7 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
     return {
       id: sessionId,
       data: {
-        ...data,
+        ...stripProviderOwnedFields(data),
         session_id: sessionId,
         amount: toAmountNumber(input.amount),
         currency_code: input.currency_code,
@@ -201,7 +212,7 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
 
     return {
       data: {
-        ...data,
+        ...stripProviderOwnedFields(data),
         amount: toAmountNumber(input.amount),
         currency_code: input.currency_code,
       },
@@ -228,6 +239,14 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
     // (OP-4 resume after 3DS redirect).
     if (data.charge_id) {
       const charge = await this.client_.getCharge(data.charge_id)
+      // Charge replay guard: the fetched charge MUST correlate back to this
+      // session via its order_id prefix — a foreign charge id is rejected.
+      if (sessionIdFromOrderId(charge.order_id) !== sessionId) {
+        throw new MedusaError(
+          MedusaError.Types.PAYMENT_AUTHORIZATION_ERROR,
+          `Openpay charge ${charge.id} does not belong to session ${sessionId} — refusing to authorize a replayed charge.`
+        )
+      }
       this.assertAmountMatches(charge, amount)
       return this.mapChargeToAuthorizeOutput(charge, data)
     }
@@ -239,8 +258,10 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
       )
     }
 
-    const attempt = (this.attemptCounters_.get(sessionId) ?? 0) + 1
-    this.attemptCounters_.set(sessionId, attempt)
+    // Attempt counter persisted in session data (multi-instance safe): Openpay
+    // rejects duplicate order_id values, so each new charge gets an
+    // incremented `{session_id}-{n}` nonce that survives across instances.
+    const attempt = (typeof data.attempt === "number" ? data.attempt : 0) + 1
 
     const customer = input.context?.customer
     let charge: OpenpayCharge
@@ -270,10 +291,7 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
       throw this.translateApiError(error)
     }
 
-    if (charge.status === "completed") {
-      this.attemptCounters_.delete(sessionId)
-    }
-    return this.mapChargeToAuthorizeOutput(charge, data)
+    return this.mapChargeToAuthorizeOutput(charge, { ...data, attempt })
   }
 
   /** Charges are capture-at-creation; keep Medusa's capture workflow happy. */
@@ -347,6 +365,12 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
    * charge cancel is admin-driven via refund, so it is logged and left as-is.
    */
   async cancelPayment(input: CancelPaymentInput): Promise<CancelPaymentOutput> {
+    const data = (input.data ?? {}) as SessionData
+    if (data.charge_id && data.charge_status === "completed") {
+      this.logger_?.info(
+        `Openpay cancelPayment is a no-op for completed charge ${data.charge_id} — issue a refund from Medusa Admin instead.`
+      )
+    }
     return { data: input.data }
   }
 
@@ -399,15 +423,17 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
       return NOT_SUPPORTED
     }
 
-    // Server-side re-fetch — payload status/amounts are never trusted.
+    // Server-side re-fetch — payload status/amounts are never trusted. A
+    // failed re-fetch THROWS so Medusa responds 5xx and Openpay redelivers
+    // (auth failures above still ack quietly — never throw on bad auth).
     let charge: OpenpayCharge
     try {
       charge = await this.client_.getCharge(transactionId)
-    } catch {
+    } catch (error) {
       this.logger_?.warn(
-        `Openpay webhook event ${event.type}: charge ${transactionId} could not be re-fetched — acknowledged without action.`
+        `Openpay webhook event ${event.type}: charge ${transactionId} could not be re-fetched — failing the delivery so Openpay retries.`
       )
-      return NOT_SUPPORTED
+      throw this.translateApiError(error, MedusaError.Types.UNEXPECTED_STATE)
     }
 
     const sessionId = sessionIdFromOrderId(charge.order_id)
@@ -429,6 +455,17 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
         return { action: "failed", data }
       }
       return NOT_SUPPORTED
+    }
+
+    // Out-of-order redelivery guard: a late charge.* failure event for a
+    // charge that actually completed maps to captured (idempotent). Chargeback
+    // events keep mapping to failed regardless — the money is disputed.
+    const isChargeback = (event.type ?? "").startsWith("chargeback.")
+    if (!isChargeback && charge.status === "completed") {
+      this.logger_?.info(
+        `Openpay webhook event ${event.type}: charge ${transactionId} is completed — mapping late failure event to captured.`
+      )
+      return { action: "captured", data }
     }
 
     return { action: "failed", data }
@@ -463,7 +500,11 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
   }
 
   private assertAmountMatches(charge: OpenpayCharge, sessionAmount: number) {
-    if (Number(charge.amount) !== sessionAmount) {
+    // Centavo-integer comparison — float noise in either side must not reject
+    // a legitimate charge, and a real centavo-level mismatch must still fail.
+    const chargeCentavos = Math.round(Number(charge.amount) * 100)
+    const sessionCentavos = Math.round(sessionAmount * 100)
+    if (chargeCentavos !== sessionCentavos) {
       throw new MedusaError(
         MedusaError.Types.UNEXPECTED_STATE,
         `Openpay charge amount mismatch: session expects ${sessionAmount}, charge ${charge.id} reports ${charge.amount}.`

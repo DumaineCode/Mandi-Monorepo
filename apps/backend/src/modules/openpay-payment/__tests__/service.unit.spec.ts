@@ -17,7 +17,7 @@
  */
 import { MedusaError } from "@medusajs/framework/utils"
 import { OPENPAY_IDENTIFIER } from "../../../lib/constants"
-import OpenpayPaymentProviderService from "../service"
+import OpenpayPaymentProviderService, { sessionIdFromOrderId } from "../service"
 
 const MERCHANT_ID = "m_test_123"
 const PRIVATE_KEY = "sk_test_private"
@@ -112,6 +112,25 @@ describe("OpenpayPaymentProviderService", () => {
       expect(fetchMock).not.toHaveBeenCalled()
     })
 
+    it("strips provider-owned keys injected by the client (charge replay guard)", async () => {
+      const service = makeService()
+
+      const result = await service.initiatePayment({
+        amount: 150.5,
+        currency_code: "mxn",
+        data: {
+          ...baseSessionData,
+          charge_id: "ch_foreign",
+          charge_status: "completed",
+          redirect_url: "https://evil.example/3ds",
+        },
+      })
+
+      expect(result.data).not.toHaveProperty("charge_id")
+      expect(result.data).not.toHaveProperty("charge_status")
+      expect(result.data).not.toHaveProperty("redirect_url")
+    })
+
     it("rejects raw card fields with INVALID_DATA and never calls the API (OP-2)", async () => {
       const service = makeService()
 
@@ -129,6 +148,28 @@ describe("OpenpayPaymentProviderService", () => {
         constructor: MedusaError,
         type: MedusaError.Types.INVALID_DATA,
       })
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("updatePayment", () => {
+    it("strips provider-owned keys injected by the client (charge replay guard)", async () => {
+      const service = makeService()
+
+      const result = await service.updatePayment({
+        amount: 150.5,
+        currency_code: "mxn",
+        data: {
+          ...baseSessionData,
+          charge_id: "ch_foreign",
+          charge_status: "completed",
+          redirect_url: "https://evil.example/3ds",
+        },
+      })
+
+      expect(result.data).not.toHaveProperty("charge_id")
+      expect(result.data).not.toHaveProperty("charge_status")
+      expect(result.data).not.toHaveProperty("redirect_url")
       expect(fetchMock).not.toHaveBeenCalled()
     })
   })
@@ -220,35 +261,49 @@ describe("OpenpayPaymentProviderService", () => {
       })
     })
 
-    it("increments the order_id attempt nonce on retry-after-decline (fix 4)", async () => {
-      fetchMock.mockResolvedValueOnce(
-        jsonResponse(
-          { error_code: 3001, description: "The card was declined" },
-          402
-        )
-      )
-      fetchMock.mockResolvedValueOnce(
+    it("persists the attempt counter in session data and builds the order_id nonce from it (multi-instance safe)", async () => {
+      fetchMock.mockResolvedValue(
         jsonResponse({
           id: "ch_retry",
           status: "completed",
           amount: 150.5,
           currency: "MXN",
+          order_id: `${SESSION_ID}-2`,
         })
       )
       const service = makeService()
 
-      await expect(
-        service.authorizePayment({ data: { ...baseSessionData } })
-      ).rejects.toThrow(MedusaError)
-      const retry = await service.authorizePayment({
+      // A prior attempt was persisted in session data by an earlier authorize
+      // (possibly on ANOTHER instance) — the nonce must continue from it.
+      const result = await service.authorizePayment({
+        data: { ...baseSessionData, attempt: 1 },
+      })
+
+      expect(result.status).toBe("captured")
+      expect(result.data).toMatchObject({ attempt: 2 })
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+      expect(body.order_id).toBe(`${SESSION_ID}-2`)
+    })
+
+    it("starts the persisted attempt counter at 1 for a fresh session", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          id: "ch_100",
+          status: "completed",
+          amount: 150.5,
+          currency: "MXN",
+          order_id: `${SESSION_ID}-1`,
+        })
+      )
+      const service = makeService()
+
+      const result = await service.authorizePayment({
         data: { ...baseSessionData },
       })
 
-      expect(retry.status).toBe("captured")
-      const firstBody = JSON.parse(fetchMock.mock.calls[0][1].body as string)
-      const secondBody = JSON.parse(fetchMock.mock.calls[1][1].body as string)
-      expect(firstBody.order_id).toBe(`${SESSION_ID}-1`)
-      expect(secondBody.order_id).toBe(`${SESSION_ID}-2`)
+      expect(result.data).toMatchObject({ attempt: 1 })
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+      expect(body.order_id).toBe(`${SESSION_ID}-1`)
     })
 
     it("throws PAYMENT_AUTHORIZATION_ERROR without any API call when the token is missing (OP-2)", async () => {
@@ -274,6 +329,7 @@ describe("OpenpayPaymentProviderService", () => {
           status: "completed",
           amount: 150.5,
           currency: "MXN",
+          order_id: `${SESSION_ID}-1`,
         })
       )
       const service = makeService()
@@ -298,6 +354,7 @@ describe("OpenpayPaymentProviderService", () => {
           status: "charge_pending",
           amount: 150.5,
           currency: "MXN",
+          order_id: `${SESSION_ID}-1`,
           payment_method: {
             type: "redirect",
             url: "https://sandbox-api.openpay.mx/3ds/ch_3ds",
@@ -316,6 +373,29 @@ describe("OpenpayPaymentProviderService", () => {
       })
     })
 
+    it("rejects a replayed charge that belongs to ANOTHER session (charge replay guard)", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          id: "ch_foreign",
+          status: "completed",
+          amount: 150.5, // amount matches — the order_id correlation must catch it
+          currency: "MXN",
+          order_id: "payses_01OTHER-1",
+        })
+      )
+      const service = makeService()
+
+      await expect(
+        service.authorizePayment({
+          data: { ...baseSessionData, charge_id: "ch_foreign" },
+        })
+      ).rejects.toMatchObject({
+        constructor: MedusaError,
+        type: MedusaError.Types.PAYMENT_AUTHORIZATION_ERROR,
+        message: expect.stringContaining("does not belong"),
+      })
+    })
+
     it("rejects when the fetched charge amount does not match the session amount (fix 3)", async () => {
       fetchMock.mockResolvedValue(
         jsonResponse({
@@ -323,6 +403,7 @@ describe("OpenpayPaymentProviderService", () => {
           status: "completed",
           amount: 999.99, // tampered / stale — session says 150.5
           currency: "MXN",
+          order_id: `${SESSION_ID}-1`,
         })
       )
       const service = makeService()
@@ -337,6 +418,47 @@ describe("OpenpayPaymentProviderService", () => {
       })
     })
 
+    it("tolerates float noise in the fetched amount via centavo-integer comparison", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          id: "ch_100",
+          status: "completed",
+          amount: 1234.5600000001, // float noise — same centavo value
+          currency: "MXN",
+          order_id: `${SESSION_ID}-1`,
+        })
+      )
+      const service = makeService()
+
+      const result = await service.authorizePayment({
+        data: { ...baseSessionData, amount: 1234.56, charge_id: "ch_100" },
+      })
+
+      expect(result.status).toBe("captured")
+    })
+
+    it("still rejects a real centavo-level amount mismatch", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          id: "ch_100",
+          status: "completed",
+          amount: 1235.56,
+          currency: "MXN",
+          order_id: `${SESSION_ID}-1`,
+        })
+      )
+      const service = makeService()
+
+      await expect(
+        service.authorizePayment({
+          data: { ...baseSessionData, amount: 1234.56, charge_id: "ch_100" },
+        })
+      ).rejects.toMatchObject({
+        constructor: MedusaError,
+        message: expect.stringContaining("mismatch"),
+      })
+    })
+
     it("throws PAYMENT_AUTHORIZATION_ERROR when the fetched charge failed", async () => {
       fetchMock.mockResolvedValue(
         jsonResponse({
@@ -344,6 +466,7 @@ describe("OpenpayPaymentProviderService", () => {
           status: "failed",
           amount: 150.5,
           currency: "MXN",
+          order_id: `${SESSION_ID}-1`,
           error_message: "3DS authentication failed",
         })
       )
@@ -422,6 +545,38 @@ describe("OpenpayPaymentProviderService", () => {
       })
 
       expect(fetchMock).not.toHaveBeenCalled()
+      expect(container.logger.info).not.toHaveBeenCalled()
+    })
+
+    it("logs the no-op when cancelling a completed charge (refund is admin-driven)", async () => {
+      const service = makeService()
+
+      await service.cancelPayment({
+        data: {
+          ...baseSessionData,
+          charge_id: "ch_100",
+          charge_status: "completed",
+        },
+      })
+
+      expect(fetchMock).not.toHaveBeenCalled()
+      const logged = container.logger.info.mock.calls.flat().join(" ")
+      expect(logged).toContain("ch_100")
+    })
+  })
+
+  describe("sessionIdFromOrderId format invariant", () => {
+    it("strips exactly one trailing -{digits} attempt nonce", () => {
+      expect(sessionIdFromOrderId(`${SESSION_ID}-3`)).toBe(SESSION_ID)
+      expect(sessionIdFromOrderId(SESSION_ID)).toBe(SESSION_ID)
+    })
+
+    it("documents that session ids must NEVER end in -digits (would be mangled)", () => {
+      // INVARIANT: Medusa session ids (payses_...) never end in `-digits`.
+      // If one ever did, the prefix correlation would strip part of the id:
+      expect(sessionIdFromOrderId("sess-42")).toBe("sess")
+      // ...so the `{session_id}-{n}` order_id format depends on this guard.
+      expect(SESSION_ID).not.toMatch(/-\d+$/)
     })
   })
 
@@ -438,17 +593,4 @@ describe("OpenpayPaymentProviderService", () => {
     })
   })
 
-  describe("getWebhookActionAndData (S2b stub)", () => {
-    it("returns not_supported until the webhook slice lands", async () => {
-      const service = makeService()
-
-      const result = await service.getWebhookActionAndData({
-        data: {},
-        rawData: "{}",
-        headers: {},
-      } as never)
-
-      expect(result.action).toBe("not_supported")
-    })
-  })
 })
