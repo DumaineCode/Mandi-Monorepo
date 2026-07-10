@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (tests + build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Focused-test guard (no .only / fit / fdescribe)
+        run: |
+          if grep -rnE "\.(only)\(|fit\(|fdescribe\(" apps/backend/src --include="*.spec.ts"; then
+            echo "::error::Focused tests found (.only/fit/fdescribe). Remove them before merging — they silently skip the rest of the suite."
+            exit 1
+          fi
+          echo "No focused tests found."
+
+      - name: Unit tests
+        working-directory: apps/backend
+        run: pnpm test:unit
+
+      - name: Module integration tests
+        working-directory: apps/backend
+        run: pnpm test:integration:modules
+
+      - name: Build
+        working-directory: apps/backend
+        run: pnpm build
+
+  storefront:
+    name: Storefront (compile check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The compile step is the gate. Page-data collection needs a live Medusa
+      # backend, so a post-compile fetch failure is soft-passed with a warning.
+      - name: Build (compile is the gate; page-data may need a live backend)
+        working-directory: apps/storefront
+        run: |
+          set -o pipefail
+          if pnpm build 2>&1 | tee build.log; then
+            exit 0
+          fi
+          if grep -q "Compiled successfully" build.log; then
+            echo "::warning::Next.js compiled successfully but page-data collection failed (needs a live backend) — soft pass."
+            exit 0
+          fi
+          echo "::error::Storefront compile failed."
+          exit 1

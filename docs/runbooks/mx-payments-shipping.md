@@ -167,3 +167,36 @@ Run after completing §1–§3 on a clean environment:
 - [ ] Admin: creating a fulfillment with the Skydropx option purchases a
   label and shows tracking number/URL; quote-vs-label rate delta appears in
   backend logs.
+
+## 7. Monitoring & rollback
+
+### 7.1 Signals to watch (backend logs)
+
+| Signal | Log query / pattern | What it means |
+|---|---|---|
+| Webhook auth rejections | `Openpay webhook` + `401`/`unauthorized` | Basic-auth secret drift or probing; payments may confirm late |
+| Authorize failures | `authorizePaymentSession` / provider `authorize` errors | Cards being declined at charge time or provider outage |
+| 3DS return route errors | `Openpay 3DS return: order completion failed for cart` | Customers bounced back to review after the bank challenge |
+| Skydropx quote failures/timeouts | `Skydropx quotation failed` | Checkout degrading to manual shipping options |
+| Label reconciliation ids | `Skydropx label abandoned` (`shipment_id=` / `label_id=`) | Orphaned labels — verify carrier-side cancellation, reconcile billing |
+
+### 7.2 Suggested thresholds
+
+- **> 1%** of checkout sessions hitting any signal above → investigate
+  (provider status pages, recent deploys, env/secret rotation).
+- **> 2%** → treat as an emergency: consider rolling back the provider
+  (see 7.3) and switching the region to manual payment/shipping options.
+
+### 7.3 Rollback procedure
+
+1. **Disable a provider:** remove its env vars (`OPENPAY_*`,
+   `MERCADOPAGO_*`, or `SKYDROPX_*`) and restart the backend — providers
+   are registered conditionally at boot, so the provider is simply skipped
+   and the rest of checkout keeps working.
+2. **Storefront:** revert the corresponding `paymentInfoMap` entries and
+   predicates in `apps/storefront/src/lib/constants.tsx` if the provider
+   should no longer render as an option.
+3. **Data safety:** existing orders/payments records persist untouched —
+   rollback only prevents NEW sessions from using the provider. Pending
+   captures/refunds for the disabled provider must be finished from the
+   provider's own dashboard.
