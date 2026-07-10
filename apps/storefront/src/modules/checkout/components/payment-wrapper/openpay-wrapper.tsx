@@ -1,7 +1,7 @@
 "use client"
 
 import Script from "next/script"
-import React, { createContext, useCallback, useState } from "react"
+import React, { createContext, useCallback, useEffect, useState } from "react"
 
 /**
  * Card fields collected by OpenpayCardContainer. These values live ONLY in
@@ -61,6 +61,12 @@ declare global {
 export type OpenpayContextValue = {
   /** True once both openpay.js scripts are loaded and the client is initialized. */
   ready: boolean
+  /**
+   * True when Openpay can never become ready in this session (missing
+   * NEXT_PUBLIC_OPENPAY_* config or a CDN script failure). Consumers should
+   * show a "temporarily unavailable" state instead of a loading skeleton.
+   */
+  unavailable: boolean
   /** Antifraud device session id from OpenPay.deviceData.setup(). */
   deviceSessionId: string | null
   /**
@@ -75,6 +81,7 @@ export type OpenpayContextValue = {
 
 export const OpenpayContext = createContext<OpenpayContextValue>({
   ready: false,
+  unavailable: false,
   deviceSessionId: null,
   tokenize: () => Promise.reject(new Error("Openpay is not initialized")),
   cardData: null,
@@ -91,6 +98,7 @@ type OpenpayWrapperProps = {
 const OpenpayWrapper: React.FC<OpenpayWrapperProps> = ({ children }) => {
   const [coreLoaded, setCoreLoaded] = useState(false)
   const [ready, setReady] = useState(false)
+  const [scriptFailed, setScriptFailed] = useState(false)
   const [deviceSessionId, setDeviceSessionId] = useState<string | null>(null)
   const [cardData, setCardData] = useState<OpenpayCardFields | null>(null)
 
@@ -98,16 +106,30 @@ const OpenpayWrapper: React.FC<OpenpayWrapperProps> = ({ children }) => {
   const publicKey = process.env.NEXT_PUBLIC_OPENPAY_PUBLIC_KEY
   const sandbox = process.env.NEXT_PUBLIC_OPENPAY_SANDBOX === "true"
 
-  if (!merchantId || !publicKey) {
-    throw new Error(
-      "Openpay configuration is missing. Set NEXT_PUBLIC_OPENPAY_MERCHANT_ID and NEXT_PUBLIC_OPENPAY_PUBLIC_KEY environment variables."
-    )
-  }
+  // Graceful degradation: missing config must never crash the payment step —
+  // other providers keep working; the Openpay option shows an unavailable state.
+  const configMissing = !merchantId || !publicKey
+  const unavailable = configMissing || scriptFailed
+
+  useEffect(() => {
+    if (configMissing) {
+      console.error(
+        "Openpay configuration is missing. Set NEXT_PUBLIC_OPENPAY_MERCHANT_ID and NEXT_PUBLIC_OPENPAY_PUBLIC_KEY environment variables. Openpay card payments are disabled."
+      )
+    }
+  }, [configMissing])
+
+  const handleScriptError = useCallback((src: string) => {
+    return (error: unknown) => {
+      console.error(`Failed to load Openpay script ${src}`, error)
+      setScriptFailed(true)
+    }
+  }, [])
 
   const handleDataScriptLoaded = useCallback(() => {
     const openpay = window.OpenPay
 
-    if (!openpay) {
+    if (!openpay || !merchantId || !publicKey) {
       return
     }
 
@@ -148,20 +170,24 @@ const OpenpayWrapper: React.FC<OpenpayWrapperProps> = ({ children }) => {
 
   return (
     <OpenpayContext.Provider
-      value={{ ready, deviceSessionId, tokenize, cardData, setCardData }}
+      value={{ ready, unavailable, deviceSessionId, tokenize, cardData, setCardData }}
     >
       {/* Scripts load ONLY while an Openpay session is active on the payment
           step — this wrapper is rendered conditionally by payment-wrapper/index. */}
-      <Script
-        src={OPENPAY_CORE_SRC}
-        strategy="lazyOnload"
-        onLoad={() => setCoreLoaded(true)}
-      />
+      {!configMissing && (
+        <Script
+          src={OPENPAY_CORE_SRC}
+          strategy="lazyOnload"
+          onLoad={() => setCoreLoaded(true)}
+          onError={handleScriptError(OPENPAY_CORE_SRC)}
+        />
+      )}
       {coreLoaded && (
         <Script
           src={OPENPAY_DATA_SRC}
           strategy="lazyOnload"
           onLoad={handleDataScriptLoaded}
+          onError={handleScriptError(OPENPAY_DATA_SRC)}
         />
       )}
       {children}

@@ -51,6 +51,15 @@ export async function GET(
       throw err
     }
 
+    // Observability: log the failure class + cart id before redirecting.
+    // NEVER log card or token data here (PCI boundary).
+    console.error(
+      `Openpay 3DS return: order completion failed for cart ${cartId} — ` +
+        (err instanceof Error
+          ? `${err.constructor.name} (${err.name})`
+          : `non-Error thrown (${typeof err})`)
+    )
+
     // Charge not captured (declined, abandoned, or verification failed) —
     // send the customer back to the review step; the cart is intact and the
     // payment is retryable.

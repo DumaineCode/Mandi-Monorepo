@@ -40,6 +40,7 @@ export const paymentInfoMap: Record<
     title: "Tarjeta de crédito/débito",
     icon: <CreditCard />,
   },
+  // S4 (blocked): unused until Mercado Pago slice lands
   pp_mercadopago_mercadopago: {
     title: "Mercado Pago",
     icon: <CreditCard />,
@@ -65,6 +66,7 @@ export const isOpenpay = (providerId?: string) => {
   return providerId?.startsWith("pp_openpay_")
 }
 
+// S4 (blocked): unused until Mercado Pago slice lands
 export const isMercadopago = (providerId?: string) => {
   return providerId?.startsWith("pp_mercadopago_")
 }

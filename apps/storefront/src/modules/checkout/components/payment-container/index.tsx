@@ -141,6 +141,15 @@ export const StripeCardContainer = ({
 const cardInputClasses =
   "block w-full h-11 px-4 mt-0 bg-ui-bg-field border rounded-md appearance-none focus:outline-none focus:ring-0 focus:shadow-borders-interactive-with-active border-ui-border-base hover:bg-ui-bg-field-hover transition-all duration-300 ease-in-out"
 
+// Shortest valid PAN (Amex is 15 digits) — don't flag Luhn errors before this.
+const MIN_PAN_DIGITS = 15
+// Longest PAN is 19 digits; allow up to 4 grouping spaces in the input.
+const MAX_PAN_INPUT_LENGTH = 23
+// Full "MM/YY" expiry input length.
+const EXPIRY_INPUT_LENGTH = 5
+// Shortest valid CVV (Amex uses 4) — don't flag errors before this.
+const MIN_CVV_LENGTH = 3
+
 export const OpenpayCardContainer = ({
   paymentProviderId,
   selectedPaymentOptionId,
@@ -152,7 +161,7 @@ export const OpenpayCardContainer = ({
   setError: (error: string | null) => void
   setCardComplete: (complete: boolean) => void
 }) => {
-  const { ready, setCardData } = useContext(OpenpayContext)
+  const { ready, unavailable, setCardData } = useContext(OpenpayContext)
 
   // Card data lives ONLY in client-side React state. It is handed to
   // openpay.js for tokenization and is NEVER sent to our backend (SF-2 / OP-2).
@@ -183,11 +192,11 @@ export const OpenpayCardContainer = ({
     const cvvValid = cvv2.length > 0 && openpay.card.validateCVC(cvv2, digits)
     const holderValid = holderName.trim().length > 0
 
-    if (digits.length >= 15 && !numberValid) {
+    if (digits.length >= MIN_PAN_DIGITS && !numberValid) {
       setError("Invalid card number")
-    } else if (expiry.length >= 5 && !expiryValid) {
+    } else if (expiry.length >= EXPIRY_INPUT_LENGTH && !expiryValid) {
       setError("Invalid expiration date")
-    } else if (cvv2.length >= 3 && !cvvValid) {
+    } else if (cvv2.length >= MIN_CVV_LENGTH && !cvvValid) {
       setError("Invalid security code")
     } else {
       setError(null)
@@ -226,7 +235,15 @@ export const OpenpayCardContainer = ({
       disabled={disabled}
     >
       {selectedPaymentOptionId === paymentProviderId &&
-        (ready ? (
+        (unavailable ? (
+          <Text
+            className="txt-medium text-ui-fg-subtle my-4"
+            data-testid="openpay-unavailable-message"
+          >
+            Card payments are temporarily unavailable. Please choose another
+            payment method.
+          </Text>
+        ) : ready ? (
           <div className="my-4 flex flex-col gap-y-2 transition-all duration-150 ease-in-out">
             <Text className="txt-medium-plus text-ui-fg-base mb-1">
               Enter your card details:
@@ -242,7 +259,7 @@ export const OpenpayCardContainer = ({
               onChange={(e) =>
                 setCardNumber(e.target.value.replace(/[^\d\s]/g, ""))
               }
-              maxLength={23}
+              maxLength={MAX_PAN_INPUT_LENGTH}
               data-testid="openpay-card-number-input"
             />
             <input
@@ -267,7 +284,7 @@ export const OpenpayCardContainer = ({
                 onChange={(e) =>
                   setExpiry(e.target.value.replace(/[^\d/]/g, ""))
                 }
-                maxLength={5}
+                maxLength={EXPIRY_INPUT_LENGTH}
                 data-testid="openpay-card-expiry-input"
               />
               <input
