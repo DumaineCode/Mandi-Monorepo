@@ -16,6 +16,9 @@ module.exports = {
   moduleFileExtensions: ["js", "ts", "json"],
   modulePathIgnorePatterns: ["dist/", "<rootDir>/.medusa/"],
   setupFiles: ["./integration-tests/setup.js"],
+  // PF-1: suites may legitimately be empty until their slice lands
+  // (e.g. src/modules/*/__tests__ before S2). "No tests" must stay green.
+  passWithNoTests: true,
 };
 
 if (process.env.TEST_TYPE === "integration:http") {
