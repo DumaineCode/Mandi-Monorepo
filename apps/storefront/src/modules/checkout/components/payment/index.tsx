@@ -1,12 +1,15 @@
 "use client"
 import { RadioGroup } from "@headlessui/react"
-import { isStripeLike, paymentInfoMap } from "@lib/constants"
+import { isOpenpay, isStripeLike, paymentInfoMap } from "@lib/constants"
 import { initiatePaymentSession } from "@lib/data/cart"
+import { getBaseURL } from "@lib/util/env"
 import { CheckCircleSolid, CreditCard } from "@medusajs/icons"
 import ErrorMessage from "@modules/checkout/components/error-message"
 import PaymentContainer, {
+  OpenpayCardContainer,
   StripeCardContainer,
 } from "@modules/checkout/components/payment-container"
+import { OpenpayContext } from "@modules/checkout/components/payment-wrapper/openpay-wrapper"
 import Divider from "@modules/common/components/divider"
 import {
   Button,
@@ -16,8 +19,13 @@ import {
   clx,
 } from "@modules/common/components/ui"
 import { HttpTypes } from "@medusajs/types"
-import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { useCallback, useEffect, useState } from "react"
+import {
+  useParams,
+  usePathname,
+  useRouter,
+  useSearchParams,
+} from "next/navigation"
+import { useCallback, useContext, useEffect, useState } from "react"
 
 const Payment = ({
   cart,
@@ -41,13 +49,18 @@ const Payment = ({
   const searchParams = useSearchParams()
   const router = useRouter()
   const pathname = usePathname()
+  const params = useParams<{ countryCode: string }>()
+  const openpay = useContext(OpenpayContext)
 
   const isOpen = searchParams.get("step") === "payment"
 
   const setPaymentMethod = async (method: string) => {
     setError(null)
     setSelectedPaymentMethod(method)
-    if (isStripeLike(method)) {
+    // Openpay behaves like Stripe here: the session is created on selection so
+    // the wrapper mounts and openpay.js loads; the card token is attached later
+    // by re-initiating the session in handleSubmit (design §3.2 updatePayment).
+    if (isStripeLike(method) || isOpenpay(method)) {
       await initiatePaymentSession(cart, {
         provider_id: method,
       })
@@ -80,6 +93,36 @@ const Payment = ({
   const handleSubmit = async () => {
     setIsLoading(true)
     try {
+      if (isOpenpay(selectedPaymentMethod)) {
+        if (!openpay.cardData) {
+          throw new Error(
+            "Please complete your card details before continuing."
+          )
+        }
+
+        // Tokenization happens in the browser via openpay.js — card data never
+        // reaches our backend (SF-2 / OP-2). A tokenization failure throws
+        // BEFORE any backend mutation; the catch below shows the inline error
+        // and the finally block re-enables the button.
+        const tokenId = await openpay.tokenize(openpay.cardData)
+
+        await initiatePaymentSession(cart, {
+          provider_id: selectedPaymentMethod,
+          data: {
+            token_id: tokenId,
+            device_session_id: openpay.deviceSessionId,
+            return_url: `${getBaseURL()}/${params.countryCode}/payment/openpay/return`,
+          },
+        })
+
+        return router.push(
+          pathname + "?" + createQueryString("step", "review"),
+          {
+            scroll: false,
+          }
+        )
+      }
+
       const shouldInputCard =
         isStripeLike(selectedPaymentMethod) && !activeSession
 
@@ -158,6 +201,14 @@ const Payment = ({
                         setError={setError}
                         setCardComplete={setCardComplete}
                       />
+                    ) : isOpenpay(paymentMethod.id) ? (
+                      <OpenpayCardContainer
+                        paymentProviderId={paymentMethod.id}
+                        selectedPaymentOptionId={selectedPaymentMethod}
+                        paymentInfoMap={paymentInfoMap}
+                        setError={setError}
+                        setCardComplete={setCardComplete}
+                      />
                     ) : (
                       <PaymentContainer
                         paymentInfoMap={paymentInfoMap}
@@ -197,6 +248,7 @@ const Payment = ({
             isLoading={isLoading}
             disabled={
               (isStripeLike(selectedPaymentMethod) && !cardComplete) ||
+              (isOpenpay(selectedPaymentMethod) && !cardComplete) ||
               (!selectedPaymentMethod && !paidByGiftcard)
             }
             data-testid="submit-payment-button"
