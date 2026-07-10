@@ -72,6 +72,26 @@ export interface OpenpayCreateChargeRequest {
   customer?: OpenpayCustomer
 }
 
+/**
+ * Webhook event body (design §3.4). Payload status/amounts are NEVER trusted
+ * — only `transaction.id` is extracted for the server-side re-fetch.
+ * TODO(sandbox-verify): shape from docs; confirm against sandbox deliveries.
+ */
+export interface OpenpayWebhookTransaction {
+  id?: string
+  status?: string
+  amount?: number
+  order_id?: string
+}
+
+export interface OpenpayWebhookEvent {
+  type?: string
+  event_date?: string
+  /** Present on the dashboard `verification` handshake event only. */
+  verification_code?: string
+  transaction?: OpenpayWebhookTransaction
+}
+
 export interface OpenpayRefundRequest {
   amount?: number
   description?: string

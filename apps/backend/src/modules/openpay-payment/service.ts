@@ -33,9 +33,48 @@ import {
   WebhookActionResult,
 } from "@medusajs/framework/types"
 import { AbstractPaymentProvider, MedusaError } from "@medusajs/framework/utils"
+import { timingSafeEqual } from "node:crypto"
 import { OPENPAY_IDENTIFIER } from "../../lib/constants"
 import { OpenpayClient } from "./client"
-import { OpenpayApiError, OpenpayCharge, OpenpayOptions } from "./types"
+import {
+  OpenpayApiError,
+  OpenpayCharge,
+  OpenpayOptions,
+  OpenpayWebhookEvent,
+} from "./types"
+
+type WebhookLogger = {
+  info: (message: string) => void
+  warn: (message: string) => void
+}
+
+/**
+ * Event → candidate action table (design §3.4). Events absent from this map
+ * (verification, chargeback.rejected, charge.refunded, unknown) never touch
+ * payment state and are acknowledged as not_supported.
+ */
+const WEBHOOK_EVENT_ACTIONS: Record<string, "captured" | "failed"> = {
+  "charge.succeeded": "captured",
+  "charge.failed": "failed",
+  "charge.cancelled": "failed",
+  "charge.expired": "failed",
+  "chargeback.created": "failed",
+  "chargeback.accepted": "failed",
+}
+
+const NOT_SUPPORTED = { action: "not_supported" as const }
+
+/**
+ * Correlation by PREFIX (fix 4): charges carry `{session_id}-{n}` in order_id,
+ * so the trailing attempt-nonce is stripped to recover the session id.
+ */
+const sessionIdFromOrderId = (orderId: string | undefined): string | null => {
+  if (!orderId) {
+    return null
+  }
+  const sessionId = orderId.replace(/-\d+$/, "")
+  return sessionId || null
+}
 
 /** Raw card data must NEVER reach our backend (OP-2, PCI scope). */
 const RAW_CARD_FIELDS = [
@@ -108,6 +147,7 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
 
   protected readonly options_: OpenpayOptions
   protected readonly client_: OpenpayClient
+  private readonly logger_?: WebhookLogger
   /**
    * In-memory attempt counters keyed by session id (fix 4). Openpay rejects
    * duplicate order_id values, so each charge attempt for the same session
@@ -127,6 +167,7 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
     super(cradle, options)
     this.options_ = options
     this.client_ = new OpenpayClient(options)
+    this.logger_ = (cradle as { logger?: WebhookLogger }).logger
   }
 
   async initiatePayment(
@@ -314,16 +355,111 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
   }
 
   /**
-   * Webhook handling lands in slice S2b (tasks S2.3/S2.6): Basic-auth check
-   * with timingSafeEqual + length guard, server-side charge re-fetch, amount
-   * match, and the full event→action table (design §3.4).
+   * Webhook verification + mapping (design §3.4, amendment fixes 3/4/6).
    *
-   * TODO(S2b): replace this stub with the real implementation.
+   * Two layers: (1) Basic-auth header check with timingSafeEqual + length
+   * guard; (2) server-side re-fetch of the charge — the fetched status is the
+   * ONLY status source and the fetched amount is the ONLY amount returned
+   * (Medusa's processPayment compares it to the session amount before
+   * capturing, closing fix 3). Never log secrets, auth headers, or payload
+   * blobs — event types and ids only.
    */
   async getWebhookActionAndData(
-    _payload: ProviderWebhookPayload["payload"]
+    payload: ProviderWebhookPayload["payload"]
   ): Promise<WebhookActionResult> {
-    return { action: "not_supported" }
+    if (!this.verifyWebhookAuth(payload.headers)) {
+      this.logger_?.warn(
+        "Openpay webhook rejected: Basic-auth verification failed."
+      )
+      return NOT_SUPPORTED
+    }
+
+    const event = (payload.data ?? {}) as OpenpayWebhookEvent
+
+    if (event.type === "verification") {
+      // Dashboard handshake: surface the code so the operator can confirm it.
+      this.logger_?.info(
+        `Openpay webhook verification received (verification_code: ${event.verification_code}).`
+      )
+      return NOT_SUPPORTED
+    }
+
+    const candidate = event.type
+      ? WEBHOOK_EVENT_ACTIONS[event.type]
+      : undefined
+    if (!candidate) {
+      return NOT_SUPPORTED
+    }
+
+    const transactionId = event.transaction?.id
+    if (!transactionId) {
+      this.logger_?.warn(
+        `Openpay webhook event ${event.type} has no transaction id — acknowledged without action.`
+      )
+      return NOT_SUPPORTED
+    }
+
+    // Server-side re-fetch — payload status/amounts are never trusted.
+    let charge: OpenpayCharge
+    try {
+      charge = await this.client_.getCharge(transactionId)
+    } catch {
+      this.logger_?.warn(
+        `Openpay webhook event ${event.type}: charge ${transactionId} could not be re-fetched — acknowledged without action.`
+      )
+      return NOT_SUPPORTED
+    }
+
+    const sessionId = sessionIdFromOrderId(charge.order_id)
+    if (!sessionId) {
+      this.logger_?.warn(
+        `Openpay webhook event ${event.type}: charge ${transactionId} has no order_id correlation — acknowledged without action.`
+      )
+      return NOT_SUPPORTED
+    }
+
+    const data = { session_id: sessionId, amount: charge.amount }
+
+    if (candidate === "captured") {
+      if (charge.status === "completed") {
+        return { action: "captured", data }
+      }
+      if (["failed", "cancelled"].includes(charge.status)) {
+        // Fetched status wins over the event type (only status source).
+        return { action: "failed", data }
+      }
+      return NOT_SUPPORTED
+    }
+
+    return { action: "failed", data }
+  }
+
+  /**
+   * Basic-auth check with timingSafeEqual and an explicit length guard
+   * (fix 6 — timingSafeEqual throws on length mismatch). Missing credentials
+   * configuration rejects everything: fail-safe, never fail-open.
+   */
+  private verifyWebhookAuth(headers: Record<string, unknown>): boolean {
+    const user = this.options_.webhookUser
+    const password = this.options_.webhookPassword
+    if (!user || !password) {
+      return false
+    }
+
+    const provided = headers?.["authorization"] ?? headers?.["Authorization"]
+    if (typeof provided !== "string") {
+      return false
+    }
+
+    const expected = `Basic ${Buffer.from(`${user}:${password}`).toString(
+      "base64"
+    )}`
+    const providedBuffer = Buffer.from(provided)
+    const expectedBuffer = Buffer.from(expected)
+    if (providedBuffer.length !== expectedBuffer.length) {
+      return false
+    }
+    return timingSafeEqual(providedBuffer, expectedBuffer)
   }
 
   private assertAmountMatches(charge: OpenpayCharge, sessionAmount: number) {
