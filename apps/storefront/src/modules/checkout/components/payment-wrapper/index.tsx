@@ -3,8 +3,9 @@
 import { loadStripe } from "@stripe/stripe-js"
 import React from "react"
 import StripeWrapper from "./stripe-wrapper"
+import OpenpayWrapper from "./openpay-wrapper"
 import { HttpTypes } from "@medusajs/types"
-import { isStripeLike } from "@lib/constants"
+import { isOpenpay, isStripeLike } from "@lib/constants"
 
 type PaymentWrapperProps = {
   cart: HttpTypes.StoreCart
@@ -27,6 +28,10 @@ const PaymentWrapper: React.FC<PaymentWrapperProps> = ({ cart, children }) => {
   const paymentSession = cart.payment_collection?.payment_sessions?.find(
     (s) => s.status === "pending"
   )
+
+  if (isOpenpay(paymentSession?.provider_id) && paymentSession) {
+    return <OpenpayWrapper>{children}</OpenpayWrapper>
+  }
 
   if (
     isStripeLike(paymentSession?.provider_id) &&
