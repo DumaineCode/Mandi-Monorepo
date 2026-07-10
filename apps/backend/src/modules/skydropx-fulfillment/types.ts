@@ -16,6 +16,12 @@ export interface SkydropxOptions {
   baseUrl?: string
   /** Fallback origin zip when the stock location has none (SKYDROPX_ORIGIN_ZIP). */
   originZip?: string
+  /**
+   * Whether Skydropx `total_pricing` already includes IVA
+   * (SKYDROPX_TAX_INCLUSIVE, default true).
+   * TODO(sandbox-verify): default pinned pending gate S5.0b IVA verification.
+   */
+  isTaxInclusive?: boolean
 }
 
 /** Aggregate parcel in Skydropx units: kg + cm (design §5.2). */
