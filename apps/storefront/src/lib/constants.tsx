@@ -33,6 +33,17 @@ export const paymentInfoMap: Record<
     title: "Manual Payment",
     icon: <CreditCard />,
   },
+  // NOTE: provider id literals below are duplicated in
+  // apps/backend/src/lib/constants.ts (OPENPAY_PROVIDER_ID / MERCADOPAGO_PROVIDER_ID).
+  // Keep both files in sync — the backend contract test asserts the composed ids.
+  pp_openpay_openpay: {
+    title: "Tarjeta de crédito/débito",
+    icon: <CreditCard />,
+  },
+  pp_mercadopago_mercadopago: {
+    title: "Mercado Pago",
+    icon: <CreditCard />,
+  },
   // Add more payment providers here
 }
 
@@ -48,6 +59,14 @@ export const isPaypal = (providerId?: string) => {
 }
 export const isManual = (providerId?: string) => {
   return providerId?.startsWith("pp_system_default")
+}
+
+export const isOpenpay = (providerId?: string) => {
+  return providerId?.startsWith("pp_openpay_")
+}
+
+export const isMercadopago = (providerId?: string) => {
+  return providerId?.startsWith("pp_mercadopago_")
 }
 
 // Add currencies that don't need to be divided by 100
