@@ -1,0 +1,384 @@
+/**
+ * Openpay card payment provider (design §3.2, amendment obs #110 fixes 3/4/5).
+ *
+ * Charges are created in `authorizePayment` (capture-at-creation), never in
+ * `initiatePayment` — money never moves before cart completion runs. The
+ * charge amount is derived at authorize-time from the session data kept fresh
+ * by `updatePayment` (fix 3), and `order_id` carries a `{session_id}-{n}`
+ * attempt nonce so retry-after-decline never reuses an order_id (fix 4).
+ *
+ * Never log token ids, secrets, or full payloads (design §6).
+ */
+import {
+  AuthorizePaymentInput,
+  AuthorizePaymentOutput,
+  BigNumberInput,
+  CancelPaymentInput,
+  CancelPaymentOutput,
+  CapturePaymentInput,
+  CapturePaymentOutput,
+  DeletePaymentInput,
+  DeletePaymentOutput,
+  GetPaymentStatusInput,
+  GetPaymentStatusOutput,
+  InitiatePaymentInput,
+  InitiatePaymentOutput,
+  ProviderWebhookPayload,
+  RefundPaymentInput,
+  RefundPaymentOutput,
+  RetrievePaymentInput,
+  RetrievePaymentOutput,
+  UpdatePaymentInput,
+  UpdatePaymentOutput,
+  WebhookActionResult,
+} from "@medusajs/framework/types"
+import { AbstractPaymentProvider, MedusaError } from "@medusajs/framework/utils"
+import { OPENPAY_IDENTIFIER } from "../../lib/constants"
+import { OpenpayClient } from "./client"
+import { OpenpayApiError, OpenpayCharge, OpenpayOptions } from "./types"
+
+/** Raw card data must NEVER reach our backend (OP-2, PCI scope). */
+const RAW_CARD_FIELDS = [
+  "card_number",
+  "cvv2",
+  "cvc",
+  "expiration_month",
+  "expiration_year",
+  "holder_name",
+  "card",
+] as const
+
+type SessionData = {
+  session_id?: string
+  amount?: number
+  currency_code?: string
+  token_id?: string
+  device_session_id?: string
+  return_url?: string
+  charge_id?: string
+  charge_status?: string
+  redirect_url?: string
+  [key: string]: unknown
+}
+
+const toAmountNumber = (amount: BigNumberInput | undefined): number => {
+  if (amount === undefined || amount === null) {
+    return NaN
+  }
+  if (typeof amount === "object") {
+    const raw =
+      (amount as { numeric?: number }).numeric ??
+      (amount as { value?: string | number }).value
+    return Number(raw)
+  }
+  return Number(amount)
+}
+
+const assertNoRawCardData = (data: Record<string, unknown> | undefined) => {
+  if (!data) {
+    return
+  }
+  const offending = RAW_CARD_FIELDS.filter((field) => field in data)
+  if (offending.length) {
+    throw new MedusaError(
+      MedusaError.Types.INVALID_DATA,
+      "Raw card data must never be sent to this backend. Tokenize with openpay.js and send token_id instead."
+    )
+  }
+}
+
+class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptions> {
+  static identifier = OPENPAY_IDENTIFIER
+
+  /**
+   * Shape-only validation (amendment fix 5): validates the options object it
+   * is given, never crashes boot for providers that were skipped upstream by
+   * the medusa-config env gate.
+   */
+  static validateOptions(options: Record<string, unknown>): void {
+    for (const key of ["merchantId", "privateKey"] as const) {
+      if (typeof options[key] !== "string" || !options[key]) {
+        throw new MedusaError(
+          MedusaError.Types.INVALID_DATA,
+          `Openpay provider requires a non-empty string option \`${key}\`.`
+        )
+      }
+    }
+  }
+
+  protected readonly options_: OpenpayOptions
+  protected readonly client_: OpenpayClient
+  /**
+   * In-memory attempt counters keyed by session id (fix 4). Openpay rejects
+   * duplicate order_id values, so each charge attempt for the same session
+   * gets an incremented `{session_id}-{n}` nonce.
+   *
+   * TODO(sandbox-verify): S2.0c may replace this with a persisted or
+   * provider-side attempt lookup once sandbox credentials are available;
+   * worst case after a process restart is a duplicate-order_id rejection
+   * that the customer retries.
+   */
+  private readonly attemptCounters_ = new Map<string, number>()
+
+  constructor(
+    cradle: Record<string, unknown>,
+    options: OpenpayOptions
+  ) {
+    super(cradle, options)
+    this.options_ = options
+    this.client_ = new OpenpayClient(options)
+  }
+
+  async initiatePayment(
+    input: InitiatePaymentInput
+  ): Promise<InitiatePaymentOutput> {
+    const data = (input.data ?? {}) as SessionData
+    assertNoRawCardData(data)
+
+    const sessionId = data.session_id
+    if (!sessionId) {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        "Openpay payment session is missing its session_id."
+      )
+    }
+
+    return {
+      id: sessionId,
+      data: {
+        ...data,
+        session_id: sessionId,
+        amount: toAmountNumber(input.amount),
+        currency_code: input.currency_code,
+      },
+    }
+  }
+
+  async updatePayment(input: UpdatePaymentInput): Promise<UpdatePaymentOutput> {
+    const data = (input.data ?? {}) as SessionData
+    assertNoRawCardData(data)
+
+    return {
+      data: {
+        ...data,
+        amount: toAmountNumber(input.amount),
+        currency_code: input.currency_code,
+      },
+    }
+  }
+
+  async authorizePayment(
+    input: AuthorizePaymentInput
+  ): Promise<AuthorizePaymentOutput> {
+    const data = (input.data ?? {}) as SessionData
+    const sessionId = data.session_id
+    // Amount derived at authorize-time from the session data kept fresh by
+    // initiate/update (fix 3) — never from anything client-controlled later.
+    const amount = toAmountNumber(data.amount)
+
+    if (!sessionId || Number.isNaN(amount)) {
+      throw new MedusaError(
+        MedusaError.Types.PAYMENT_AUTHORIZATION_ERROR,
+        "Openpay session data is missing session_id or amount."
+      )
+    }
+
+    // Idempotent re-entry: an existing charge is re-fetched, never recreated
+    // (OP-4 resume after 3DS redirect).
+    if (data.charge_id) {
+      const charge = await this.client_.getCharge(data.charge_id)
+      this.assertAmountMatches(charge, amount)
+      return this.mapChargeToAuthorizeOutput(charge, data)
+    }
+
+    if (!data.token_id || !data.device_session_id) {
+      throw new MedusaError(
+        MedusaError.Types.PAYMENT_AUTHORIZATION_ERROR,
+        "Openpay card token missing — cannot authorize payment."
+      )
+    }
+
+    const attempt = (this.attemptCounters_.get(sessionId) ?? 0) + 1
+    this.attemptCounters_.set(sessionId, attempt)
+
+    const customer = input.context?.customer
+    let charge: OpenpayCharge
+    try {
+      charge = await this.client_.createCharge({
+        method: "card",
+        source_id: data.token_id,
+        amount,
+        currency: (data.currency_code ?? "mxn").toUpperCase(),
+        device_session_id: data.device_session_id,
+        order_id: `${sessionId}-${attempt}`,
+        use_3d_secure: true,
+        capture: true,
+        redirect_url: data.return_url,
+        ...(customer
+          ? {
+              customer: {
+                name: customer.first_name ?? undefined,
+                last_name: customer.last_name ?? undefined,
+                email: customer.email,
+                phone_number: customer.phone ?? undefined,
+              },
+            }
+          : {}),
+      })
+    } catch (error) {
+      throw this.translateApiError(error)
+    }
+
+    if (charge.status === "completed") {
+      this.attemptCounters_.delete(sessionId)
+    }
+    return this.mapChargeToAuthorizeOutput(charge, data)
+  }
+
+  /** Charges are capture-at-creation; keep Medusa's capture workflow happy. */
+  async capturePayment(
+    input: CapturePaymentInput
+  ): Promise<CapturePaymentOutput> {
+    return { data: input.data }
+  }
+
+  async getPaymentStatus(
+    input: GetPaymentStatusInput
+  ): Promise<GetPaymentStatusOutput> {
+    const data = (input.data ?? {}) as SessionData
+    if (!data.charge_id) {
+      return { status: "pending", data: input.data }
+    }
+
+    const charge = await this.client_.getCharge(data.charge_id)
+    switch (charge.status) {
+      case "completed":
+      case "refunded":
+        return { status: "captured", data: input.data }
+      case "charge_pending":
+        return { status: "requires_more", data: input.data }
+      case "in_progress":
+        return { status: "pending", data: input.data }
+      case "cancelled":
+        return { status: "canceled", data: input.data }
+      default:
+        return { status: "error", data: input.data }
+    }
+  }
+
+  async retrievePayment(
+    input: RetrievePaymentInput
+  ): Promise<RetrievePaymentOutput> {
+    const data = (input.data ?? {}) as SessionData
+    if (!data.charge_id) {
+      return { data: input.data }
+    }
+    const charge = await this.client_.getCharge(data.charge_id)
+    return { data: charge as unknown as Record<string, unknown> }
+  }
+
+  async refundPayment(input: RefundPaymentInput): Promise<RefundPaymentOutput> {
+    const data = (input.data ?? {}) as SessionData
+    if (!data.charge_id) {
+      throw new MedusaError(
+        MedusaError.Types.NOT_ALLOWED,
+        "Cannot refund an Openpay session without a charge."
+      )
+    }
+
+    try {
+      // Amount forwarded as-is in MXN — Medusa stores prices as-is, never in
+      // cents (building-with-medusa data-price-format rule).
+      await this.client_.refundCharge(data.charge_id, {
+        amount: toAmountNumber(input.amount),
+        description: "Refund requested from Medusa Admin",
+      })
+    } catch (error) {
+      throw this.translateApiError(error, MedusaError.Types.UNEXPECTED_STATE)
+    }
+
+    return { data: input.data }
+  }
+
+  /**
+   * OP-5: cancel never calls the API. Uncompleted charges have nothing to
+   * void (capture-at-creation declines/expires on their own); a completed
+   * charge cancel is admin-driven via refund, so it is logged and left as-is.
+   */
+  async cancelPayment(input: CancelPaymentInput): Promise<CancelPaymentOutput> {
+    return { data: input.data }
+  }
+
+  async deletePayment(input: DeletePaymentInput): Promise<DeletePaymentOutput> {
+    return { data: input.data }
+  }
+
+  /**
+   * Webhook handling lands in slice S2b (tasks S2.3/S2.6): Basic-auth check
+   * with timingSafeEqual + length guard, server-side charge re-fetch, amount
+   * match, and the full event→action table (design §3.4).
+   *
+   * TODO(S2b): replace this stub with the real implementation.
+   */
+  async getWebhookActionAndData(
+    _payload: ProviderWebhookPayload["payload"]
+  ): Promise<WebhookActionResult> {
+    return { action: "not_supported" }
+  }
+
+  private assertAmountMatches(charge: OpenpayCharge, sessionAmount: number) {
+    if (Number(charge.amount) !== sessionAmount) {
+      throw new MedusaError(
+        MedusaError.Types.UNEXPECTED_STATE,
+        `Openpay charge amount mismatch: session expects ${sessionAmount}, charge ${charge.id} reports ${charge.amount}.`
+      )
+    }
+  }
+
+  private mapChargeToAuthorizeOutput(
+    charge: OpenpayCharge,
+    data: SessionData
+  ): AuthorizePaymentOutput {
+    const nextData = {
+      ...data,
+      charge_id: charge.id,
+      charge_status: charge.status,
+    }
+
+    switch (charge.status) {
+      case "completed":
+        return { status: "captured", data: nextData }
+      case "charge_pending":
+      case "in_progress":
+        return {
+          status: "requires_more",
+          data: {
+            ...nextData,
+            redirect_url: charge.payment_method?.url ?? data.redirect_url,
+          },
+        }
+      default:
+        throw new MedusaError(
+          MedusaError.Types.PAYMENT_AUTHORIZATION_ERROR,
+          `Openpay charge ${charge.id} is ${charge.status}: ${
+            charge.error_message ?? charge.description ?? "authorization failed"
+          }`
+        )
+    }
+  }
+
+  private translateApiError(
+    error: unknown,
+    type: string = MedusaError.Types.PAYMENT_AUTHORIZATION_ERROR
+  ): Error {
+    if (error instanceof OpenpayApiError) {
+      return new MedusaError(
+        type,
+        `Openpay error ${error.errorCode ?? error.httpStatus}: ${error.description}`
+      )
+    }
+    return error instanceof Error ? error : new Error(String(error))
+  }
+}
+
+export default OpenpayPaymentProviderService
