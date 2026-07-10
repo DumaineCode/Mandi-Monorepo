@@ -21,6 +21,20 @@ const SANDBOX_BASE_URL = "https://sandbox-api.openpay.mx/v1"
 /** Payment API calls are bounded to 15s (design §6). */
 export const OPENPAY_REQUEST_TIMEOUT_MS = 15_000
 
+/** Short backoff before the single bounded retry of idempotent GETs. */
+export const OPENPAY_GET_RETRY_BACKOFF_MS = 250
+
+/**
+ * Transient failures worth ONE retry on idempotent GETs: network-level fetch
+ * errors, our own timeout (httpStatus 0), and upstream 5xx. Never 4xx.
+ */
+const isTransientError = (error: unknown): boolean => {
+  if (error instanceof OpenpayApiError) {
+    return error.httpStatus === 0 || error.httpStatus >= 500
+  }
+  return true
+}
+
 type ClientOptions = Pick<
   OpenpayOptions,
   "merchantId" | "privateKey" | "sandbox"
@@ -43,11 +57,23 @@ export class OpenpayClient {
     return await this.request<OpenpayCharge>("POST", "/charges", body)
   }
 
+  /**
+   * GET is idempotent, so a transient failure gets ONE bounded retry after a
+   * short backoff — non-idempotent POSTs (createCharge/refund) never retry.
+   */
   async getCharge(chargeId: string): Promise<OpenpayCharge> {
-    return await this.request<OpenpayCharge>(
-      "GET",
-      `/charges/${encodeURIComponent(chargeId)}`
-    )
+    const path = `/charges/${encodeURIComponent(chargeId)}`
+    try {
+      return await this.request<OpenpayCharge>("GET", path)
+    } catch (error) {
+      if (!isTransientError(error)) {
+        throw error
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, OPENPAY_GET_RETRY_BACKOFF_MS)
+      )
+      return await this.request<OpenpayCharge>("GET", path)
+    }
   }
 
   async refundCharge(

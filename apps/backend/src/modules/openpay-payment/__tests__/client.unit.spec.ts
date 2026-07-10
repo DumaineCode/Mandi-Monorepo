@@ -5,7 +5,11 @@
  * password), sandbox/prod base URL switch, 15s AbortController timeout,
  * typed OpenpayApiError on non-2xx responses.
  */
-import { OpenpayClient, OPENPAY_REQUEST_TIMEOUT_MS } from "../client"
+import {
+  OpenpayClient,
+  OPENPAY_GET_RETRY_BACKOFF_MS,
+  OPENPAY_REQUEST_TIMEOUT_MS,
+} from "../client"
 import { OpenpayApiError } from "../types"
 
 const MERCHANT_ID = "m_test_123"
@@ -100,8 +104,71 @@ describe("OpenpayClient", () => {
       constructor: OpenpayApiError,
       errorCode: "timeout",
     })
-    jest.advanceTimersByTime(OPENPAY_REQUEST_TIMEOUT_MS)
+    // First attempt times out, the bounded GET retry backs off, then the
+    // second attempt times out as well before the typed error surfaces.
+    await jest.advanceTimersByTimeAsync(OPENPAY_REQUEST_TIMEOUT_MS)
+    await jest.advanceTimersByTimeAsync(OPENPAY_GET_RETRY_BACKOFF_MS)
+    await jest.advanceTimersByTimeAsync(OPENPAY_REQUEST_TIMEOUT_MS)
     await assertion
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it("retries getCharge ONCE after a transient failure and succeeds", async () => {
+    fetchMock
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(jsonResponse({ id: "ch_1", status: "completed" }))
+    const client = new OpenpayClient({
+      merchantId: MERCHANT_ID,
+      privateKey: PRIVATE_KEY,
+      sandbox: true,
+    })
+
+    const charge = await client.getCharge("ch_1")
+
+    expect(charge).toMatchObject({ id: "ch_1", status: "completed" })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it("does NOT retry getCharge on a non-transient 4xx error", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ error_code: 1005, description: "not found" }, 404)
+    )
+    const client = new OpenpayClient({
+      merchantId: MERCHANT_ID,
+      privateKey: PRIVATE_KEY,
+      sandbox: true,
+    })
+
+    await expect(client.getCharge("ch_missing")).rejects.toMatchObject({
+      constructor: OpenpayApiError,
+      httpStatus: 404,
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("does NOT retry non-idempotent POST createCharge on a transient failure", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ error_code: 1000, description: "internal error" }, 500)
+    )
+    const client = new OpenpayClient({
+      merchantId: MERCHANT_ID,
+      privateKey: PRIVATE_KEY,
+      sandbox: true,
+    })
+
+    await expect(
+      client.createCharge({
+        method: "card",
+        source_id: "tok_1",
+        amount: 100,
+        currency: "MXN",
+        device_session_id: "dev_1",
+        order_id: "sess_1-1",
+        use_3d_secure: true,
+        capture: true,
+      })
+    ).rejects.toMatchObject({ constructor: OpenpayApiError, httpStatus: 500 })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it("throws a typed OpenpayApiError carrying error_code and description on non-2xx", async () => {
