@@ -1,7 +1,7 @@
 "use client"
 
-import { isManual, isStripeLike } from "@lib/constants"
-import { placeOrder } from "@lib/data/cart"
+import { isManual, isOpenpay, isStripeLike } from "@lib/constants"
+import { placeOrder, retrieveCart } from "@lib/data/cart"
 import { HttpTypes } from "@medusajs/types"
 import { Button } from "@modules/common/components/ui"
 import { useElements, useStripe } from "@stripe/react-stripe-js"
@@ -34,6 +34,10 @@ const PaymentButton: React.FC<PaymentButtonProps> = ({
           cart={cart}
           data-testid={dataTestId}
         />
+      )
+    case isOpenpay(paymentSession?.provider_id):
+      return (
+        <OpenpayPaymentButton notReady={notReady} data-testid={dataTestId} />
       )
     case isManual(paymentSession?.provider_id):
       return (
@@ -146,6 +150,70 @@ const StripePaymentButton = ({
       <ErrorMessage
         error={errorMessage}
         data-testid="stripe-payment-error-message"
+      />
+    </>
+  )
+}
+
+const OpenpayPaymentButton = ({
+  notReady,
+  "data-testid": dataTestId,
+}: {
+  notReady: boolean
+  "data-testid"?: string
+}) => {
+  const [submitting, setSubmitting] = useState(false)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  const handlePayment = async () => {
+    setSubmitting(true)
+    setErrorMessage(null)
+
+    try {
+      // On success placeOrder redirects to the order confirmation page.
+      await placeOrder()
+    } catch (err) {
+      // NEVER key this decision off the error message wording (design R1
+      // mitigation): re-fetch the cart and inspect the payment session state.
+      // A 3DS challenge surfaces as status "requires_more" with a
+      // redirect_url provided by the payment provider (OP-4).
+      const updatedCart = await retrieveCart().catch(() => null)
+      const session = updatedCart?.payment_collection?.payment_sessions?.find(
+        (s) => isOpenpay(s.provider_id)
+      )
+      const redirectUrl =
+        session?.status === "requires_more"
+          ? (session.data?.redirect_url as string | undefined)
+          : undefined
+
+      if (redirectUrl) {
+        // Keep the button in its loading state while the browser navigates
+        // to the bank's 3DS challenge page.
+        window.location.href = redirectUrl
+        return
+      }
+
+      // Declined or other provider error — the cart stays intact and the
+      // order remains retryable from the review step (OP-3).
+      setErrorMessage(err instanceof Error ? err.message : String(err))
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <>
+      <Button
+        disabled={notReady}
+        onClick={handlePayment}
+        size="large"
+        isLoading={submitting}
+        data-testid={dataTestId}
+      >
+        Place order
+      </Button>
+      <ErrorMessage
+        error={errorMessage}
+        data-testid="openpay-payment-error-message"
       />
     </>
   )
