@@ -18,6 +18,7 @@ import {
   AbstractFulfillmentProviderService,
   MedusaError,
 } from "@medusajs/framework/utils"
+import { SKYDROPX_IDENTIFIER } from "../../lib/constants"
 import { SkydropxClient } from "./client"
 import { buildParcel, MissingDimensionsError, ParcelItem } from "./parcel"
 import { SkydropxApiError, SkydropxOptions, SkydropxRate } from "./types"
@@ -35,6 +36,14 @@ type InjectedDependencies = {
 
 /** The single fulfillment option this provider exposes (SD-1). */
 const OPTION_ID = "skydropx-standard"
+
+/** Normalizes unknown errors into a log/message-safe description string. */
+const describeError = (error: unknown): string =>
+  error instanceof SkydropxApiError
+    ? error.description
+    : error instanceof Error
+      ? error.message
+      : String(error)
 
 /** IN_PROGRESS label polling is bounded to 30s total (design §5.4, SD-4). */
 export const LABEL_POLL_BOUND_MS = 30_000
@@ -77,7 +86,7 @@ const toParcelItems = (
   }))
 
 export default class SkydropxFulfillmentProviderService extends AbstractFulfillmentProviderService {
-  static identifier = "skydropx"
+  static identifier = SKYDROPX_IDENTIFIER
 
   protected readonly logger_: Logger
   protected readonly options_: SkydropxOptions
@@ -258,6 +267,11 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
       const deadline = Date.now() + LABEL_POLL_BOUND_MS
       while (label.status === "IN_PROGRESS") {
         if (Date.now() > deadline) {
+          await this.abandonLabel_(
+            shipment.id,
+            label.id,
+            `still IN_PROGRESS after ${LABEL_POLL_BOUND_MS}ms`
+          )
           throw new MedusaError(
             MedusaError.Types.UNEXPECTED_STATE,
             `Skydropx label ${label.id} still IN_PROGRESS after ${LABEL_POLL_BOUND_MS}ms.`
@@ -268,6 +282,11 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
       }
 
       if (label.status !== "COMPLETED") {
+        await this.abandonLabel_(
+          shipment.id,
+          label.id,
+          `ended in status ${label.status}`
+        )
         throw new MedusaError(
           MedusaError.Types.UNEXPECTED_STATE,
           `Skydropx label ${label.id} ended in status ${label.status}.`
@@ -297,17 +316,32 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
       if (error instanceof MedusaError) {
         throw error
       }
-      if (error instanceof SkydropxApiError) {
-        throw new MedusaError(
-          MedusaError.Types.UNEXPECTED_STATE,
-          `Skydropx label purchase failed: ${error.description}`
-        )
-      }
       throw new MedusaError(
         MedusaError.Types.UNEXPECTED_STATE,
-        `Skydropx label purchase failed: ${
-          error instanceof Error ? error.message : String(error)
-        }`
+        `Skydropx label purchase failed: ${describeError(error)}`
+      )
+    }
+  }
+
+  /**
+   * Orphaned-label containment (SD-4): log shipment/label ids for manual
+   * reconciliation, then best-effort cancel the label. Cancel errors are
+   * swallowed (logged) so the original failure is always what surfaces.
+   */
+  private async abandonLabel_(
+    shipmentId: string,
+    labelId: string,
+    reason: string
+  ): Promise<void> {
+    this.logger_.error(
+      `Skydropx label abandoned (${reason}) — reconcile manually if cancel fails: ` +
+        `shipment_id=${shipmentId} label_id=${labelId}`
+    )
+    try {
+      await this.client_.cancelLabel(labelId)
+    } catch (cancelError) {
+      this.logger_.warn(
+        `Skydropx best-effort cancel of label ${labelId} failed: ${describeError(cancelError)}`
       )
     }
   }
@@ -324,14 +358,8 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
     } catch (error) {
       // SD-4 cancel: log-and-proceed so Medusa-side cancellation never blocks
       // on carrier "not cancellable" windows.
-      const description =
-        error instanceof SkydropxApiError
-          ? error.description
-          : error instanceof Error
-            ? error.message
-            : String(error)
       this.logger_.warn(
-        `Skydropx label ${labelId} could not be cancelled (proceeding): ${description}`
+        `Skydropx label ${labelId} could not be cancelled (proceeding): ${describeError(error)}`
       )
     }
 
@@ -346,15 +374,9 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
     try {
       response = await quote()
     } catch (error) {
-      const description =
-        error instanceof SkydropxApiError
-          ? error.description
-          : error instanceof Error
-            ? error.message
-            : String(error)
       throw new MedusaError(
         MedusaError.Types.UNEXPECTED_STATE,
-        `Skydropx quotation failed: ${description}`
+        `Skydropx quotation failed: ${describeError(error)}`
       )
     }
 

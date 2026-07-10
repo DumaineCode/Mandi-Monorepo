@@ -440,6 +440,66 @@ describe("SkydropxFulfillmentProviderService", () => {
       ).rejects.toMatchObject({ type: MedusaError.Types.UNEXPECTED_STATE })
     })
 
+    it("best-effort cancels the orphaned label and logs ids before throwing on poll timeout", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(shipmentResponse))
+        .mockResolvedValue(jsonResponse({ id: "lab_1", status: "IN_PROGRESS" }))
+      const { service, logger } = makeService()
+      jest.spyOn(service as any, "sleep_").mockResolvedValue(undefined)
+      const nowSpy = jest.spyOn(Date, "now")
+      nowSpy.mockReturnValueOnce(0) // deadline anchor
+      nowSpy.mockReturnValue(30_001) // every later check is past the bound
+
+      await expect(
+        service.createFulfillment(
+          { id: "skydropx-standard" },
+          fulfillmentItems,
+          order,
+          fulfillment
+        )
+      ).rejects.toMatchObject({ type: MedusaError.Types.UNEXPECTED_STATE })
+
+      // Best-effort cancellation was attempted against the orphaned label.
+      const cancelCall = fetchMock.mock.calls.find(([url]) =>
+        String(url).includes("/labels/lab_1/cancel")
+      )
+      expect(cancelCall).toBeDefined()
+
+      // shipment_id + label_id logged explicitly for reconciliation.
+      const reconciliationLog = (logger.error as jest.Mock).mock.calls.find(
+        ([message]) =>
+          String(message).includes("shp_1") && String(message).includes("lab_1")
+      )
+      expect(reconciliationLog).toBeDefined()
+    })
+
+    it("swallows cancel errors on poll timeout and still throws UNEXPECTED_STATE", async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(shipmentResponse))
+        .mockImplementation((url) =>
+          String(url).includes("/cancel")
+            ? Promise.resolve(jsonResponse({ message: "not cancellable" }, 422))
+            : Promise.resolve(jsonResponse({ id: "lab_1", status: "IN_PROGRESS" }))
+        )
+      const { service, logger } = makeService()
+      jest.spyOn(service as any, "sleep_").mockResolvedValue(undefined)
+      const nowSpy = jest.spyOn(Date, "now")
+      nowSpy.mockReturnValueOnce(0)
+      nowSpy.mockReturnValue(30_001)
+
+      await expect(
+        service.createFulfillment(
+          { id: "skydropx-standard" },
+          fulfillmentItems,
+          order,
+          fulfillment
+        )
+      ).rejects.toMatchObject({ type: MedusaError.Types.UNEXPECTED_STATE })
+
+      // Cancel failure is logged, never rethrown over the original error.
+      expect(logger.warn).toHaveBeenCalled()
+    })
+
     it("throws MedusaError(UNEXPECTED_STATE) when label purchase fails (SD-4 failure)", async () => {
       fetchMock
         .mockResolvedValueOnce(jsonResponse(shipmentResponse))
