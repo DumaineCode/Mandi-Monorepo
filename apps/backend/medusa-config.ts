@@ -53,14 +53,14 @@ module.exports = defineConfig({
             id: 'openpay',
             options: {},
           },
-          // Mercado Pago stays UNREGISTERED — the module directory lands in
-          // slice S4. Its settings are persisted/validated only (settings-only
-          // per spec); registration here would fail module resolution.
-          // {
-          //   resolve: './src/modules/mercadopago-payment',
-          //   id: 'mercadopago',
-          //   options: {},
-          // },
+              // Mercado Pago Checkout Pro (redirect) - always registered
+              // (slice 3); credentials DB-resolved per op -> runtime provider id
+              // pp_mercadopago_mercadopago (slice S4).
+              {
+                resolve: './src/modules/mercadopago-payment',
+                id: 'mercadopago',
+                options: {},
+              },
         ],
       },
     },
