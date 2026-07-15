@@ -1,6 +1,11 @@
 "use client"
 import { RadioGroup } from "@headlessui/react"
-import { isOpenpay, isStripeLike, paymentInfoMap } from "@lib/constants"
+import {
+  isMercadopago,
+  isOpenpay,
+  isStripeLike,
+  paymentInfoMap,
+} from "@lib/constants"
 import { initiatePaymentSession } from "@lib/data/cart"
 import { getBaseURL } from "@lib/util/env"
 import { CheckCircleSolid, CreditCard } from "@medusajs/icons"
@@ -112,6 +117,26 @@ const Payment = ({
             token_id: tokenId,
             device_session_id: openpay.deviceSessionId,
             return_url: `${getBaseURL()}/${params.countryCode}/payment/openpay/return`,
+          },
+        })
+
+        return router.push(
+          pathname + "?" + createQueryString("step", "review"),
+          {
+            scroll: false,
+          }
+        )
+      }
+
+      if (isMercadopago(selectedPaymentMethod)) {
+        // Checkout Pro is a pure redirect: create the preference now, passing
+        // the storefront base for MP's back_urls. The init_point returned by
+        // the backend is stored on the session and consumed by the payment
+        // button on the review step (SF-4). No card data, no wrapper.
+        await initiatePaymentSession(cart, {
+          provider_id: selectedPaymentMethod,
+          data: {
+            back_urls_base: `${getBaseURL()}/${params.countryCode}/payment/mercadopago`,
           },
         })
 
