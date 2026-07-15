@@ -10,21 +10,27 @@
  * 2. Provide inert, non-gating test env defaults so suites never depend on
  *    real provider credentials.
  *
- * NOTE on provider env gating (S1 scope): medusa-config.ts only includes a
- * payment/fulfillment provider when its FULL required env set is present
- * (design amendment fix 5). Gating vars (OPENPAY_MERCHANT_ID, MP_ACCESS_TOKEN,
- * SKYDROPX_API_KEY, ...) are intentionally NOT faked here yet — their module
- * directories land in later slices (S2/S4/S5), and faking them now would make
- * the integration test boot resolve module paths that do not exist. Each
- * provider slice adds its full inert fake env set here together with the
- * module it enables.
+ * NOTE on provider registration (admin-provider-settings slice 3): Openpay
+ * and Skydropx are ALWAYS registered with empty options and resolve their
+ * credentials from the DB at operation time. Provider credential env vars
+ * stay deliberately UNSET here — booting the app with zero provider env and
+ * an empty settings table IS the fail-safe regression test (both providers
+ * registered + inert, design §10).
  */
 const { loadEnv } = require("@medusajs/utils")
 
 loadEnv("test", process.cwd())
 
-// Inert defaults for non-gating provider knobs. Real values are never
-// required by any jest suite; provider unit tests pass options explicitly.
-process.env.OPENPAY_SANDBOX = process.env.OPENPAY_SANDBOX ?? "true"
-process.env.SKYDROPX_BASE_URL =
-  process.env.SKYDROPX_BASE_URL ?? "https://api.skydropx.test/v1"
+// No provider credential fakes: runtime code reads provider config from the
+// DB only (spec: DB strictly authoritative). The inert SKYDROPX_BASE_URL and
+// OPENPAY_SANDBOX knobs were removed with the slice-3 registration flip —
+// nothing consults them at runtime anymore.
+
+// Deterministic test KEK for the provider-settings module (admin-provider-
+// settings slice 1, design §10). Base64 of the 32 ASCII bytes
+// "0123456789abcdef0123456789abcdef" — NOT a real key. Needed by every
+// suite that boots the app or the module so encryption is enabled and
+// ciphertexts are reproducible across runs.
+process.env.PROVIDER_SETTINGS_ENCRYPTION_KEY =
+  process.env.PROVIDER_SETTINGS_ENCRYPTION_KEY ??
+  "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="

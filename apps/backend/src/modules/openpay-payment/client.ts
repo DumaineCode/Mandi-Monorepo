@@ -10,8 +10,8 @@ import {
   OpenpayApiError,
   OpenpayCharge,
   OpenpayCreateChargeRequest,
+  OpenpayCredentials,
   OpenpayErrorBody,
-  OpenpayOptions,
   OpenpayRefundRequest,
 } from "./types"
 
@@ -36,7 +36,7 @@ const isTransientError = (error: unknown): boolean => {
 }
 
 type ClientOptions = Pick<
-  OpenpayOptions,
+  OpenpayCredentials,
   "merchantId" | "privateKey" | "sandbox"
 >
 

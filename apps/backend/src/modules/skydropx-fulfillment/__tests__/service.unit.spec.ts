@@ -15,6 +15,12 @@
  *   quote-vs-label rate delta; failure → MedusaError(UNEXPECTED_STATE), no
  *   half-shipped state (SD-4)
  * - cancelFulfillment tolerates "not cancellable" via log-and-proceed
+ *
+ * Slice 3 (admin-provider-settings): config now arrives through an async
+ * `credentialSource` (DB-backed in production, faked here). Unconfigured
+ * (source → null) → graceful INVALID_DATA on quote/label paths, no API call;
+ * `taxInclusive` comes from DB settings ONLY (env read deleted); an apiKey
+ * rotation rebuilds the immutable client on the next call.
  */
 import { MedusaError } from "@medusajs/framework/utils"
 import SkydropxFulfillmentProviderService from "../service"
@@ -22,7 +28,7 @@ import SkydropxFulfillmentProviderService from "../service"
 const API_KEY = "sk_test_skydropx"
 const ORIGIN_ZIP = "01000"
 
-const options = {
+const config = {
   apiKey: API_KEY,
   originZip: ORIGIN_ZIP,
 }
@@ -35,12 +41,16 @@ const makeLogger = () => ({
 })
 
 const makeService = (
-  overrides: Record<string, unknown> = {},
+  overrides: Record<string, unknown> | null = {},
   logger = makeLogger()
 ) => {
+  const credentialSource =
+    overrides === null
+      ? async () => null
+      : async () => ({ ...config, ...overrides })
   const service = new SkydropxFulfillmentProviderService(
     { logger },
-    { ...options, ...overrides }
+    { credentialSource }
   )
   return { service, logger }
 }
@@ -165,16 +175,42 @@ describe("SkydropxFulfillmentProviderService", () => {
       expect(body.zip_from).toBe(ORIGIN_ZIP)
     })
 
-    it("honors the isTaxInclusive module option when set to false", async () => {
+    it("honors the DB-resolved taxInclusive setting when false", async () => {
       fetchMock.mockResolvedValue(
         jsonResponse({
           rates: [{ id: "r1", provider: "dhl", total_pricing: 99, days: 2 }],
         })
       )
-      const { service } = makeService({ isTaxInclusive: false })
+      const { service } = makeService({ taxInclusive: false })
 
       const price = await service.calculatePrice(OPTION_DATA, {}, cartContext())
       expect(price.is_calculated_price_tax_inclusive).toBe(false)
+    })
+
+    it("NEVER consults SKYDROPX_TAX_INCLUSIVE env (DB strictly authoritative)", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          rates: [{ id: "r1", provider: "dhl", total_pricing: 99, days: 2 }],
+        })
+      )
+      const previous = process.env.SKYDROPX_TAX_INCLUSIVE
+      process.env.SKYDROPX_TAX_INCLUSIVE = "false"
+      try {
+        // DB settings omit taxInclusive → default true, env must have no say.
+        const { service } = makeService()
+        const price = await service.calculatePrice(
+          OPTION_DATA,
+          {},
+          cartContext()
+        )
+        expect(price.is_calculated_price_tax_inclusive).toBe(true)
+      } finally {
+        if (previous === undefined) {
+          delete process.env.SKYDROPX_TAX_INCLUSIVE
+        } else {
+          process.env.SKYDROPX_TAX_INCLUSIVE = previous
+        }
+      }
     })
 
     it("selects the cheapest rate across carriers", async () => {
@@ -528,6 +564,98 @@ describe("SkydropxFulfillmentProviderService", () => {
           fulfillment
         )
       ).rejects.toMatchObject({ type: MedusaError.Types.UNEXPECTED_STATE })
+    })
+  })
+
+  describe("unconfigured provider (source → null) — fail-safe inert (slice 3)", () => {
+    it("calculatePrice rejects gracefully with INVALID_DATA and never calls the API", async () => {
+      const { service } = makeService(null)
+
+      await expect(
+        service.calculatePrice(OPTION_DATA, {}, cartContext())
+      ).rejects.toMatchObject({
+        type: MedusaError.Types.INVALID_DATA,
+        message: expect.stringContaining("not configured"),
+      })
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it("createFulfillment rejects with a MedusaError and never calls the API", async () => {
+      const { service } = makeService(null)
+
+      await expect(
+        service.createFulfillment(
+          { id: "skydropx-standard" },
+          [{ quantity: 1, line_item_id: "li_1" }] as any,
+          undefined,
+          {} as any
+        )
+      ).rejects.toMatchObject({ type: MedusaError.Types.INVALID_DATA })
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it("cancelFulfillment logs and proceeds without the API (never blocks Medusa-side cancel)", async () => {
+      const { service, logger } = makeService(null)
+
+      await expect(
+        service.cancelFulfillment({ label_id: "lab_1" })
+      ).resolves.not.toThrow()
+      expect(fetchMock).not.toHaveBeenCalled()
+      expect(logger.warn).toHaveBeenCalled()
+    })
+
+    it("getFulfillmentOptions still lists the option (registration is unconditional)", async () => {
+      const { service } = makeService(null)
+
+      await expect(service.getFulfillmentOptions()).resolves.toEqual([
+        { id: "skydropx-standard", name: "Envío estándar" },
+      ])
+    })
+  })
+
+  describe("client rebuild on credential fingerprint change (rotation, slice 3)", () => {
+    it("uses the rotated apiKey on the next quotation without a restart", async () => {
+      // Fresh Response per call — a Response body can only be read once.
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(
+          jsonResponse({
+            rates: [{ id: "r1", provider: "dhl", total_pricing: 99, days: 2 }],
+          })
+        )
+      )
+      let current: Record<string, unknown> | null = { ...config }
+      const credentialSource = async () => current
+      const service = new SkydropxFulfillmentProviderService(
+        { logger: makeLogger() },
+        { credentialSource: credentialSource as any }
+      )
+
+      await service.calculatePrice(OPTION_DATA, {}, cartContext())
+      current = { ...config, apiKey: "sk_rotated" }
+      await service.calculatePrice(OPTION_DATA, {}, cartContext())
+
+      const firstHeaders = (fetchMock.mock.calls[0][1] as RequestInit).headers
+      const secondHeaders = (fetchMock.mock.calls[1][1] as RequestInit).headers
+      expect((firstHeaders as any).Authorization).toBe(
+        `Token token=${API_KEY}`
+      )
+      expect((secondHeaders as any).Authorization).toBe(
+        "Token token=sk_rotated"
+      )
+    })
+  })
+
+  describe("validateOptions (slice 3 — always-registered, empty options valid)", () => {
+    it("accepts an EMPTY options object (credentials live in the DB now)", () => {
+      expect(() =>
+        SkydropxFulfillmentProviderService.validateOptions({})
+      ).not.toThrow()
+    })
+
+    it("still rejects a PRESENT but empty apiKey", () => {
+      expect(() =>
+        SkydropxFulfillmentProviderService.validateOptions({ apiKey: "" })
+      ).toThrow(MedusaError)
     })
   })
 

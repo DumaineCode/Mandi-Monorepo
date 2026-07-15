@@ -54,3 +54,5 @@ yarn-error.log*
 ehthumbs.db
 Thumbs.db
 **/.DS_Store
+# Local Pi runtime state
+.atl/

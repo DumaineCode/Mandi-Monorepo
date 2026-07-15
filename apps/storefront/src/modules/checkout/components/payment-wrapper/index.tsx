@@ -3,12 +3,18 @@
 import { loadStripe } from "@stripe/stripe-js"
 import React from "react"
 import StripeWrapper from "./stripe-wrapper"
-import OpenpayWrapper from "./openpay-wrapper"
+import OpenpayWrapper, { type OpenpayPublicConfig } from "./openpay-wrapper"
 import { HttpTypes } from "@medusajs/types"
 import { isOpenpay, isStripeLike } from "@lib/constants"
 
 type PaymentWrapperProps = {
   cart: HttpTypes.StoreCart
+  /**
+   * Non-secret Openpay config fetched at runtime from the checkout server
+   * component (GET /store/provider-config). `null` → Openpay card payments
+   * degrade gracefully (disabled) while the rest of checkout keeps working.
+   */
+  openpayConfig?: OpenpayPublicConfig | null
   children: React.ReactNode
 }
 
@@ -24,13 +30,17 @@ const stripePromise = stripeKey
     )
   : null
 
-const PaymentWrapper: React.FC<PaymentWrapperProps> = ({ cart, children }) => {
+const PaymentWrapper: React.FC<PaymentWrapperProps> = ({
+  cart,
+  openpayConfig,
+  children,
+}) => {
   const paymentSession = cart.payment_collection?.payment_sessions?.find(
     (s) => s.status === "pending"
   )
 
   if (isOpenpay(paymentSession?.provider_id) && paymentSession) {
-    return <OpenpayWrapper>{children}</OpenpayWrapper>
+    return <OpenpayWrapper config={openpayConfig}>{children}</OpenpayWrapper>
   }
 
   if (

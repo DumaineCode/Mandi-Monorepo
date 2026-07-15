@@ -26,7 +26,9 @@ const WEBHOOK_PASSWORD = "hookpass"
 const SESSION_ID = "payses_01TEST"
 const CHARGE_ID = "trx_openpay_001"
 
-const options = {
+// Slice 3 (admin-provider-settings): webhook credentials are DB-resolved per
+// delivery through the async credentialSource seam (faked here).
+const credentials = {
   merchantId: MERCHANT_ID,
   privateKey: PRIVATE_KEY,
   sandbox: true,
@@ -47,8 +49,11 @@ const logger = {
 
 const container = { logger }
 
-const makeService = (opts = options) =>
-  new OpenpayPaymentProviderService(container as never, opts)
+const makeService = (
+  credentialSource: () => Promise<typeof credentials | null> = async () =>
+    credentials
+) =>
+  new OpenpayPaymentProviderService(container as never, { credentialSource })
 
 const jsonResponse = (body: unknown, status = 200): Response =>
   ({
@@ -164,11 +169,11 @@ describe("OpenpayPaymentProviderService.getWebhookActionAndData", () => {
     })
 
     it("rejects everything when webhook credentials are not configured", async () => {
-      const service = makeService({
+      const service = makeService(async () => ({
         merchantId: MERCHANT_ID,
         privateKey: PRIVATE_KEY,
         sandbox: true,
-      } as typeof options)
+      }) as unknown as typeof credentials)
 
       const result = await service.getWebhookActionAndData(
         makePayload(succeededBody(), VALID_AUTH)
@@ -176,6 +181,46 @@ describe("OpenpayPaymentProviderService.getWebhookActionAndData", () => {
 
       expect(result).toEqual({ action: "not_supported" })
       expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it("rejects ALL deliveries when the provider is unconfigured (source → null)", async () => {
+      const service = makeService(async () => null)
+
+      const result = await service.getWebhookActionAndData(
+        makePayload(succeededBody(), VALID_AUTH)
+      )
+
+      expect(result).toEqual({ action: "not_supported" })
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it("resolves credentials PER DELIVERY: a rotated password takes effect without restart", async () => {
+      fetchMock.mockResolvedValue(jsonResponse(fetchedCharge()))
+      let current = { ...credentials }
+      const service = makeService(async () => current)
+
+      // Delivery signed with password A is accepted before rotation…
+      const before = await service.getWebhookActionAndData(
+        makePayload(succeededBody(), VALID_AUTH)
+      )
+      expect(before.action).toBe("captured")
+
+      // …admin saves password B…
+      current = { ...credentials, webhookPassword: "rotatedpass" }
+      const rotatedAuth = `Basic ${Buffer.from(
+        `${WEBHOOK_USER}:rotatedpass`
+      ).toString("base64")}`
+
+      // …a stale delivery still using A is rejected, one using B is accepted.
+      const stale = await service.getWebhookActionAndData(
+        makePayload(succeededBody(), VALID_AUTH)
+      )
+      expect(stale).toEqual({ action: "not_supported" })
+
+      const fresh = await service.getWebhookActionAndData(
+        makePayload(succeededBody(), rotatedAuth)
+      )
+      expect(fresh.action).toBe("captured")
     })
 
     it("never logs the webhook password on rejection", async () => {

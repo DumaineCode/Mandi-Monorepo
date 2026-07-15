@@ -13,9 +13,9 @@ import {
   SkydropxApiError,
   SkydropxCreateLabelRequest,
   SkydropxCreateShipmentRequest,
+  SkydropxCredentials,
   SkydropxErrorBody,
   SkydropxLabel,
-  SkydropxOptions,
   SkydropxQuotationRequest,
   SkydropxQuotationResponse,
   SkydropxShipment,
@@ -28,7 +28,7 @@ export const SKYDROPX_QUOTATION_TIMEOUT_MS = 8_000
 /** Admin-side shipment/label calls get a wider bound (design §5.4). */
 export const SKYDROPX_REQUEST_TIMEOUT_MS = 15_000
 
-type ClientOptions = Pick<SkydropxOptions, "apiKey" | "baseUrl">
+type ClientOptions = Pick<SkydropxCredentials, "apiKey" | "baseUrl">
 
 export class SkydropxClient {
   private readonly baseUrl: string

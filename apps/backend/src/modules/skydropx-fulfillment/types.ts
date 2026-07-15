@@ -9,19 +9,33 @@
  * turns out to be Pro/OAuth, only client.ts changes (design R3).
  */
 
-/** Module provider options (medusa-config `options`, env-sourced). */
-export interface SkydropxOptions {
+import type { CredentialSource } from "../../lib/provider-credentials"
+
+/**
+ * Resolved Skydropx settings (admin-provider-settings slice 3). Matches the
+ * providerSettings `getResolvedCredentials("skydropx")` shape — resolved from
+ * the DB per operation, never injected at boot.
+ */
+export interface SkydropxCredentials {
   apiKey: string
-  /** Optional override for the legacy base URL (SKYDROPX_BASE_URL). */
+  /** Optional override for the legacy base URL (defaulted by the resolver). */
   baseUrl?: string
-  /** Fallback origin zip when the stock location has none (SKYDROPX_ORIGIN_ZIP). */
+  /** Fallback origin zip when the stock location has none. */
   originZip?: string
   /**
-   * Whether Skydropx `total_pricing` already includes IVA
-   * (SKYDROPX_TAX_INCLUSIVE, default true).
+   * Whether Skydropx `total_pricing` already includes IVA (default true).
+   * DB-resolved ONLY — the legacy SKYDROPX_TAX_INCLUSIVE env read is gone.
    * TODO(sandbox-verify): default pinned pending gate S5.0b IVA verification.
    */
-  isTaxInclusive?: boolean
+  taxInclusive?: boolean
+}
+
+/**
+ * Provider options from medusa-config.ts. Empty in production (always
+ * registered, credentials DB-resolved); `credentialSource` is a test seam.
+ */
+export interface SkydropxOptions {
+  credentialSource?: CredentialSource<SkydropxCredentials>
 }
 
 /** Aggregate parcel in Skydropx units: kg + cm (design §5.2). */

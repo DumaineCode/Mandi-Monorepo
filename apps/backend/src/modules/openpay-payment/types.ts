@@ -9,14 +9,29 @@
  * `transaction.order_id` echo, and the refund endpoint response.
  */
 
-/** Provider options wired from medusa-config.ts (env-derived, never hardcoded). */
-export interface OpenpayOptions {
+import type { CredentialSource } from "../../lib/provider-credentials"
+
+/**
+ * Resolved Openpay credentials (admin-provider-settings slice 3). Matches the
+ * providerSettings `getResolvedCredentials("openpay")` shape — resolved from
+ * the DB per operation, never injected at boot.
+ */
+export interface OpenpayCredentials {
   merchantId: string
   privateKey: string
   sandbox?: boolean
-  /** Webhook Basic-auth credentials — consumed by the S2b webhook slice. */
+  publicKey?: string
+  /** Webhook Basic-auth credentials, verified per delivery. */
   webhookUser?: string
   webhookPassword?: string
+}
+
+/**
+ * Provider options from medusa-config.ts. Empty in production (always
+ * registered, credentials DB-resolved); `credentialSource` is a test seam.
+ */
+export interface OpenpayOptions {
+  credentialSource?: CredentialSource<OpenpayCredentials>
 }
 
 /** TODO(sandbox-verify): status list from docs; confirm against sandbox. */

@@ -19,9 +19,19 @@ import {
   MedusaError,
 } from "@medusajs/framework/utils"
 import { SKYDROPX_IDENTIFIER } from "../../lib/constants"
+import {
+  credentialFingerprint,
+  makeDbCredentialSource,
+  type CredentialSource,
+} from "../../lib/provider-credentials"
 import { SkydropxClient } from "./client"
 import { buildParcel, MissingDimensionsError, ParcelItem } from "./parcel"
-import { SkydropxApiError, SkydropxOptions, SkydropxRate } from "./types"
+import {
+  SkydropxApiError,
+  SkydropxCredentials,
+  SkydropxOptions,
+  SkydropxRate,
+} from "./types"
 
 type Logger = {
   info: (message: string) => void
@@ -89,24 +99,58 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
   static identifier = SKYDROPX_IDENTIFIER
 
   protected readonly logger_: Logger
-  protected readonly options_: SkydropxOptions
-  protected readonly client_: SkydropxClient
+  private readonly credentialSource_: CredentialSource<SkydropxCredentials>
+  private clientCache_?: { fingerprint: string; client: SkydropxClient }
 
-  constructor({ logger }: InjectedDependencies, options: SkydropxOptions) {
+  constructor(
+    { logger }: InjectedDependencies,
+    options: SkydropxOptions = {}
+  ) {
     super()
     this.logger_ = logger
-    this.options_ = options
-    this.client_ = new SkydropxClient(options)
+    // Lazy per-operation resolution (design F1/F2): the container is NEVER
+    // touched here — module load order at boot is not guaranteed.
+    this.credentialSource_ =
+      options.credentialSource ??
+      makeDbCredentialSource<SkydropxCredentials>(SKYDROPX_IDENTIFIER)
   }
 
-  /** Shape-only validation at registration time (amendment fix 5 pattern). */
+  /**
+   * Shape-only validation (slice 3 — always-registered): EMPTY options are
+   * valid because credentials are DB-resolved per operation. A present but
+   * malformed apiKey still fails loudly.
+   */
   static validateOptions(options: Record<string, unknown>): void {
-    if (!options.apiKey) {
+    if (
+      "apiKey" in options &&
+      (typeof options.apiKey !== "string" || !options.apiKey)
+    ) {
       throw new MedusaError(
         MedusaError.Types.INVALID_DATA,
-        "Skydropx fulfillment provider requires an apiKey option (SKYDROPX_API_KEY)."
+        "Skydropx provider option `apiKey`, when set, must be a non-empty string."
       )
     }
+  }
+
+  /** Unconfigured → typed MedusaError so checkout/admin degrade gracefully. */
+  private async requireConfig_(): Promise<SkydropxCredentials> {
+    const config = await this.credentialSource_()
+    if (!config) {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        "Skydropx is not configured."
+      )
+    }
+    return config
+  }
+
+  /** Immutable client cache keyed by credential fingerprint (design §3.2). */
+  private getClient_(config: SkydropxCredentials): SkydropxClient {
+    const fingerprint = credentialFingerprint(config)
+    if (this.clientCache_?.fingerprint !== fingerprint) {
+      this.clientCache_ = { fingerprint, client: new SkydropxClient(config) }
+    }
+    return this.clientCache_.client
   }
 
   async getFulfillmentOptions(): Promise<FulfillmentOption[]> {
@@ -114,7 +158,7 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
     return [{ id: OPTION_ID, name: "Envío estándar" }]
   }
 
-  async canCalculate(): Promise<boolean> {
+  async canCalculate(_data?: unknown): Promise<boolean> {
     return true
   }
 
@@ -135,6 +179,8 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
     _data: CalculateShippingOptionPriceDTO["data"],
     context: CalculateShippingOptionPriceDTO["context"]
   ): Promise<CalculatedShippingOptionPrice> {
+    const config = await this.requireConfig_()
+
     const ctx = context as unknown as {
       shipping_address?: { postal_code?: string }
       from_location?: { address?: { postal_code?: string } }
@@ -149,13 +195,12 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
       )
     }
 
-    // Stock location zip wins; SKYDROPX_ORIGIN_ZIP is the fallback (design §5.3).
-    const zipFrom =
-      ctx.from_location?.address?.postal_code || this.options_.originZip
+    // Stock location zip wins; the DB-resolved originZip is the fallback.
+    const zipFrom = ctx.from_location?.address?.postal_code || config.originZip
     if (!zipFrom) {
       throw new MedusaError(
         MedusaError.Types.INVALID_DATA,
-        "Skydropx quote requires an origin postal code (stock location or SKYDROPX_ORIGIN_ZIP)."
+        "Skydropx quote requires an origin postal code (stock location or the origin zip setting)."
       )
     }
 
@@ -170,8 +215,9 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
       throw error
     }
 
+    const client = this.getClient_(config)
     const rates = await this.fetchRates_(() =>
-      this.client_.createQuotation({
+      client.createQuotation({
         zip_from: zipFrom,
         zip_to: zipTo,
         parcel,
@@ -183,7 +229,9 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
     return {
       // Amounts stay as-is MXN — never cent-converted (data-price-format rule).
       calculated_amount: Number(rate.total_pricing),
-      is_calculated_price_tax_inclusive: this.isTaxInclusive_(),
+      // IVA inclusion is DB-resolved ONLY (spec: DB strictly authoritative);
+      // default true. TODO(sandbox-verify): pinned pending gate S5.0b.
+      is_calculated_price_tax_inclusive: config.taxInclusive ?? true,
     }
   }
 
@@ -193,6 +241,9 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
     order: Record<string, any> | undefined,
     fulfillment: Record<string, any>
   ): Promise<CreateFulfillmentResult> {
+    const config = await this.requireConfig_()
+    const client = this.getClient_(config)
+
     const orderItems: Record<string, any>[] = order?.items ?? []
     const parcelItems = toParcelItems(
       items.map((item) => ({
@@ -215,7 +266,7 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
     const shippingAddress = order?.shipping_address ?? {}
 
     try {
-      const shipment = await this.client_.createShipment({
+      const shipment = await client.createShipment({
         address_from: {
           zip: locationAddress.postal_code,
           name: fulfillment?.location?.name,
@@ -261,13 +312,14 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
         )
       }
 
-      let label = await this.client_.createLabel({ rate_id: rate.id })
+      let label = await client.createLabel({ rate_id: rate.id })
 
       // Bounded IN_PROGRESS polling (design §5.4): anchor the deadline once.
       const deadline = Date.now() + LABEL_POLL_BOUND_MS
       while (label.status === "IN_PROGRESS") {
         if (Date.now() > deadline) {
           await this.abandonLabel_(
+            client,
             shipment.id,
             label.id,
             `still IN_PROGRESS after ${LABEL_POLL_BOUND_MS}ms`
@@ -278,11 +330,12 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
           )
         }
         await this.sleep_(LABEL_POLL_INTERVAL_MS)
-        label = await this.client_.getLabel(label.id)
+        label = await client.getLabel(label.id)
       }
 
       if (label.status !== "COMPLETED") {
         await this.abandonLabel_(
+          client,
           shipment.id,
           label.id,
           `ended in status ${label.status}`
@@ -329,6 +382,7 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
    * swallowed (logged) so the original failure is always what surfaces.
    */
   private async abandonLabel_(
+    client: SkydropxClient,
     shipmentId: string,
     labelId: string,
     reason: string
@@ -338,7 +392,7 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
         `shipment_id=${shipmentId} label_id=${labelId}`
     )
     try {
-      await this.client_.cancelLabel(labelId)
+      await client.cancelLabel(labelId)
     } catch (cancelError) {
       this.logger_.warn(
         `Skydropx best-effort cancel of label ${labelId} failed: ${describeError(cancelError)}`
@@ -353,8 +407,18 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
       return {}
     }
 
+    // Unconfigured → log-and-proceed: Medusa-side cancellation must never
+    // block on missing credentials (fail-safe, same spirit as "not cancellable").
+    const config = await this.credentialSource_()
+    if (!config) {
+      this.logger_.warn(
+        `Skydropx label ${labelId} could not be cancelled (provider unconfigured) — proceeding.`
+      )
+      return {}
+    }
+
     try {
-      await this.client_.cancelLabel(labelId)
+      await this.getClient_(config).cancelLabel(labelId)
     } catch (error) {
       // SD-4 cancel: log-and-proceed so Medusa-side cancellation never blocks
       // on carrier "not cancellable" windows.
@@ -388,22 +452,6 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
     }
 
     return response.rates
-  }
-
-  /**
-   * Whether Skydropx `total_pricing` is IVA-inclusive. Module option wins,
-   * then SKYDROPX_TAX_INCLUSIVE env, defaulting to true.
-   * TODO(sandbox-verify): default pinned pending gate S5.0b IVA verification.
-   */
-  private isTaxInclusive_(): boolean {
-    if (typeof this.options_.isTaxInclusive === "boolean") {
-      return this.options_.isTaxInclusive
-    }
-    const env = process.env.SKYDROPX_TAX_INCLUSIVE
-    if (env !== undefined) {
-      return env !== "false"
-    }
-    return true
   }
 
   /** Seam for tests to skip real polling delays. */

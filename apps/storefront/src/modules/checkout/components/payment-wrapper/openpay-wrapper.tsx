@@ -58,13 +58,24 @@ declare global {
   }
 }
 
+/**
+ * Non-secret Openpay config served at runtime by GET /store/provider-config
+ * (admin-managed, no storefront rebuild on key rotation). Structurally matches
+ * `OpenpayPublicConfig` from `@lib/data/provider-config`.
+ */
+export type OpenpayPublicConfig = {
+  merchantId: string
+  publicKey: string
+  sandbox: boolean
+}
+
 export type OpenpayContextValue = {
   /** True once both openpay.js scripts are loaded and the client is initialized. */
   ready: boolean
   /**
-   * True when Openpay can never become ready in this session (missing
-   * NEXT_PUBLIC_OPENPAY_* config or a CDN script failure). Consumers should
-   * show a "temporarily unavailable" state instead of a loading skeleton.
+   * True when Openpay can never become ready in this session (missing runtime
+   * provider config or a CDN script failure). Consumers should show a
+   * "temporarily unavailable" state instead of a loading skeleton.
    */
   unavailable: boolean
   /** Antifraud device session id from OpenPay.deviceData.setup(). */
@@ -92,19 +103,28 @@ const OPENPAY_CORE_SRC = "https://js.openpay.mx/openpay.v1.min.js"
 const OPENPAY_DATA_SRC = "https://js.openpay.mx/openpay-data.v1.min.js"
 
 type OpenpayWrapperProps = {
+  /**
+   * Non-secret Openpay config resolved at runtime from
+   * GET /store/provider-config and threaded from the checkout server
+   * component. `null`/missing → graceful degradation (card payments disabled).
+   */
+  config?: OpenpayPublicConfig | null
   children: React.ReactNode
 }
 
-const OpenpayWrapper: React.FC<OpenpayWrapperProps> = ({ children }) => {
+const OpenpayWrapper: React.FC<OpenpayWrapperProps> = ({
+  config,
+  children,
+}) => {
   const [coreLoaded, setCoreLoaded] = useState(false)
   const [ready, setReady] = useState(false)
   const [scriptFailed, setScriptFailed] = useState(false)
   const [deviceSessionId, setDeviceSessionId] = useState<string | null>(null)
   const [cardData, setCardData] = useState<OpenpayCardFields | null>(null)
 
-  const merchantId = process.env.NEXT_PUBLIC_OPENPAY_MERCHANT_ID
-  const publicKey = process.env.NEXT_PUBLIC_OPENPAY_PUBLIC_KEY
-  const sandbox = process.env.NEXT_PUBLIC_OPENPAY_SANDBOX === "true"
+  const merchantId = config?.merchantId
+  const publicKey = config?.publicKey
+  const sandbox = config?.sandbox ?? false
 
   // Graceful degradation: missing config must never crash the payment step —
   // other providers keep working; the Openpay option shows an unavailable state.
@@ -114,7 +134,7 @@ const OpenpayWrapper: React.FC<OpenpayWrapperProps> = ({ children }) => {
   useEffect(() => {
     if (configMissing) {
       console.error(
-        "Openpay configuration is missing. Set NEXT_PUBLIC_OPENPAY_MERCHANT_ID and NEXT_PUBLIC_OPENPAY_PUBLIC_KEY environment variables. Openpay card payments are disabled."
+        "Openpay runtime configuration is unavailable (GET /store/provider-config returned no Openpay merchant id / public key, or the endpoint is unreachable). Openpay card payments are disabled."
       )
     }
   }, [configMissing])

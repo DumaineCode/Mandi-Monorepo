@@ -3,56 +3,25 @@ import { loadEnv, defineConfig } from '@medusajs/framework/utils'
 loadEnv(process.env.NODE_ENV || 'development', process.cwd())
 
 /**
- * Env sets required to enable each optional provider (PF-2, PF-3).
+ * Provider registration (admin-provider-settings slice 3 — registration flip).
  *
- * A provider is included ONLY when its FULL required env set is present.
- * Partial configuration logs a warning and skips the provider so boot always
- * continues (design amendment fix 5). Optional knobs (OPENPAY_SANDBOX,
- * SKYDROPX_BASE_URL) have safe defaults and never gate inclusion.
- *
- * NOTE: OPENPAY_PUBLIC_KEY is part of the documented env contract but is only
- * consumed by the storefront (NEXT_PUBLIC_OPENPAY_PUBLIC_KEY); the backend
- * provider does not need it, so it does not gate registration.
+ * Openpay and Skydropx are ALWAYS registered with empty options: credentials
+ * are resolved from the DB-backed providerSettings module per operation, not
+ * injected at boot. An unconfigured provider is inert and fail-safe (payment
+ * sessions rejected gracefully, webhooks reject-all, quotes degrade to manual
+ * options) — boot never depends on provider env vars or DB state.
  */
-const OPENPAY_REQUIRED_ENV = [
-  'OPENPAY_MERCHANT_ID',
-  'OPENPAY_PRIVATE_KEY',
-  'OPENPAY_WEBHOOK_USER',
-  'OPENPAY_WEBHOOK_PASSWORD',
-]
-const MERCADOPAGO_REQUIRED_ENV = [
-  'MP_ACCESS_TOKEN',
-  'MP_WEBHOOK_SECRET',
-  'BACKEND_PUBLIC_URL',
-]
-const SKYDROPX_REQUIRED_ENV = ['SKYDROPX_API_KEY', 'SKYDROPX_ORIGIN_ZIP']
-
-function providerEnvReady(provider: string, required: string[]): boolean {
-  const missing = required.filter((key) => !process.env[key])
-
-  if (missing.length === required.length) {
-    // Not configured at all — silently skip (provider simply not enabled).
-    return false
-  }
-
-  if (missing.length > 0) {
-    console.warn(
-      `[medusa-config] Skipping ${provider} provider: partial configuration. ` +
-        `Missing env vars: ${missing.join(', ')}`
-    )
-    return false
-  }
-
-  return true
-}
 
 module.exports = defineConfig({
   projectConfig: {
     databaseUrl: process.env.DATABASE_URL,
-    // Cloud Postgres (Neon/Supabase/etc.) requires SSL. Only enable it outside
-    // local development so your local non-SSL Postgres keeps working.
+    // Cloud Postgres (Neon/Supabase/etc.) requires SSL. Only enable it in
+    // production-like environments so local development AND the CI/test
+    // integration Postgres (both non-SSL) keep connecting. The Medusa
+    // integration test runners force NODE_ENV=test, so gating SSL off for
+    // 'test' is what lets `test:integration:*` run against a local service.
     databaseDriverOptions:
-      process.env.NODE_ENV !== 'development'
+      process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test'
         ? { connection: { ssl: { rejectUnauthorized: false } } }
         : {},
     http: {
@@ -65,6 +34,12 @@ module.exports = defineConfig({
   },
   modules: [
     {
+      // DB-backed encrypted provider credential storage (admin-provider-settings
+      // slice 1). The provider entries below resolve their credentials from
+      // this module at operation time (slice 3).
+      resolve: './src/modules/provider-settings',
+    },
+    {
       resolve: '@medusajs/medusa/payment',
       options: {
         providers: [
@@ -72,37 +47,20 @@ module.exports = defineConfig({
           // registers the system provider unconditionally, independent of
           // this providers list (verified against @medusajs/payment 2.15.5
           // loaders/providers.js — design R4 / PF-3 boot scenario).
-          ...(providerEnvReady('openpay', OPENPAY_REQUIRED_ENV)
-            ? [
-                {
-                  // Module directory lands in slice S2; unreachable until the
-                  // full Openpay env set above is configured.
-                  resolve: './src/modules/openpay-payment',
-                  id: 'openpay',
-                  options: {
-                    merchantId: process.env.OPENPAY_MERCHANT_ID,
-                    privateKey: process.env.OPENPAY_PRIVATE_KEY,
-                    sandbox: process.env.OPENPAY_SANDBOX !== 'false',
-                    webhookUser: process.env.OPENPAY_WEBHOOK_USER,
-                    webhookPassword: process.env.OPENPAY_WEBHOOK_PASSWORD,
-                  },
-                },
-              ]
-            : []),
-          ...(providerEnvReady('mercadopago', MERCADOPAGO_REQUIRED_ENV)
-            ? [
-                {
-                  // Module directory lands in slice S4.
-                  resolve: './src/modules/mercadopago-payment',
-                  id: 'mercadopago',
-                  options: {
-                    accessToken: process.env.MP_ACCESS_TOKEN,
-                    webhookSecret: process.env.MP_WEBHOOK_SECRET,
-                    backendUrl: process.env.BACKEND_PUBLIC_URL,
-                  },
-                },
-              ]
-            : []),
+          {
+            // Always registered (slice 3); credentials DB-resolved per op.
+            resolve: './src/modules/openpay-payment',
+            id: 'openpay',
+            options: {},
+          },
+          // Mercado Pago stays UNREGISTERED — the module directory lands in
+          // slice S4. Its settings are persisted/validated only (settings-only
+          // per spec); registration here would fail module resolution.
+          // {
+          //   resolve: './src/modules/mercadopago-payment',
+          //   id: 'mercadopago',
+          //   options: {},
+          // },
         ],
       },
     },
@@ -116,22 +74,12 @@ module.exports = defineConfig({
             resolve: '@medusajs/medusa/fulfillment-manual',
             id: 'manual',
           },
-          ...(providerEnvReady('skydropx', SKYDROPX_REQUIRED_ENV)
-            ? [
-                {
-                  // Module directory lands in slice S5.
-                  resolve: './src/modules/skydropx-fulfillment',
-                  id: 'skydropx',
-                  options: {
-                    apiKey: process.env.SKYDROPX_API_KEY,
-                    baseUrl:
-                      process.env.SKYDROPX_BASE_URL ||
-                      'https://api.skydropx.com/v1',
-                    originZip: process.env.SKYDROPX_ORIGIN_ZIP,
-                  },
-                },
-              ]
-            : []),
+          {
+            // Always registered (slice 3); credentials DB-resolved per op.
+            resolve: './src/modules/skydropx-fulfillment',
+            id: 'skydropx',
+            options: {},
+          },
         ],
       },
     },

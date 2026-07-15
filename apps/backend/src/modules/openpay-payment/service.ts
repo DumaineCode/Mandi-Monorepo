@@ -35,10 +35,16 @@ import {
 import { AbstractPaymentProvider, MedusaError } from "@medusajs/framework/utils"
 import { timingSafeEqual } from "node:crypto"
 import { OPENPAY_IDENTIFIER } from "../../lib/constants"
+import {
+  credentialFingerprint,
+  makeDbCredentialSource,
+  type CredentialSource,
+} from "../../lib/provider-credentials"
 import { OpenpayClient } from "./client"
 import {
   OpenpayApiError,
   OpenpayCharge,
+  OpenpayCredentials,
   OpenpayOptions,
   OpenpayWebhookEvent,
 } from "./types"
@@ -152,38 +158,68 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
   static identifier = OPENPAY_IDENTIFIER
 
   /**
-   * Shape-only validation (amendment fix 5): validates the options object it
-   * is given, never crashes boot for providers that were skipped upstream by
-   * the medusa-config env gate.
+   * Shape-only validation (slice 3 — always-registered): EMPTY options are
+   * valid because credentials are DB-resolved per operation. Fields that ARE
+   * present must still be well-shaped so misconfiguration fails loudly.
    */
   static validateOptions(options: Record<string, unknown>): void {
     for (const key of ["merchantId", "privateKey"] as const) {
-      if (typeof options[key] !== "string" || !options[key]) {
+      if (key in options && (typeof options[key] !== "string" || !options[key])) {
         throw new MedusaError(
           MedusaError.Types.INVALID_DATA,
-          `Openpay provider requires a non-empty string option \`${key}\`.`
+          `Openpay provider option \`${key}\`, when set, must be a non-empty string.`
         )
       }
     }
   }
 
-  protected readonly options_: OpenpayOptions
-  protected readonly client_: OpenpayClient
+  private readonly credentialSource_: CredentialSource<OpenpayCredentials>
+  private clientCache_?: { fingerprint: string; client: OpenpayClient }
   private readonly logger_?: WebhookLogger
 
   constructor(
     cradle: Record<string, unknown>,
-    options: OpenpayOptions
+    options: OpenpayOptions = {}
   ) {
     super(cradle, options)
-    this.options_ = options
-    this.client_ = new OpenpayClient(options)
+    // Lazy per-operation resolution (design F1/F2): the container is NEVER
+    // touched here — module load order at boot is not guaranteed.
+    this.credentialSource_ =
+      options.credentialSource ??
+      makeDbCredentialSource<OpenpayCredentials>(OPENPAY_IDENTIFIER)
     this.logger_ = (cradle as { logger?: WebhookLogger }).logger
+  }
+
+  /**
+   * Resolves credentials and returns the cached immutable client, rebuilding
+   * it when the credential fingerprint changed (save/rotation, design §3.2).
+   * Unconfigured → typed MedusaError so checkout degrades gracefully.
+   */
+  private async getClient(): Promise<OpenpayClient> {
+    const credentials = await this.credentialSource_()
+    if (!credentials) {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        "Openpay is not configured."
+      )
+    }
+    const fingerprint = credentialFingerprint(credentials)
+    if (this.clientCache_?.fingerprint !== fingerprint) {
+      this.clientCache_ = {
+        fingerprint,
+        client: new OpenpayClient(credentials),
+      }
+    }
+    return this.clientCache_.client
   }
 
   async initiatePayment(
     input: InitiatePaymentInput
   ): Promise<InitiatePaymentOutput> {
+    // Reject session creation up front when unconfigured (fail-safe spec):
+    // shoppers get a graceful provider-unavailable error, never a late crash.
+    await this.getClient()
+
     const data = (input.data ?? {}) as SessionData
     assertNoRawCardData(data)
 
@@ -235,10 +271,12 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
       )
     }
 
+    const client = await this.getClient()
+
     // Idempotent re-entry: an existing charge is re-fetched, never recreated
     // (OP-4 resume after 3DS redirect).
     if (data.charge_id) {
-      const charge = await this.client_.getCharge(data.charge_id)
+      const charge = await client.getCharge(data.charge_id)
       // Charge replay guard: the fetched charge MUST correlate back to this
       // session via its order_id prefix — a foreign charge id is rejected.
       if (sessionIdFromOrderId(charge.order_id) !== sessionId) {
@@ -266,7 +304,7 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
     const customer = input.context?.customer
     let charge: OpenpayCharge
     try {
-      charge = await this.client_.createCharge({
+      charge = await client.createCharge({
         method: "card",
         source_id: data.token_id,
         amount,
@@ -309,7 +347,8 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
       return { status: "pending", data: input.data }
     }
 
-    const charge = await this.client_.getCharge(data.charge_id)
+    const client = await this.getClient()
+    const charge = await client.getCharge(data.charge_id)
     switch (charge.status) {
       case "completed":
       case "refunded":
@@ -332,7 +371,8 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
     if (!data.charge_id) {
       return { data: input.data }
     }
-    const charge = await this.client_.getCharge(data.charge_id)
+    const client = await this.getClient()
+    const charge = await client.getCharge(data.charge_id)
     return { data: charge as unknown as Record<string, unknown> }
   }
 
@@ -345,10 +385,12 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
       )
     }
 
+    const client = await this.getClient()
+
     try {
       // Amount forwarded as-is in MXN — Medusa stores prices as-is, never in
       // cents (building-with-medusa data-price-format rule).
-      await this.client_.refundCharge(data.charge_id, {
+      await client.refundCharge(data.charge_id, {
         amount: toAmountNumber(input.amount),
         description: "Refund requested from Medusa Admin",
       })
@@ -391,7 +433,7 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
   async getWebhookActionAndData(
     payload: ProviderWebhookPayload["payload"]
   ): Promise<WebhookActionResult> {
-    if (!this.verifyWebhookAuth(payload.headers)) {
+    if (!(await this.verifyWebhookAuth(payload.headers))) {
       this.logger_?.warn(
         "Openpay webhook rejected: Basic-auth verification failed."
       )
@@ -428,7 +470,8 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
     // (auth failures above still ack quietly — never throw on bad auth).
     let charge: OpenpayCharge
     try {
-      charge = await this.client_.getCharge(transactionId)
+      const client = await this.getClient()
+      charge = await client.getCharge(transactionId)
     } catch (error) {
       this.logger_?.warn(
         `Openpay webhook event ${event.type}: charge ${transactionId} could not be re-fetched — failing the delivery so Openpay retries.`
@@ -473,12 +516,17 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
 
   /**
    * Basic-auth check with timingSafeEqual and an explicit length guard
-   * (fix 6 — timingSafeEqual throws on length mismatch). Missing credentials
-   * configuration rejects everything: fail-safe, never fail-open.
+   * (fix 6 — timingSafeEqual throws on length mismatch). Credentials are
+   * DB-resolved PER DELIVERY (slice 3) so a rotated webhook password takes
+   * effect within the propagation window. Missing/unresolvable credentials
+   * reject everything: fail-safe, never fail-open.
    */
-  private verifyWebhookAuth(headers: Record<string, unknown>): boolean {
-    const user = this.options_.webhookUser
-    const password = this.options_.webhookPassword
+  private async verifyWebhookAuth(
+    headers: Record<string, unknown>
+  ): Promise<boolean> {
+    const credentials = await this.credentialSource_()
+    const user = credentials?.webhookUser
+    const password = credentials?.webhookPassword
     if (!user || !password) {
       return false
     }

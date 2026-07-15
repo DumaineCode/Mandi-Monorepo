@@ -4,23 +4,100 @@ Operational bring-up guide for the `mx-payments-shipping` change (spec PF-4).
 Follow it top to bottom on a fresh environment; the final checklist verifies
 the proposal's success criteria.
 
-All providers are **env-gated**: a provider registers only when its FULL env
-set is present (see `apps/backend/.env.template`). Partial config logs a
-warning and skips the provider — boot never fails because of missing keys.
+> **Credential model update (change: `admin-provider-settings`).** Provider
+> credentials are no longer env-gated at boot. Openpay and Skydropx are now
+> **always registered** and resolve their credentials at runtime from the
+> **database**, managed in **Admin > Provider Settings** (encrypted at rest,
+> AES-256-GCM). An unconfigured provider is inert and fail-safe (boot succeeds,
+> checkout degrades gracefully, webhooks reject-all). The only remaining
+> provider env vars are the KEK (`PROVIDER_SETTINGS_ENCRYPTION_KEY`) and
+> `BACKEND_PUBLIC_URL`; every other `OPENPAY_*` / `MP_*` / `SKYDROPX_*` /
+> `NEXT_PUBLIC_*` provider var is **DEPRECATED** and read only once by the
+> migration seed (see §1a). See §1a for the seed + KEK contract and §7.3 for
+> the per-slice rollback story.
 
 ## 1. Prerequisites
 
-- Backend and storefront envs populated from their `.env.template` files:
-  - Openpay: `OPENPAY_MERCHANT_ID`, `OPENPAY_PRIVATE_KEY`, `OPENPAY_PUBLIC_KEY`,
-    `OPENPAY_SANDBOX`, `OPENPAY_WEBHOOK_USER`, `OPENPAY_WEBHOOK_PASSWORD`
-  - Mercado Pago: `MP_ACCESS_TOKEN`, `MP_PUBLIC_KEY`, `MP_WEBHOOK_SECRET`
-  - Shared: `BACKEND_PUBLIC_URL` (publicly reachable HTTPS URL of the backend)
-  - Skydropx: `SKYDROPX_API_KEY`, optional `SKYDROPX_BASE_URL`,
-    `SKYDROPX_ORIGIN_ZIP` (fallback origin), optional `SKYDROPX_TAX_INCLUSIVE`
-  - Storefront: `NEXT_PUBLIC_OPENPAY_MERCHANT_ID`, `NEXT_PUBLIC_OPENPAY_PUBLIC_KEY`,
-    `NEXT_PUBLIC_OPENPAY_SANDBOX`, `NEXT_PUBLIC_MP_PUBLIC_KEY`,
-    `NEXT_PUBLIC_DEFAULT_REGION=mx`
+- Backend env (from `apps/backend/.env.template`) — provider concerns need only:
+  - **ACTIVE** `PROVIDER_SETTINGS_ENCRYPTION_KEY` (KEK; see §1a) and
+    `BACKEND_PUBLIC_URL` (publicly reachable HTTPS URL of the backend).
+  - **DEPRECATED, seed-only** (populate ONLY for the initial migration seed,
+    then remove — see §1a): `OPENPAY_MERCHANT_ID`, `OPENPAY_PRIVATE_KEY`,
+    `OPENPAY_PUBLIC_KEY`, `OPENPAY_SANDBOX`, `OPENPAY_WEBHOOK_USER`,
+    `OPENPAY_WEBHOOK_PASSWORD`; `MP_ACCESS_TOKEN`, `MP_PUBLIC_KEY`,
+    `MP_WEBHOOK_SECRET`; `SKYDROPX_API_KEY`, `SKYDROPX_BASE_URL`,
+    `SKYDROPX_ORIGIN_ZIP`, `SKYDROPX_TAX_INCLUSIVE`.
+- Storefront env (from `apps/storefront/.env.template`):
+  `NEXT_PUBLIC_DEFAULT_REGION=mx` (active). `NEXT_PUBLIC_OPENPAY_*` and
+  `NEXT_PUBLIC_MP_PUBLIC_KEY` are **DEPRECATED** — public config is fetched at
+  runtime from `GET /store/provider-config` (no rebuild on key rotation).
 - Postgres reachable; backend boots (`pnpm dev` in `apps/backend`).
+
+## 1a. Provider credentials: seed, KEK, and deprecation
+
+Provider credentials are managed in **Admin > Provider Settings** and stored
+encrypted in the database. On an existing deploy, import the current env-based
+credentials once, then manage everything from the admin panel.
+
+### 1a.1 KEK (`PROVIDER_SETTINGS_ENCRYPTION_KEY`) — operational contract
+
+- REQUIRED and ACTIVE in every environment. Base64 **or** hex decoding to
+  exactly 32 bytes. Generate with `openssl rand -base64 32`.
+- Keep it **stable and backed up per environment**. It encrypts every stored
+  provider secret (AES-256-GCM).
+- **Loss/rotation:** if the KEK is lost or changed, previously stored secrets
+  become undecryptable and every provider resolves as **unconfigured**
+  (fail-safe — boot still succeeds). Recovery is to set a new KEK and
+  **re-paste each provider's credentials via the admin panel**. There is no
+  env fallback.
+- A missing/invalid KEK disables encryption: admin saves fail loudly and the
+  seed aborts without writing anything.
+
+### 1a.2 One-time seed (safe on every deploy)
+
+Run as a deploy step (idempotent — safe to run on every deploy):
+
+```bash
+cd apps/backend
+npx medusa exec ./src/scripts/seed-provider-settings.ts
+```
+
+- Reads the DEPRECATED `OPENPAY_*` / `MP_*` / `SKYDROPX_*` env vars **once** and
+  imports each provider whose **full required set** is present into the
+  encrypted DB store. Required sets mirror the previous boot gating:
+  - openpay: `OPENPAY_MERCHANT_ID`, `OPENPAY_PRIVATE_KEY`,
+    `OPENPAY_WEBHOOK_USER`, `OPENPAY_WEBHOOK_PASSWORD`
+    (`OPENPAY_PUBLIC_KEY` → public config; `OPENPAY_SANDBOX` → mode)
+  - skydropx: `SKYDROPX_API_KEY`, `SKYDROPX_ORIGIN_ZIP`
+    (`SKYDROPX_BASE_URL`, `SKYDROPX_TAX_INCLUSIVE` optional)
+  - mercadopago: `MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET`, `BACKEND_PUBLIC_URL`
+    (`MP_PUBLIC_KEY` → public config; `BACKEND_PUBLIC_URL` stays env-based, not
+    stored)
+- **Idempotent:** a provider that already has a settings row is **skipped**
+  (`skipped-existing`) — admin edits/rotations are never overwritten. A partial
+  env set is **skipped-incomplete** with a WARN naming the missing vars (no
+  partial row). A provider with no env is **skipped-absent**. Per-provider
+  outcome lines and a summary are logged; **no secret values are ever logged**.
+- Verify idempotency: run it twice against a dev DB — the second run logs
+  `skipped-existing` for every already-seeded provider and creates no
+  duplicates.
+
+### 1a.3 Post-seed env contract
+
+After the seed, the **DB is strictly authoritative**. Provider env vars are
+**not consulted at runtime** — changing `OPENPAY_PRIVATE_KEY` (etc.) has no
+effect; a deleted DB row does **not** fall back to env (it resolves
+unconfigured). Once every environment is seeded, **remove the deprecated
+provider vars**, keeping only `PROVIDER_SETTINGS_ENCRYPTION_KEY` and
+`BACKEND_PUBLIC_URL` (plus unrelated `DATABASE_URL`/JWT/COOKIE/CORS).
+
+### 1a.4 Multi-instance staleness
+
+The settings cache is process-local with a **30s TTL backstop** plus
+save-triggered invalidation on the saving instance. In a multi-instance
+deployment, a credential rotation is guaranteed visible on all instances within
+**~30s** (and the public config endpoint adds up to ~60s of Next revalidation).
+Acceptable for credential rotation; there is no Redis in this stack.
 
 ## 2. Store configuration (Admin)
 
@@ -43,7 +120,10 @@ In the `Mexico` region settings, add payment providers:
 - `Openpay (card)` — runtime id `pp_openpay_openpay`
 - `Mercado Pago` — runtime id `pp_mercadopago_mercadopago`
 
-They appear in the list only when their env sets are complete (see §1).
+Openpay and Skydropx are always registered (see §1a); configure their
+credentials in **Admin > Provider Settings** (or via the one-time seed). An
+unconfigured provider is inert — it can be added to the region but yields no
+usable payment/quote until credentials are saved.
 
 ### 2.4 Service zone + shipping options
 
@@ -189,14 +269,32 @@ Run after completing §1–§3 on a clean environment:
 
 ### 7.3 Rollback procedure
 
-1. **Disable a provider:** remove its env vars (`OPENPAY_*`,
-   `MERCADOPAGO_*`, or `SKYDROPX_*`) and restart the backend — providers
-   are registered conditionally at boot, so the provider is simply skipped
-   and the rest of checkout keeps working.
-2. **Storefront:** revert the corresponding `paymentInfoMap` entries and
-   predicates in `apps/storefront/src/lib/constants.tsx` if the provider
-   should no longer render as an option.
-3. **Data safety:** existing orders/payments records persist untouched —
-   rollback only prevents NEW sessions from using the provider. Pending
-   captures/refunds for the disabled provider must be finished from the
-   provider's own dashboard.
+**Disable a single provider (operational, no deploy):** clear its credentials
+in **Admin > Provider Settings** (DELETE). The provider reverts to unconfigured
+/ inert within the propagation window (~30s) — no restart. This is the fastest
+rollback and the preferred one.
+
+**Revert the feature by slice (code rollback during the deprecation window).**
+The change shipped as independently revertible slices; the credential env vars
+remain populated during the deprecation window, so reverting to env-driven
+behavior is safe:
+
+1. **Registration flip (highest-risk slice):** git-revert the runtime-resolution
+   + `medusa-config.ts` flip slice to restore env-gated provider registration.
+   With the deprecated `OPENPAY_*` / `MP_*` / `SKYDROPX_*` vars still present,
+   boot returns to the previous env-driven behavior. Do this if runtime DB
+   resolution misbehaves.
+2. **Public endpoint / storefront:** revert the storefront slice to restore the
+   `NEXT_PUBLIC_OPENPAY_*` reads (requires a storefront rebuild). Only needed if
+   the runtime `/store/provider-config` path is the problem.
+3. **Admin UI / API / module:** the earlier slices are additive — reverting them
+   drops the admin route/API/module; the generated migration reverts via its
+   generated `down`. Do this only for a full rollback.
+4. **Storefront provider visibility:** revert `paymentInfoMap` entries and
+   predicates in `apps/storefront/src/lib/constants.tsx` only if a provider
+   should stop rendering entirely (unchanged by this change).
+5. **Data safety:** existing orders/payments records persist untouched —
+   rollback only prevents NEW sessions from using the provider. Stored
+   encrypted settings remain in the DB (decryptable as long as the KEK is
+   unchanged). Pending captures/refunds for a disabled provider must be
+   finished from the provider's own dashboard.

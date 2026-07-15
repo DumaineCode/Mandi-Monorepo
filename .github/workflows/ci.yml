@@ -8,6 +8,43 @@ jobs:
   backend:
     name: Backend (tests + build)
     runs-on: ubuntu-latest
+
+    # Postgres service for the integration suites (module + http). Both boot a
+    # real Medusa app / module against this DB; unit tests do not need it but
+    # the shared job env is harmless for them and the build step.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: medusa_test
+        ports:
+          - 5432:5432
+        # Wait until Postgres is accepting connections before any step runs.
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # The integration test runners create/drop throwaway databases off this
+      # connection, so the user must be able to CREATE DATABASE (postgres is).
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/medusa_test
+      # Medusa forces NODE_ENV=test in the integration runners; medusa-config.ts
+      # only enables Postgres SSL outside development/test, so this local,
+      # non-SSL service connects cleanly.
+      NODE_ENV: test
+      # Deterministic test KEK (mirrors integration-tests/setup.js) so the
+      # provider-settings module boots with encryption enabled.
+      PROVIDER_SETTINGS_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      JWT_SECRET: test-jwt-secret
+      COOKIE_SECRET: test-cookie-secret
+      STORE_CORS: http://localhost:8000
+      ADMIN_CORS: http://localhost:9000
+      AUTH_CORS: http://localhost:9000
+
     steps:
       - uses: actions/checkout@v4
 
@@ -25,7 +62,7 @@ jobs:
 
       - name: Focused-test guard (no .only / fit / fdescribe)
         run: |
-          if grep -rnE "\.(only)\(|fit\(|fdescribe\(" apps/backend/src --include="*.spec.ts"; then
+          if grep -rnE "\.(only)\(|fit\(|fdescribe\(" apps/backend/src apps/backend/integration-tests --include="*.spec.ts"; then
             echo "::error::Focused tests found (.only/fit/fdescribe). Remove them before merging — they silently skip the rest of the suite."
             exit 1
           fi
@@ -38,6 +75,10 @@ jobs:
       - name: Module integration tests
         working-directory: apps/backend
         run: pnpm test:integration:modules
+
+      - name: HTTP integration tests
+        working-directory: apps/backend
+        run: pnpm test:integration:http
 
       - name: Build
         working-directory: apps/backend

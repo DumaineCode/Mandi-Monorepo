@@ -1,6 +1,12 @@
 /**
  * S2.2 — OpenpayPaymentProviderService unit tests (hermetic, mocked fetch).
  *
+ * Slice 3 (admin-provider-settings): credentials now arrive through an async
+ * `credentialSource` (DB-backed in production, faked here). Unconfigured
+ * (source → null) rejects every payment op with INVALID_DATA and never calls
+ * the API; a credential rotation (new fingerprint) rebuilds the immutable
+ * client on the next op.
+ *
  * Authorize mapping table per design §3.2 + amendment (obs #110) fixes 3/4:
  * - completed → captured
  * - charge_pending + payment_method.url → requires_more with redirect_url + charge_id
@@ -23,7 +29,7 @@ const MERCHANT_ID = "m_test_123"
 const PRIVATE_KEY = "sk_test_private"
 const SESSION_ID = "payses_01TEST"
 
-const options = {
+const credentials = {
   merchantId: MERCHANT_ID,
   privateKey: PRIVATE_KEY,
   sandbox: true,
@@ -38,8 +44,11 @@ const container = {
   },
 }
 
-const makeService = () =>
-  new OpenpayPaymentProviderService(container as never, options)
+const makeService = (
+  credentialSource: () => Promise<typeof credentials | null> = async () =>
+    credentials
+) =>
+  new OpenpayPaymentProviderService(container as never, { credentialSource })
 
 const jsonResponse = (body: unknown, status = 200): Response =>
   ({
@@ -74,20 +83,163 @@ describe("OpenpayPaymentProviderService", () => {
     expect(OpenpayPaymentProviderService.identifier).toBe(OPENPAY_IDENTIFIER)
   })
 
-  describe("validateOptions (amendment fix 5 — shape-only)", () => {
-    it("accepts a well-shaped options object", () => {
+  describe("validateOptions (slice 3 — always-registered, empty options valid)", () => {
+    it("accepts an EMPTY options object (credentials live in the DB now)", () => {
       expect(() =>
-        OpenpayPaymentProviderService.validateOptions(options)
+        OpenpayPaymentProviderService.validateOptions({})
       ).not.toThrow()
     })
 
-    it("throws INVALID_DATA when merchantId or privateKey is missing", () => {
+    it("accepts a legacy well-shaped options object", () => {
       expect(() =>
-        OpenpayPaymentProviderService.validateOptions({ privateKey: "x" })
+        OpenpayPaymentProviderService.validateOptions(credentials)
+      ).not.toThrow()
+    })
+
+    it("still rejects PRESENT but malformed fields with INVALID_DATA", () => {
+      expect(() =>
+        OpenpayPaymentProviderService.validateOptions({ merchantId: 42 })
       ).toThrow(MedusaError)
       expect(() =>
-        OpenpayPaymentProviderService.validateOptions({ merchantId: "x" })
+        OpenpayPaymentProviderService.validateOptions({ privateKey: "" })
       ).toThrow(MedusaError)
+    })
+  })
+
+  describe("unconfigured provider (source → null) — fail-safe inert", () => {
+    const unconfigured = () => makeService(async () => null)
+
+    it.each([
+      [
+        "initiatePayment",
+        (s: OpenpayPaymentProviderService) =>
+          s.initiatePayment({
+            amount: 100,
+            currency_code: "mxn",
+            data: { ...baseSessionData },
+          }),
+      ],
+      [
+        "authorizePayment",
+        (s: OpenpayPaymentProviderService) =>
+          s.authorizePayment({ data: { ...baseSessionData } }),
+      ],
+      [
+        "getPaymentStatus (with charge)",
+        (s: OpenpayPaymentProviderService) =>
+          s.getPaymentStatus({
+            data: { ...baseSessionData, charge_id: "ch_100" },
+          }),
+      ],
+      [
+        "retrievePayment (with charge)",
+        (s: OpenpayPaymentProviderService) =>
+          s.retrievePayment({
+            data: { ...baseSessionData, charge_id: "ch_100" },
+          }),
+      ],
+      [
+        "refundPayment",
+        (s: OpenpayPaymentProviderService) =>
+          s.refundPayment({
+            amount: 50,
+            data: { ...baseSessionData, charge_id: "ch_100" },
+          }),
+      ],
+    ])(
+      "%s rejects with INVALID_DATA 'not configured' and never calls the API",
+      async (_name, op) => {
+        await expect(op(unconfigured())).rejects.toMatchObject({
+          constructor: MedusaError,
+          type: MedusaError.Types.INVALID_DATA,
+          message: expect.stringContaining("not configured"),
+        })
+        expect(fetchMock).not.toHaveBeenCalled()
+      }
+    )
+
+    it("keeps session-lifecycle no-ops harmless (capture/cancel/delete never throw)", async () => {
+      const service = unconfigured()
+      await expect(
+        service.capturePayment({ data: { ...baseSessionData } })
+      ).resolves.toBeDefined()
+      await expect(
+        service.cancelPayment({ data: { ...baseSessionData } })
+      ).resolves.toBeDefined()
+      await expect(
+        service.deletePayment({ data: { ...baseSessionData } })
+      ).resolves.toBeDefined()
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe("client rebuild on credential fingerprint change (rotation)", () => {
+    it("uses the rotated key and base URL on the next op without a restart", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          id: "ch_100",
+          status: "completed",
+          amount: 150.5,
+          currency: "MXN",
+          order_id: `${SESSION_ID}-1`,
+        })
+      )
+      let current = { ...credentials }
+      const service = makeService(async () => current)
+
+      await service.retrievePayment({
+        data: { ...baseSessionData, charge_id: "ch_100" },
+      })
+      // Admin rotates the private key and flips to production mode.
+      current = {
+        merchantId: MERCHANT_ID,
+        privateKey: "sk_live_rotated",
+        sandbox: false,
+      }
+      await service.retrievePayment({
+        data: { ...baseSessionData, charge_id: "ch_100" },
+      })
+
+      const firstInit = fetchMock.mock.calls[0][1]
+      const secondInit = fetchMock.mock.calls[1][1]
+      expect(firstInit.headers.Authorization).toBe(
+        `Basic ${Buffer.from(`${PRIVATE_KEY}:`).toString("base64")}`
+      )
+      expect(secondInit.headers.Authorization).toBe(
+        `Basic ${Buffer.from("sk_live_rotated:").toString("base64")}`
+      )
+      expect(String(fetchMock.mock.calls[0][0])).toContain("sandbox-api")
+      expect(String(fetchMock.mock.calls[1][0])).toContain(
+        "https://api.openpay.mx"
+      )
+    })
+
+    it("reuses the cached client while the fingerprint is unchanged", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          id: "ch_100",
+          status: "completed",
+          amount: 150.5,
+          currency: "MXN",
+          order_id: `${SESSION_ID}-1`,
+        })
+      )
+      const source = jest.fn(async () => ({ ...credentials }))
+      const service = makeService(source)
+
+      await service.retrievePayment({
+        data: { ...baseSessionData, charge_id: "ch_100" },
+      })
+      await service.retrievePayment({
+        data: { ...baseSessionData, charge_id: "ch_100" },
+      })
+
+      // Credentials are re-resolved per op (rotation window), but the equal
+      // fingerprint keeps both requests on the same immutable client config.
+      expect(source).toHaveBeenCalledTimes(2)
+      expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe(
+        fetchMock.mock.calls[1][1].headers.Authorization
+      )
     })
   })
 
