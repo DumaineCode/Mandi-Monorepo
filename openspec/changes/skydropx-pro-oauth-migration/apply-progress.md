@@ -84,18 +84,92 @@ consignmentNote/packageType" case (green).
 
 ---
 
+## Slices S2 + S3 — PRO OAuth client + service seams (FUNCTIONAL CORE) — COMPLETE ✅
+
+Delivered together as the functional end-to-end path (checkout quote + admin label) on Skydropx PRO.
+LEAN mode: essential behaviors covered with high-value tests; deferred hardening enumerated below.
+The OAuth test-connection probe (`probes/skydropx.ts`) already landed in `ea1b935` and is consistent
+with the new client (same `/oauth/token`, same `isAllowedSkydropxBaseUrl` guard) — not redone.
+
+### Verification (S2-V1 / S3-V1) — GREEN
+- `cd apps/backend && pnpm test:unit` → **22 suites, 331 tests passed** (client 12 + service 24 rewritten).
+- `cd apps/backend && pnpm build` → **backend + frontend build completed successfully**.
+- `cd apps/backend && npx tsc --noEmit` → **exit 0** (SWC build does not typecheck; ran additionally).
+- Regression grep (spec Capability 6): zero `apiKey` / `Token token=` / legacy `v1` / `total_pricing`
+  in `src/modules/skydropx-fulfillment/` production code — only intentional negative test assertions
+  reference `Token token=`. Zero `TODO(sandbox-verify)` / `@deprecated apiKey` / `TODO(S2|S3)` remain.
+
+### TDD Cycle Evidence (RED → GREEN → TRIANGULATE → REFACTOR)
+| Phase | Evidence |
+|-------|----------|
+| RED | Rewrote `client.unit.spec.ts` (OAuth Bearer, cache reuse, 401-retry, async poll, error mapping, SSRF ctor, cancellations) and `service.unit.spec.ts` (address hierarchy, usable-rate filter, IVA `Number(rate.total)`, createFulfillment fresh-quote flow, origin-verif + Carta Porte fail-loud, orphan cancel). Against the legacy client/service both suites failed to compile/pass (legacy `total_pricing`/`Token token=`/`/labels`). |
+| GREEN | Rewrote `types.ts` (PRO wire shapes), `client.ts` (OAuth2 client-credentials + async quote poll + PRO endpoints), `service.ts` (three seams + async quote/label wiring). Targeted run → **2 suites, 36 tests passed**; full suite → **331 passed**. |
+| TRIANGULATE | `normalizeState` pass-through when already a full name; `area_level3` from `address_2` present-vs-omitted; DB `taxInclusive:false` honored end-to-end while `SKYDROPX_TAX_INCLUSIVE` env is set to `true` (never read); usable-rate filter drops NaN/`no_coverage`/`success:false` before cheapest selection. |
+| REFACTOR | Single `fetch_` helper shared by token + API calls (abort + error-map in one path); `toAddress` shared by quote and label paths; `fetchUsableRates_` centralizes error→MedusaError + filter. |
+
+### Files changed — S2 + S3 (production)
+- `apps/backend/src/modules/skydropx-fulfillment/types.ts` — replaced legacy shapes with PRO wire types
+  (`SkydropxTokenResponse`, `SkydropxQuoteAddress`, `SkydropxParcel` (extended), `SkydropxQuotationRequest`,
+  `SkydropxRate` with `success`/`status`/`total`/`vat_fee`/`days`/`provider_name`/`requires_origin_verification`,
+  `SkydropxQuotation`, `SkydropxShipAddress`, `SkydropxShipPackage`, `SkydropxCreateShipmentRequest`,
+  `SkydropxShipment`, `SkydropxCancellation`, `SkydropxErrorBody`); removed `apiKey` and ALL `TODO(sandbox-verify)`.
+  `SkydropxCredentials.clientId`/`clientSecret` now required strings. (S2-G1)
+- `apps/backend/src/modules/skydropx-fulfillment/client.ts` — rewritten to PRO OAuth2: token cache
+  `{accessToken,expiresAt}` with 60s skew + single-flight; `getToken_`/`authed_` (Bearer, 401→clear+refresh+retry-once);
+  `createQuotation`/`getQuotation`/`quoteAndPoll_` (deadline-bounded), `createShipment`/`getShipment`
+  (fast-fail on `error_detail`)/`cancelShipment`; defensive SSRF in ctor via `isAllowedSkydropxBaseUrl`;
+  error-body mapping `code=body.error`, `msg=body.error_description || JSON(errors)`; constants (`DEFAULT_BASE_URL`
+  = `https://api-pro.skydropx.com/api/v1`, quotation 8s / request 15s / token 3s / skew 60s / poll 1s). (S2-G2..G6)
+- `apps/backend/src/modules/skydropx-fulfillment/service.ts` — three seams + async wiring: `normalizeState`
+  (MX ISO-3166-2 code→name map, pass-through), `toAddress` (quote hierarchy, degrade when country/postal/state/city
+  absent), `toShipAddress` (PRO ship contact/street), usable-rate filter + `selectCheapestRate` on
+  `total`/`days`/`provider_name`; `calculatePrice` expanded context read + `Number(rate.total)` +
+  `taxInclusive ?? true`; `validateOptions` clientId/clientSecret; `createFulfillment` D4 fresh-quote flow
+  (origin-verif fail-loud D5, Carta Porte fail-loud D2, shipment poll bound, `included[0].attributes` tracking/label
+  with `master_tracking_number` fallback, orphaned-shipment best-effort `cancelShipment`); `cancelFulfillment`
+  keyed on `shipment_id`. (S3-G1..G7)
+
+### Files changed — S2 + S3 (specs, rewritten)
+- `apps/backend/src/modules/skydropx-fulfillment/__tests__/client.unit.spec.ts` (S2 RED)
+- `apps/backend/src/modules/skydropx-fulfillment/__tests__/service.unit.spec.ts` (S3 RED/TRIANGULATE)
+
+### Persisted task checkboxes updated (tasks.md)
+Checked: S2-R1,R2,R4,R6,R7,R8,R9,R10, S2-G1..G6, S2-F1, S2-V1; S3-R1..R7, S3-G1..G8, S3-T1, S3-F1, S3-V1.
+S3-G8 (probe OAuth rework) satisfied by the prior `ea1b935` commit and confirmed consistent.
+
+### Deferred (LEAN — impl present, dedicated test deferred per Steering)
+- **S2-R3** (token-expiry re-fetch): expiry+60s-skew refresh IS implemented in `getToken_`; no dedicated
+  fake-timer test written.
+- **S2-R5** (single-flight concurrency): `tokenInFlight_` single-flight IS implemented; no concurrent-callers test.
+- **S2-T1** (token-time-counts-against-budget triangulation): `remaining_(...)` threads the shared deadline into
+  the token fetch; no dedicated budget-accounting test.
+- Also deferred (hardening, not blocking the functional path): OAuth form-body fallback on a sandbox 400
+  (JSON only today), quoteAndPoll overrun-by-≤one-interval assertion, exhaustive error-body permutations,
+  `area_level3` metadata.colonia-only path test, service-level 8s-timeout translation test (covered at client level),
+  per-product Carta Porte override (D2 — config default only for now).
+
 ## Remaining tasks (out of this slice)
 
-S2 (client.ts OAuth + PRO endpoints), S3 (service.ts seams + probe OAuth rework), S4 (docs & env),
-and the apply-time live PRO gates (`G-S5.0a`, `G-S5.0b`, `G-S5.5`) are all still `- [ ]` in
-`tasks.md` (47 unchecked items). Next dependency-ready slice is **S2**.
+S4 (docs & `.env.template`) and the apply-time live PRO gates (`G-S5.0a`, `G-S5.0b`, `G-S5.5`, which require
+live sandbox credentials) remain `- [ ]` in `tasks.md`, plus the deferred lean-hardening items listed above.
+Next dependency-ready slice is **S4** (docs/env) or `sdd-verify`.
 
 ## Workload / PR boundary
-- Chain strategy: chained PRs. This is **PR 1 (S1 — credential schema)**; end-of-slice is green and
-  independently buildable. Estimated S1 diff ≈ target ~550 lines. Next PR: **S2 (client.ts)**.
+- Chain strategy: chained PRs. **PR 1 (S1 — credential schema)** landed `656f4b8`; the OAuth probe landed
+  `ea1b935`. This progress covers the combined **S2 + S3 functional core** (client OAuth transport + service
+  seams) as one buildable, green slice — the shipping path now works end-to-end on PRO. Next PR: **S4 (docs & env)**.
 
-## Structured status consumed / produced
+## Structured status consumed / produced (S1)
 - Consumed: parent-provided authoritative SDD status (artifact store `openspec`, Engram DOWN, active
   change `skydropx-pro-oauth-migration`, branch `feat/skydropx-pro-oauth`, strict TDD active,
   single-slice S1). No `actionContext` warnings; all edits inside the workspace root.
 - Produced: this `apply-progress.md`; S1 task checkboxes flipped to `- [x]`.
+
+## Structured status consumed / produced (S2 + S3)
+- Consumed: parent-provided authoritative SDD status (artifact store `openspec` FILES only, Engram DOWN,
+  active change `skydropx-pro-oauth-migration`, branch `feat/skydropx-pro-oauth`, strict TDD active). No
+  `actionContext` warnings; all edits inside the workspace root
+  (`apps/backend/src/modules/skydropx-fulfillment/**` + tasks/apply-progress). Storefront and docs (S4)
+  untouched per boundaries.
+- Produced: merged S2+S3 progress into this `apply-progress.md`; S2/S3 task checkboxes flipped to `- [x]`
+  (deferred lean items left `- [ ]` with rationale).

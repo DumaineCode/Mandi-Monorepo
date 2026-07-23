@@ -128,48 +128,48 @@ to transport + a compile-time-compatible client surface. Estimated ~560 changed 
 
 ### RED — new client spec first (`modules/skydropx-fulfillment/__tests__/client.unit.spec.ts`)
 
-- [ ] S2-R1 — token fetch hits `POST ${baseUrl}/oauth/token` with `grant_type=client_credentials` + both
+- [x] S2-R1 — token fetch hits `POST ${baseUrl}/oauth/token` with `grant_type=client_credentials` + both
   secrets; caches `{ accessToken, expiresAt }`.
-- [ ] S2-R2 — subsequent call sends `Authorization: Bearer …` and does **not** re-fetch (cache reuse);
+- [x] S2-R2 — subsequent call sends `Authorization: Bearer …` and does **not** re-fetch (cache reuse);
   no header ever contains `Token token=`.
 - [ ] S2-R3 — token expiry (advance clock past `expiresAt - 60s` skew) → re-fetches.
-- [ ] S2-R4 — 401 on an API call → clears token, re-fetches, retries **once**, succeeds; a second 401 →
+- [x] S2-R4 — 401 on an API call → clears token, re-fetches, retries **once**, succeeds; a second 401 →
   surfaces a typed `SkydropxApiError` (no infinite loop).
 - [ ] S2-R5 — **single-flight (W4):** two concurrent `getToken_` on a cold cache issue exactly ONE
   `/oauth/token` POST.
-- [ ] S2-R6 — **no-logging:** capture the logger; assert neither the access token nor `clientSecret` appears
+- [x] S2-R6 — **no-logging:** capture the logger; assert neither the access token nor `clientSecret` appears
   in any log line.
-- [ ] S2-R7 — **SSRF constructor (W3):** constructing with a non-`skydropx.com` `baseUrl` throws
+- [x] S2-R7 — **SSRF constructor (W3):** constructing with a non-`skydropx.com` `baseUrl` throws
   `INVALID_DATA` before any fetch; `api-pro.skydropx.com` constructs fine.
-- [ ] S2-R8 — `quoteAndPoll_`: `is_completed:false`→`true` transition reads `rates[]` only when complete;
+- [x] S2-R8 — `quoteAndPoll_`: `is_completed:false`→`true` transition reads `rates[]` only when complete;
   never overruns the shared deadline by more than one poll interval (I1); `is_completed` never within deadline →
   `SkydropxApiError(0,"timeout")`.
-- [ ] S2-R9 — error-body mapping (I2): non-2xx → `SkydropxApiError(status, code=body.error,
+- [x] S2-R9 — error-body mapping (I2): non-2xx → `SkydropxApiError(status, code=body.error,
   msg=body.error_description || JSON(body.errors))`; abort/timeout → `SkydropxApiError(0,"timeout")`.
-- [ ] S2-R10 — `createShipment`/`getShipment` poll to `workflow_status:"success"`; `getShipment` fast-fails
+- [x] S2-R10 — `createShipment`/`getShipment` poll to `workflow_status:"success"`; `getShipment` fast-fails
   when `error_detail` is present (don't burn the poll bound); `cancelShipment` POSTs
   `/shipments/{id}/cancellations` with `{ reason }`.
 
 ### GREEN — implement client.ts (design §3)
 
-- [ ] S2-G1 — `types.ts` wire shapes (owned here since the client consumes them): add
+- [x] S2-G1 — `types.ts` wire shapes (owned here since the client consumes them): add
   `SkydropxTokenResponse`, `SkydropxQuoteAddress`, `SkydropxParcel`, `SkydropxQuotationRequest`,
   `SkydropxRate` (with `success`, `status`, `total`, `vat_fee`, `days`, `provider_name`,
   `requires_origin_verification`, `shipment_creation_type`), `SkydropxQuotation`, `SkydropxShipAddress`,
   `SkydropxShipPackage`, `SkydropxCreateShipmentRequest`, `SkydropxShipment`, `SkydropxCancellation`,
   `SkydropxErrorBody`; **remove ALL `TODO(sandbox-verify)` markers**.
-- [ ] S2-G2 — constants: `DEFAULT_BASE_URL`, `SKYDROPX_QUOTATION_TIMEOUT_MS=8000`,
+- [x] S2-G2 — constants: `DEFAULT_BASE_URL`, `SKYDROPX_QUOTATION_TIMEOUT_MS=8000`,
   `SKYDROPX_REQUEST_TIMEOUT_MS=15000`, `SKYDROPX_TOKEN_TIMEOUT_MS=3000`, `TOKEN_EXPIRY_SKEW_MS=60000`,
   `QUOTE_POLL_INTERVAL_MS=1000`.
-- [ ] S2-G3 — constructor: store `clientId`/`clientSecret`/`baseUrl` (strip trailing slash); defensive SSRF —
+- [x] S2-G3 — constructor: store `clientId`/`clientSecret`/`baseUrl` (strip trailing slash); defensive SSRF —
   throw `INVALID_DATA` if `!isAllowedSkydropxBaseUrl(baseUrl)` before any request.
-- [ ] S2-G4 — `getToken_(deadline?)`: return cached token if `now < expiresAt - skew`; single-flight via
+- [x] S2-G4 — `getToken_(deadline?)`: return cached token if `now < expiresAt - skew`; single-flight via
   `tokenInFlight_`; POST `/oauth/token` JSON (form fallback on a sandbox 400); set
   `expiresAt = now + expires_in*1000`; sub-bound by `min(SKYDROPX_TOKEN_TIMEOUT_MS, remaining budget)`;
   **never log** token/secret.
-- [ ] S2-G5 — `authed_<T>(method, path, body?, timeoutMs?, deadline?)`: `Bearer` header; on 401 once clear
+- [x] S2-G5 — `authed_<T>(method, path, body?, timeoutMs?, deadline?)`: `Bearer` header; on 401 once clear
   token + refresh + retry; non-2xx → mapped `SkydropxApiError` (error-body mapping); abort → timeout error.
-- [ ] S2-G6 — PRO endpoint methods: `createQuotation`, `getQuotation`, `quoteAndPoll_` (deadline-bounded,
+- [x] S2-G6 — PRO endpoint methods: `createQuotation`, `getQuotation`, `quoteAndPoll_` (deadline-bounded,
   `sleep_(min(interval, remaining))`), `createShipment`, `getShipment` (fast-fail on `error_detail`),
   `cancelShipment`. Keep a service-compatible surface so S2 compiles against the current `service.ts`
   (adapt/alias legacy method names if needed; the true call-site rewrite is S3).
@@ -181,12 +181,12 @@ to transport + a compile-time-compatible client surface. Estimated ~560 changed 
 
 ### REFACTOR
 
-- [ ] S2-F1 — factor the fetch+abort+error-map helper so token and API calls share one path; confirm zero
+- [x] S2-F1 — factor the fetch+abort+error-map helper so token and API calls share one path; confirm zero
   `Token token=` / legacy v1 URL literals remain in `client.ts`.
 
 ### Verification
 
-- [ ] S2-V1 — `cd apps/backend && pnpm test:unit` green; `cd apps/backend && pnpm build` green.
+- [x] S2-V1 — `cd apps/backend && pnpm test:unit` green; `cd apps/backend && pnpm build` green.
 
 ---
 
@@ -198,71 +198,71 @@ guard) plus the async quote/label rewrite and the OAuth probe. Rewrites `service
 
 ### RED — rewrite/extend specs first
 
-- [ ] S3-R1 — `modules/skydropx-fulfillment/__tests__/service.unit.spec.ts` `toAddress`/`normalizeState`:
+- [x] S3-R1 — `modules/skydropx-fulfillment/__tests__/service.unit.spec.ts` `toAddress`/`normalizeState`:
   `normalizeState(province)`→`area_level1` (code→name, e.g. `NL`→`Nuevo León`, pass-through if already a
   name), `city`→`area_level2`, `address_2`/`metadata.colonia`→`area_level3` (omitted, not fabricated, when
   absent), `country_code` upper-cased; missing `area_level1`/`area_level2` → degrade to manual before any API
   call (spec Capability 4).
-- [ ] S3-R2 — usable-rate filter + selection: keep only `success===true` AND finite `Number(total)` AND
+- [x] S3-R2 — usable-rate filter + selection: keep only `success===true` AND finite `Number(total)` AND
   `status` not in `no_coverage`/`tariff_price_not_found`/`not_applicable`/`pending`; empty filtered list →
   graceful `MedusaError` (manual, SD-3); `calculated_amount` never `NaN`; cheapest by `total`, tie-break
   `days` then `provider_name`.
-- [ ] S3-R3 — IVA: `calculated_amount = Number(rate.total)` (no cent conversion; `"99.90"`→`99.90`);
+- [x] S3-R3 — IVA: `calculated_amount = Number(rate.total)` (no cent conversion; `"99.90"`→`99.90`);
   `is_calculated_price_tax_inclusive` default `true`, honors DB `taxInclusive:false`, **never** reads
   `SKYDROPX_TAX_INCLUSIVE`.
-- [ ] S3-R4 — `validateOptions`: empty options OK; present-but-empty `clientId` **or** `clientSecret` throws
+- [x] S3-R4 — `validateOptions`: empty options OK; present-but-empty `clientId` **or** `clientSecret` throws
   `INVALID_DATA`.
-- [ ] S3-R5 — `createFulfillment`: fresh quote+poll → select → `requires_origin_verification:true` →
+- [x] S3-R5 — `createFulfillment`: fresh quote+poll → select → `requires_origin_verification:true` →
   `MedusaError.UNEXPECTED_STATE` fail-loud (D5); MX + missing `consignment_note`/`package_type` (product
   override ?? config default) → fail-loud (D2); success reads
   `included[0].attributes.{tracking_number,label_url}` with `master_tracking_number` fallback; shipment poll
   bounded (`LABEL_POLL_*`); orphaned-shipment best-effort cancel via `cancelShipment`.
-- [ ] S3-R6 — degrade/preserve cases: missing-dims, zero/unusable rates, API error, 8s timeout → graceful
+- [x] S3-R6 — degrade/preserve cases: missing-dims, zero/unusable rates, API error, 8s timeout → graceful
   `MedusaError` (manual); **quote-vs-label rate-delta log still emitted** (preserve, spec Capability 6);
   origin-address pre-flight rejects when origin state/city (not just zip) absent.
-- [ ] S3-R7 — `workflows/steps/probes/__tests__/probes.unit.spec.ts`: probe now resolves an OAuth token via
+- [x] S3-R7 — `workflows/steps/probes/__tests__/probes.unit.spec.ts`: probe now resolves an OAuth token via
   `/oauth/token` then best-effort `POST /quotations`; 401 on token → "rejected credentials"; SSRF guard
   unchanged.
 
 ### GREEN — implement seams + wiring
 
-- [ ] S3-G1 — `modules/skydropx-fulfillment/service.ts`: add `normalizeState` (MX ISO-3166-2 code→name map,
+- [x] S3-G1 — `modules/skydropx-fulfillment/service.ts`: add `normalizeState` (MX ISO-3166-2 code→name map,
   pass-through) and `toAddress` pure helper (used by `calculatePrice` and `createFulfillment`); expand the
   `calculatePrice` context read from `{ postal_code }` to
   `{ postal_code, province, city, country_code, address_2, metadata }`.
-- [ ] S3-G2 — add `toShipAddress(order.shipping_address)` (`street1`/name/company/phone/email/reference/
+- [x] S3-G2 — add `toShipAddress(order.shipping_address)` (`street1`/name/company/phone/email/reference/
   tax_id) for `POST /shipments`; origin uses `from_location.address` + `originZip` zip fallback via the same
   `toAddress`/`normalizeState`.
-- [ ] S3-G3 — usable-rate filter helper + update `selectCheapestRate` to sort on `Number(total)` → `days` →
+- [x] S3-G3 — usable-rate filter helper + update `selectCheapestRate` to sort on `Number(total)` → `days` →
   `provider_name`; `calculatePrice` uses `Number(rate.total)`.
-- [ ] S3-G4 — IVA pin: `is_calculated_price_tax_inclusive: config.taxInclusive ?? true`,
+- [x] S3-G4 — IVA pin: `is_calculated_price_tax_inclusive: config.taxInclusive ?? true`,
   `calculated_amount = Number(rate.total)`; remove the `TODO(sandbox-verify)` comment (line ~121 region).
-- [ ] S3-G5 — `validateOptions`: replace the `apiKey` guard with `clientId`/`clientSecret` presence checks
+- [x] S3-G5 — `validateOptions`: replace the `apiKey` guard with `clientId`/`clientSecret` presence checks
   (empty options still valid).
-- [ ] S3-G6 — rewrite `createFulfillment` to the D4 fresh-quote flow: `quoteAndPoll_` → `selectCheapestRate`
+- [x] S3-G6 — rewrite `createFulfillment` to the D4 fresh-quote flow: `quoteAndPoll_` → `selectCheapestRate`
   → origin-verification guard (SD-4) → resolve `consignment_note`/`package_type` (product override ?? config
   default; MX + absent → fail loud) → `createShipment` → poll `getShipment` → read tracking/label; wire
   `abandonLabel_`/`cancelFulfillment` to `cancelShipment(shipment_id, reason)`; `data.shipment_id` becomes the
   cancellation key.
-- [ ] S3-G7 — thread the shared `deadline = Date.now() + SKYDROPX_QUOTATION_TIMEOUT_MS` from `calculatePrice`
+- [x] S3-G7 — thread the shared `deadline = Date.now() + SKYDROPX_QUOTATION_TIMEOUT_MS` from `calculatePrice`
   into `quoteAndPoll_`; keep `fetchRates_` error→`MedusaError` translation (SD-3) wrapping `quoteAndPoll_`.
-- [ ] S3-G8 — `workflows/steps/probes/skydropx.ts`: `SkydropxProbeCredentials =
+- [x] S3-G8 — `workflows/steps/probes/skydropx.ts`: `SkydropxProbeCredentials =
   { clientId, clientSecret, originZip, baseUrl? }`; `probeSkydropx` resolves a token then best-effort quotes
   with the minimal parcel + `PROBE_DESTINATION_ZIP`; SSRF guard unchanged.
 
 ### TRIANGULATE
 
-- [ ] S3-T1 — `normalizeState` pass-through when `province` is already a full name; `area_level3`
+- [x] S3-T1 — `normalizeState` pass-through when `province` is already a full name; `area_level3`
   metadata.colonia path when `address_2` is empty; DB `taxInclusive:false` override end-to-end.
 
 ### REFACTOR
 
-- [ ] S3-F1 — collapse duplicate address-mapping between quote and label paths through the shared `toAddress`;
+- [x] S3-F1 — collapse duplicate address-mapping between quote and label paths through the shared `toAddress`;
   grep skydropx scope confirms zero `apiKey` / `Token token=` / v1 URL remain anywhere (spec Capability 6).
 
 ### Verification
 
-- [ ] S3-V1 — `cd apps/backend && pnpm test:unit` green; `cd apps/backend && pnpm build` green.
+- [x] S3-V1 — `cd apps/backend && pnpm test:unit` green; `cd apps/backend && pnpm build` green.
 
 ---
 
