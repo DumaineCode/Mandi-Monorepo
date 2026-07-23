@@ -33,22 +33,26 @@ module.exports = {
           80: "#1F2937",
           90: "#111827",
         },
+        // Variation 1 — "Morado dominante": the dark base becomes deep purple.
+        // `ink` is both a dark surface (Hero/Newsletter) AND body text on light
+        // surfaces, so it stays a very dark plum that reads as near-black on cream
+        // but glows purple as a full background.
         cream: "#F4EFE4",
         paper: "#FCFAF3",
-        ink: "#1b1814",
+        ink: "#3a1645",
         coral: {
-          DEFAULT: "#653b67",
-          hover: "#7a4a7c",
-          light: "#9d6e9f",
+          DEFAULT: "#9d6e9f",
+          hover: "#b489b6",
+          light: "#cbb0cc",
           foreground: "#fcf5dd",
         },
         teal: "#9bd5e7",
         gold: "#F2B544",
         line: "#E4DCCB",
-        "ink-muted": "#8C8473",
-        "ink-soft": "#6E6657",
-        "cream-muted": "#CDC5B4",
-        "cream-soft": "#9d9686",
+        "ink-muted": "#6e4a72",
+        "ink-soft": "#5a3a5e",
+        "cream-muted": "#dccadf",
+        "cream-soft": "#bfa6c2",
       },
       borderRadius: {
         none: "0px",
