@@ -100,25 +100,31 @@ describe("probeSkydropx", () => {
     originZip: "64000",
   }
 
-  it("passes on 2xx posting a smallest-parcel quotation to zip 06600", async () => {
-    const fetchImpl = fetchReturning(jsonResponse({ id: "q_1" }, 201))
+  it("passes on 2xx exchanging clientId/clientSecret for an OAuth token", async () => {
+    const fetchImpl = fetchReturning(
+      jsonResponse({ access_token: "tok_1", expires_in: 7200 }, 200)
+    )
 
     const result = await probeSkydropx(creds, { fetchImpl })
 
     expect(result.ok).toBe(true)
     const [url, init] = fetchImpl.mock.calls[0]
-    expect(String(url)).toBe("https://api.skydropx.com/v1/quotations")
+    expect(String(url)).toBe("https://api-pro.skydropx.com/api/v1/oauth/token")
     expect(init?.method).toBe("POST")
+    // No legacy Token header, and the secret is only sent in the token body.
     expect(
       (init?.headers as Record<string, string>)["Authorization"]
-    ).toBe("Token token=sd_secret_12345678")
+    ).toBeUndefined()
     const body = JSON.parse(String(init?.body))
-    expect(body.zip_from).toBe("64000")
-    expect(body.zip_to).toBe("06600")
+    expect(body.grant_type).toBe("client_credentials")
+    expect(body.client_id).toBe("sd_client_1234")
+    expect(body.client_secret).toBe("sd_secret_12345678")
   })
 
   it("respects a stored baseUrl override on an allowlisted skydropx host", async () => {
-    const fetchImpl = fetchReturning(jsonResponse({}, 200))
+    const fetchImpl = fetchReturning(
+      jsonResponse({ access_token: "tok_1" }, 200)
+    )
 
     await probeSkydropx(
       { ...creds, baseUrl: "https://api-sandbox.skydropx.com/v1" },
@@ -126,7 +132,7 @@ describe("probeSkydropx", () => {
     )
 
     expect(String(fetchImpl.mock.calls[0][0])).toBe(
-      "https://api-sandbox.skydropx.com/v1/quotations"
+      "https://api-sandbox.skydropx.com/v1/oauth/token"
     )
   })
 
@@ -145,13 +151,13 @@ describe("probeSkydropx", () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
-  it("fails on HTTP 401 blaming the API key", async () => {
+  it("fails on HTTP 401 blaming rejected credentials", async () => {
     const result = await probeSkydropx(creds, {
       fetchImpl: fetchReturning(jsonResponse({}, 401)),
     })
 
     expect(result.ok).toBe(false)
-    expect(result.detail).toMatch(/api key/i)
+    expect(result.detail).toMatch(/rejected|401/i)
   })
 
   it("reports a timeout as failure with a reason", async () => {
@@ -225,7 +231,9 @@ describe("runProviderProbe dispatcher — skydropx credential mapping", () => {
   // R-B: the dispatcher MUST forward the two PRO secrets (clientId/clientSecret),
   // never the legacy apiKey, so the probe layer is not silently fail-safe-nulled.
   it("maps resolved creds to clientId/clientSecret/originZip/baseUrl (not apiKey)", async () => {
-    const fetchImpl = fetchReturning(jsonResponse({ id: "q_1" }, 201))
+    const fetchImpl = fetchReturning(
+      jsonResponse({ access_token: "tok_1", expires_in: 7200 }, 200)
+    )
 
     const result = await runProviderProbe(
       "skydropx",
@@ -240,11 +248,14 @@ describe("runProviderProbe dispatcher — skydropx credential mapping", () => {
 
     expect(result.ok).toBe(true)
     const [url, init] = fetchImpl.mock.calls[0]
-    // baseUrl forwarded (not the legacy default) and the secret reached the header,
-    // proving the dispatcher passed clientSecret rather than an undefined apiKey.
-    expect(String(url)).toBe("https://api-pro.skydropx.com/api/v1/quotations")
-    expect(
-      (init?.headers as Record<string, string>)["Authorization"]
-    ).toBe("Token token=sd_secret_12345678")
+    // baseUrl forwarded (not the legacy default) and both secrets reached the
+    // OAuth token body, proving the dispatcher forwarded clientId/clientSecret
+    // rather than an undefined apiKey.
+    expect(String(url)).toBe(
+      "https://api-pro.skydropx.com/api/v1/oauth/token"
+    )
+    const body = JSON.parse(String(init?.body))
+    expect(body.client_id).toBe("sd_client_1234")
+    expect(body.client_secret).toBe("sd_secret_12345678")
   })
 })
