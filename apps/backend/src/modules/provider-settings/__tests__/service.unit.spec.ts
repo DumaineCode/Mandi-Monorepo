@@ -111,18 +111,33 @@ describe("prepareProviderSettingRow (upsert write path)", () => {
       provider: "skydropx",
       mode: "production",
       publicConfig: { originZip: "64000" },
-      secrets: { apiKey: "sky_live_key_9876" },
+      secrets: { clientId: "sky_client_9876", clientSecret: "sky_secret_98765432" },
     })
     const off = prepareProviderSettingRow(cryptoSeam, {
       provider: "skydropx",
       mode: "production",
       isEnabled: false,
       publicConfig: { originZip: "64000" },
-      secrets: { apiKey: "sky_live_key_9876" },
+      secrets: { clientId: "sky_client_9876", clientSecret: "sky_secret_98765432" },
     })
 
     expect(on.is_enabled).toBe(true)
     expect(off.is_enabled).toBe(false)
+  })
+
+  it("masks the two skydropx secrets with the generic rule (S1-T1: last4 for ≥8, null for short)", () => {
+    const row = prepareProviderSettingRow(cryptoSeam, {
+      provider: "skydropx",
+      mode: "production",
+      publicConfig: { originZip: "64000" },
+      // clientId < 8 chars → fully masked; clientSecret ≥ 8 → last4 hint.
+      secrets: { clientId: "cid", clientSecret: "csecret_9012" },
+    })
+
+    expect(row.secret_hints).toEqual({
+      clientId: { last4: null, set: true },
+      clientSecret: { last4: "9012", set: true },
+    })
   })
 })
 
@@ -216,24 +231,61 @@ describe("CredentialResolver (read path — fail-safe, cache-aware)", () => {
     })
   })
 
-  it("defaults the skydropx baseUrl when public_config omits it", async () => {
+  it("resolves the two PRO secrets and defaults baseUrl to the PRO host when omitted", async () => {
     const row: ProviderSettingRowLike = {
       provider: "skydropx",
       mode: "production",
       is_enabled: true,
       public_config: { originZip: "64000", taxInclusive: true },
       encrypted_secrets: cryptoSeam.encryptSecrets("skydropx", {
-        apiKey: "sky_live_key_9876",
+        clientId: "sky_client_9876",
+        clientSecret: "sky_secret_98765432",
+      }),
+      secret_hints: null,
+    }
+    const { resolver } = makeResolver({ row })
+
+    const resolved = await resolver.resolve("skydropx")
+
+    // Two-secret PRO shape, PRO default host, no legacy apiKey (spec Capability 1).
+    expect(resolved).toEqual({
+      clientId: "sky_client_9876",
+      clientSecret: "sky_secret_98765432",
+      baseUrl: "https://api-pro.skydropx.com/api/v1",
+      originZip: "64000",
+      taxInclusive: true,
+    })
+    expect(resolved).not.toHaveProperty("apiKey")
+  })
+
+  it("preserves an explicit skydropx baseUrl and carries consignmentNote/packageType", async () => {
+    const row: ProviderSettingRowLike = {
+      provider: "skydropx",
+      mode: "production",
+      is_enabled: true,
+      public_config: {
+        originZip: "64000",
+        taxInclusive: false,
+        baseUrl: "https://api-sandbox.skydropx.com/api/v1",
+        consignmentNote: "31181701",
+        packageType: "4G",
+      },
+      encrypted_secrets: cryptoSeam.encryptSecrets("skydropx", {
+        clientId: "sky_client_9876",
+        clientSecret: "sky_secret_98765432",
       }),
       secret_hints: null,
     }
     const { resolver } = makeResolver({ row })
 
     expect(await resolver.resolve("skydropx")).toEqual({
-      apiKey: "sky_live_key_9876",
-      baseUrl: "https://api.skydropx.com/v1",
+      clientId: "sky_client_9876",
+      clientSecret: "sky_secret_98765432",
+      baseUrl: "https://api-sandbox.skydropx.com/api/v1",
       originZip: "64000",
-      taxInclusive: true,
+      taxInclusive: false,
+      consignmentNote: "31181701",
+      packageType: "4G",
     })
   })
 

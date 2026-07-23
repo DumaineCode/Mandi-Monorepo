@@ -29,7 +29,8 @@ export async function runProviderProbe(
     case "skydropx":
       return probeSkydropx(
         {
-          apiKey: String(creds.apiKey),
+          clientId: String(creds.clientId),
+          clientSecret: String(creds.clientSecret),
           originZip: String(creds.originZip),
           baseUrl:
             typeof creds.baseUrl === "string" ? creds.baseUrl : undefined,

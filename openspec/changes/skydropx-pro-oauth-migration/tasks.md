@@ -45,78 +45,78 @@ missed touchpoint fails a test rather than silently fail-safe-nulling (R-B). Est
 
 ### RED — write/adjust failing specs first
 
-- [ ] S1-R1 — `modules/provider-settings/__tests__/service.unit.spec.ts`: replace `{ apiKey }` fixtures with
+- [x] S1-R1 — `modules/provider-settings/__tests__/service.unit.spec.ts`: replace `{ apiKey }` fixtures with
   `{ clientId, clientSecret }`; assert resolved config exposes `clientId`, `clientSecret`, `baseUrl`,
   `originZip`, `taxInclusive`, optional `consignmentNote`/`packageType`, and **no** `apiKey`; assert the
   missing-`baseUrl` default now resolves to the PRO host and an explicit `baseUrl` is preserved.
-- [ ] S1-R2 — `workflows/steps/__tests__/validate-provider-payload.unit.spec.ts`: assert
+- [x] S1-R2 — `workflows/steps/__tests__/validate-provider-payload.unit.spec.ts`: assert
   `PROVIDER_SECRET_FIELDS.skydropx = ["clientId","clientSecret"]` and
   `PROVIDER_PUBLIC_FIELDS.skydropx = ["baseUrl","originZip","taxInclusive","consignmentNote","packageType"]`;
   a two-secret upsert validates; `apiKey` is not a valid skydropx field; **SSRF-reject** case (non-`skydropx.com`
   `baseUrl` rejected on save) and **SSRF-accept** case (`api-pro.skydropx.com` accepted).
-- [ ] S1-R3 — `workflows/steps/__tests__/resolve-probe-credentials.unit.spec.ts`: assert
+- [x] S1-R3 — `workflows/steps/__tests__/resolve-probe-credentials.unit.spec.ts`: assert
   `PROBE_REQUIRED_FIELDS.skydropx = ["clientId","clientSecret","originZip"]`; `apiKey` no longer required.
-- [ ] S1-R4 — `workflows/steps/probes/__tests__/probes.unit.spec.ts`: assert the dispatcher maps resolved
+- [x] S1-R4 — `workflows/steps/probes/__tests__/probes.unit.spec.ts`: assert the dispatcher maps resolved
   creds to `{ clientId, clientSecret, originZip, baseUrl }` (not `{ apiKey }`).
-- [ ] S1-R5 — `admin/routes/provider-settings/__tests__/form-model.unit.spec.ts`: assert
+- [x] S1-R5 — `admin/routes/provider-settings/__tests__/form-model.unit.spec.ts`: assert
   `PROVIDER_FORMS.skydropx` renders two masked secret fields (`clientId`, `clientSecret`), plus `originZip`,
   `baseUrl`, `taxInclusive`, and new `consignmentNote`/`packageType` text fields; no `apiKey` field; assert
   `buildUpsertBody` round-trips the two secrets + public fields.
-- [ ] S1-R6 — `scripts/__tests__/seed-provider-settings.unit.spec.ts`: rewrite to require
+- [x] S1-R6 — `scripts/__tests__/seed-provider-settings.unit.spec.ts`: rewrite to require
   `SKYDROPX_CLIENT_ID` + `SKYDROPX_CLIENT_SECRET`, write `{ clientId, clientSecret }`, map `originZip`/`baseUrl`/
   `taxInclusive` (+ optional `consignmentNote`/`packageType`); assert a partial single-secret env writes **no**
   row; assert `SKYDROPX_API_KEY` is never read.
-- [ ] S1-R7 — add/extend a spec for `api/middlewares.ts` `TestProviderConnectionBody`: assert `clientId` and
+- [x] S1-R7 — add/extend a spec for `api/middlewares.ts` `TestProviderConnectionBody`: assert `clientId` and
   `clientSecret` (+ `consignmentNote`/`packageType`) survive `.strip()` for a skydropx body; assert `apiKey`
   is dropped/absent. (R-B two-secret presence assertion for the middleware layer.)
 
 ### GREEN — make each layer PRO-shaped
 
-- [ ] S1-G1 — `modules/skydropx-fulfillment/types.ts`: define `SkydropxCredentials` with `clientId`,
+- [x] S1-G1 — `modules/skydropx-fulfillment/types.ts`: define `SkydropxCredentials` with `clientId`,
   `clientSecret`, optional `baseUrl`, `originZip`, `taxInclusive`, `consignmentNote`, `packageType`; remove
   `apiKey`. (Wire shapes / `TODO(sandbox-verify)` removal happen in S2/S3.)
-- [ ] S1-G2 — `modules/provider-settings/types.ts`: flip `SKYDROPX_DEFAULT_BASE_URL` to
+- [x] S1-G2 — `modules/provider-settings/types.ts`: flip `SKYDROPX_DEFAULT_BASE_URL` to
   `https://api-pro.skydropx.com/api/v1`; rewrite `SkydropxResolvedConfig` to mirror `SkydropxCredentials`
   (`clientId`, `clientSecret`, `baseUrl`, `originZip`, `taxInclusive`, `consignmentNote`, `packageType`);
   update the header doc comment; remove the `apiKey` reference.
-- [ ] S1-G3 — `modules/provider-settings/service.ts` `mergeResolvedConfig` skydropx branch: carry
+- [x] S1-G3 — `modules/provider-settings/service.ts` `mergeResolvedConfig` skydropx branch: carry
   `consignmentNote`/`packageType` through (no special default); keep the `baseUrl` default flip to the new PRO
   constant.
-- [ ] S1-G4 — `scripts/seed-provider-settings.core.ts`: `requiredEnv = ["SKYDROPX_CLIENT_ID",
+- [x] S1-G4 — `scripts/seed-provider-settings.core.ts`: `requiredEnv = ["SKYDROPX_CLIENT_ID",
   "SKYDROPX_CLIENT_SECRET", "SKYDROPX_ORIGIN_ZIP"]`; `secretEnv = { clientId: "SKYDROPX_CLIENT_ID",
   clientSecret: "SKYDROPX_CLIENT_SECRET" }`; `publicEnv` adds optional
   `consignmentNote: "SKYDROPX_CONSIGNMENT_NOTE"`, `packageType: "SKYDROPX_PACKAGE_TYPE"`; drop `SKYDROPX_API_KEY`.
-- [ ] S1-G5 — `workflows/steps/validate-provider-payload.ts`: `PROVIDER_SECRET_FIELDS.skydropx =
+- [x] S1-G5 — `workflows/steps/validate-provider-payload.ts`: `PROVIDER_SECRET_FIELDS.skydropx =
   ["clientId","clientSecret"]`; `PROVIDER_PUBLIC_FIELDS.skydropx` adds `consignmentNote`, `packageType`;
   `skydropxUpsertSchema` gets `clientId`/`clientSecret` (`z.string().min(1).optional()`) + `consignmentNote`/
   `packageType` (`z.string().optional()`); add an **`isAllowedSkydropxBaseUrl` refinement** rejecting a
   non-`skydropx.com` `baseUrl` on save (design D1 / SSRF write-path fix); remove `apiKey`.
-- [ ] S1-G6 — `api/middlewares.ts` `TestProviderConnectionBody`: add `clientId`, `clientSecret`,
+- [x] S1-G6 — `api/middlewares.ts` `TestProviderConnectionBody`: add `clientId`, `clientSecret`,
   `consignmentNote`, `packageType` (and keep `baseUrl` url-optional, `originZip`, `taxInclusive`); remove
   `apiKey` (line 50). `.strip()` drops anything unlisted, so both secrets must be listed explicitly.
-- [ ] S1-G7 — `admin/routes/provider-settings/form-model.ts` `PROVIDER_FORMS.skydropx`: two secret/password
+- [x] S1-G7 — `admin/routes/provider-settings/form-model.ts` `PROVIDER_FORMS.skydropx`: two secret/password
   fields (`clientId`, `clientSecret`) + `consignmentNote`/`packageType` text fields; keep `originZip`,
   `baseUrl`, `taxInclusive`; remove the `apiKey` field (line 100).
-- [ ] S1-G8 — `workflows/steps/resolve-probe-credentials.ts`: `PROBE_REQUIRED_FIELDS.skydropx =
+- [x] S1-G8 — `workflows/steps/resolve-probe-credentials.ts`: `PROBE_REQUIRED_FIELDS.skydropx =
   ["clientId","clientSecret","originZip"]`.
-- [ ] S1-G9 — `workflows/steps/probes/index.ts` dispatcher: build
+- [x] S1-G9 — `workflows/steps/probes/index.ts` dispatcher: build
   `{ clientId: String(creds.clientId), clientSecret: String(creds.clientSecret), originZip, baseUrl }` instead
   of `{ apiKey }` (line 32). (Probe implementation OAuth rework is S3; here just fix the mapping so the layer
   is not fail-safe-nulled.)
 
 ### TRIANGULATE
 
-- [ ] S1-T1 — add edge cases: masking unchanged (`clientSecret` ≥ 8 chars → `last4`; short `clientId` fully
+- [x] S1-T1 — add edge cases: masking unchanged (`clientSecret` ≥ 8 chars → `last4`; short `clientId` fully
   masked, spec Capability 1); partial-secret upsert (one of two secrets) behaves like today's partial-update.
 
 ### REFACTOR
 
-- [ ] S1-F1 — remove now-dead `apiKey` references/comments across the touched files; grep skydropx scope for
+- [x] S1-F1 — remove now-dead `apiKey` references/comments across the touched files; grep skydropx scope for
   `apiKey` / `SKYDROPX_API_KEY` and confirm only S2/S3-owned files (client/service wire shapes) remain.
 
 ### Verification
 
-- [ ] S1-V1 — `cd apps/backend && pnpm test:unit` green; `cd apps/backend && pnpm build` green.
+- [x] S1-V1 — `cd apps/backend && pnpm test:unit` green; `cd apps/backend && pnpm build` green.
 
 ---
 

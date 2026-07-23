@@ -17,17 +17,32 @@ import type { CredentialSource } from "../../lib/provider-credentials"
  * the DB per operation, never injected at boot.
  */
 export interface SkydropxCredentials {
-  apiKey: string
-  /** Optional override for the legacy base URL (defaulted by the resolver). */
+  /** PRO OAuth2 client-credentials id (S1 credential reshape, design §5). */
+  clientId?: string
+  /** PRO OAuth2 client-credentials secret. */
+  clientSecret?: string
+  /**
+   * @deprecated Legacy single-secret API key. Retained TRANSITIONALLY in S1 so
+   * the S2-owned client transport (`client.ts`) and its spec keep compiling and
+   * passing while S1 does the no-behavior-swap credential reshape across the
+   * credential layers. TODO(S2): remove `apiKey` when `client.ts` adopts the
+   * OAuth client-credentials Bearer flow (S2-G1).
+   */
+  apiKey?: string
+  /** Optional override for the base URL (defaulted to the PRO host by the resolver). */
   baseUrl?: string
   /** Fallback origin zip when the stock location has none. */
   originZip?: string
   /**
-   * Whether Skydropx `total_pricing` already includes IVA (default true).
+   * Whether the Skydropx rate total already includes IVA (default true).
    * DB-resolved ONLY — the legacy SKYDROPX_TAX_INCLUSIVE env read is gone.
    * TODO(sandbox-verify): default pinned pending gate S5.0b IVA verification.
    */
   taxInclusive?: boolean
+  /** MX Carta Porte SAT consignment note default for label creation (design D2). */
+  consignmentNote?: string
+  /** MX package_type default for label creation (design D2). */
+  packageType?: string
 }
 
 /**

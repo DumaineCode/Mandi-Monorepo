@@ -4,10 +4,13 @@
  * `POST /quotations` from the configured origin zip to a fixed well-known
  * destination (CDMX 06600) with the smallest parcel. Labeled best-effort:
  * quotation success also depends on carrier availability, not only on the
- * API key.
+ * credentials.
  *
- * TODO(sandbox-verify): wire shape gated on S5.0b — legacy token auth and
- * quotation body carried from the existing SkydropxClient TODO markers.
+ * S1 credential reshape: this probe now receives the two PRO secrets
+ * (clientId/clientSecret) instead of a single apiKey. The transport still uses
+ * the legacy `Token token=` header sourced from clientSecret so the layer is not
+ * fail-safe-nulled; TODO(S3): replace with the OAuth client-credentials token
+ * exchange (`/oauth/token` → Bearer) in S3-G8.
  */
 import {
   probeFailure,
@@ -23,7 +26,7 @@ export const PROBE_DESTINATION_ZIP = "06600"
 
 /**
  * FIX 1 (SSRF + stored-secret exfiltration guard). The Skydropx probe sends the
- * stored/candidate `apiKey` in the Authorization header to `${base}/quotations`,
+ * stored/candidate secret in the Authorization header to `${base}/quotations`,
  * so a caller-supplied `baseUrl` must NEVER be able to redirect that secret to
  * an arbitrary host. Only https URLs on `skydropx.com` (or a `*.skydropx.com`
  * subdomain) are allowed; http, cloud-metadata IPs, localhost, and non-skydropx
@@ -47,7 +50,8 @@ export function isAllowedSkydropxBaseUrl(value: unknown): boolean {
 }
 
 export interface SkydropxProbeCredentials {
-  apiKey: string
+  clientId: string
+  clientSecret: string
   originZip: string
   baseUrl?: string
 }
@@ -73,7 +77,8 @@ export async function probeSkydropx(
       {
         method: "POST",
         headers: {
-          Authorization: `Token token=${creds.apiKey}`,
+          // TODO(S3): replace legacy Token header with OAuth Bearer (S3-G8).
+          Authorization: `Token token=${creds.clientSecret}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({

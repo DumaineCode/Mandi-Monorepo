@@ -6,6 +6,7 @@
  * GET /users/me Bearer token (+ live_mode vs mode mismatch warning).
  * Probes NEVER throw — every failure resolves to { ok: false, detail }.
  */
+import { runProviderProbe } from ".."
 import { probeMercadopago } from "../mercadopago"
 import { probeOpenpay } from "../openpay"
 import { probeSkydropx } from "../skydropx"
@@ -93,7 +94,11 @@ describe("probeOpenpay", () => {
 })
 
 describe("probeSkydropx", () => {
-  const creds = { apiKey: "sd_key_12345678", originZip: "64000" }
+  const creds = {
+    clientId: "sd_client_1234",
+    clientSecret: "sd_secret_12345678",
+    originZip: "64000",
+  }
 
   it("passes on 2xx posting a smallest-parcel quotation to zip 06600", async () => {
     const fetchImpl = fetchReturning(jsonResponse({ id: "q_1" }, 201))
@@ -106,7 +111,7 @@ describe("probeSkydropx", () => {
     expect(init?.method).toBe("POST")
     expect(
       (init?.headers as Record<string, string>)["Authorization"]
-    ).toBe("Token token=sd_key_12345678")
+    ).toBe("Token token=sd_secret_12345678")
     const body = JSON.parse(String(init?.body))
     expect(body.zip_from).toBe("64000")
     expect(body.zip_to).toBe("06600")
@@ -126,12 +131,12 @@ describe("probeSkydropx", () => {
   })
 
   // FIX 1 (SSRF guard): a baseUrl that is not an allowlisted https skydropx host
-  // MUST NOT receive the apiKey — the probe fails WITHOUT issuing the request.
+  // MUST NOT receive the secrets — the probe fails WITHOUT issuing the request.
   it.each([
     "http://attacker.example",
     "http://169.254.169.254/latest/meta-data/",
     "https://evil.example.com/v1",
-  ])("refuses to send the apiKey to a non-skydropx base %s", async (baseUrl) => {
+  ])("refuses to send credentials to a non-skydropx base %s", async (baseUrl) => {
     const fetchImpl = fetchReturning(jsonResponse({}, 200))
 
     const result = await probeSkydropx({ ...creds, baseUrl }, { fetchImpl })
@@ -213,5 +218,33 @@ describe("probeMercadopago", () => {
 
     expect(result.ok).toBe(false)
     expect(result.detail).toMatch(/ECONNREFUSED|failed/i)
+  })
+})
+
+describe("runProviderProbe dispatcher — skydropx credential mapping", () => {
+  // R-B: the dispatcher MUST forward the two PRO secrets (clientId/clientSecret),
+  // never the legacy apiKey, so the probe layer is not silently fail-safe-nulled.
+  it("maps resolved creds to clientId/clientSecret/originZip/baseUrl (not apiKey)", async () => {
+    const fetchImpl = fetchReturning(jsonResponse({ id: "q_1" }, 201))
+
+    const result = await runProviderProbe(
+      "skydropx",
+      {
+        clientId: "sd_client_1234",
+        clientSecret: "sd_secret_12345678",
+        originZip: "64000",
+        baseUrl: "https://api-pro.skydropx.com/api/v1",
+      },
+      { fetchImpl }
+    )
+
+    expect(result.ok).toBe(true)
+    const [url, init] = fetchImpl.mock.calls[0]
+    // baseUrl forwarded (not the legacy default) and the secret reached the header,
+    // proving the dispatcher passed clientSecret rather than an undefined apiKey.
+    expect(String(url)).toBe("https://api-pro.skydropx.com/api/v1/quotations")
+    expect(
+      (init?.headers as Record<string, string>)["Authorization"]
+    ).toBe("Token token=sd_secret_12345678")
   })
 })

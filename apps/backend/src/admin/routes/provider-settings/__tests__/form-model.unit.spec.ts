@@ -53,15 +53,25 @@ describe("PROVIDER_FORMS field split", () => {
     expect(publics).toEqual(["merchantId", "publicKey"])
   })
 
-  it("marks skydropx apiKey secret and originZip/baseUrl/taxInclusive public (taxInclusive boolean)", () => {
+  it("marks skydropx clientId/clientSecret secret and the PRO public fields (taxInclusive boolean)", () => {
     const def = PROVIDER_FORMS.skydropx
     expect(def.fields.filter((f) => f.secret).map((f) => f.name)).toEqual([
-      "apiKey",
+      "clientId",
+      "clientSecret",
     ])
+    // No legacy apiKey field remains.
+    expect(def.fields.find((f) => f.name === "apiKey")).toBeUndefined()
     expect(def.fields.find((f) => f.name === "taxInclusive")?.type).toBe(
       "boolean"
     )
     expect(def.fields.find((f) => f.name === "baseUrl")?.optional).toBe(true)
+    // New Carta Porte public text fields for MX label creation.
+    const consignment = def.fields.find((f) => f.name === "consignmentNote")
+    const packageType = def.fields.find((f) => f.name === "packageType")
+    expect(consignment?.type).toBe("text")
+    expect(consignment?.secret).toBe(false)
+    expect(packageType?.type).toBe("text")
+    expect(packageType?.secret).toBe(false)
   })
 
   it("marks mercadopago accessToken/webhookSecret secret and publicKey public", () => {
@@ -278,18 +288,29 @@ describe("buildUpsertBody", () => {
     })
   })
 
-  it("serializes skydropx boolean taxInclusive and omits empty optional baseUrl", () => {
+  it("round-trips the two skydropx secrets + public fields and omits empty optional baseUrl", () => {
     const form: ProviderFormState = {
       mode: "sandbox",
       isEnabled: true,
-      values: { originZip: "01000", baseUrl: "", apiKey: "key_abc" },
+      values: {
+        originZip: "01000",
+        baseUrl: "",
+        clientId: "cid_abc",
+        clientSecret: "csecret_abcdefgh",
+        consignmentNote: "31181701",
+        packageType: "4G",
+      },
       booleans: { taxInclusive: true },
     }
     const { body } = buildUpsertBody(PROVIDER_FORMS.skydropx, null, form)
     expect(body.taxInclusive).toBe(true)
     expect(body).not.toHaveProperty("baseUrl")
+    expect(body).not.toHaveProperty("apiKey")
     expect(body.originZip).toBe("01000")
-    expect(body.apiKey).toBe("key_abc")
+    expect(body.clientId).toBe("cid_abc")
+    expect(body.clientSecret).toBe("csecret_abcdefgh")
+    expect(body.consignmentNote).toBe("31181701")
+    expect(body.packageType).toBe("4G")
   })
 })
 

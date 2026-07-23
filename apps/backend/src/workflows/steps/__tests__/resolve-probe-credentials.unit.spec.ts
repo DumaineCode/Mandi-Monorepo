@@ -79,15 +79,25 @@ describe("mergeProbeCredentials", () => {
     expect(result.ok).toBe(false)
   })
 
-  it("requires apiKey and originZip for skydropx probes", () => {
+  it("requires clientId, clientSecret and originZip for skydropx probes", () => {
     const result = mergeProbeCredentials("skydropx", null, {
-      apiKey: "sd_key_12345678",
+      clientId: "sd_client_1234",
     })
 
     expect(result.ok).toBe(false)
     if (!result.ok) {
-      expect(result.detail).toMatch(/originZip/)
+      expect(result.detail).toMatch(/clientSecret|originZip/)
     }
+  })
+
+  it("no longer requires a legacy apiKey for skydropx probes", () => {
+    const result = mergeProbeCredentials("skydropx", null, {
+      clientId: "sd_client_1234",
+      clientSecret: "sd_secret_12345678",
+      originZip: "64000",
+    })
+
+    expect(result.ok).toBe(true)
   })
 
   it("requires only the access token for mercadopago probes", () => {
@@ -99,23 +109,24 @@ describe("mergeProbeCredentials", () => {
   })
 
   // FIX 1 (SSRF + stored-secret exfiltration): a candidate baseUrl that is not
-  // https or not an allowlisted skydropx host MUST NOT cause the stored apiKey
+  // https or not an allowlisted skydropx host MUST NOT cause the stored secrets
   // to flow to that host. The merge fails before returning any creds.
   describe("skydropx probe baseUrl allowlist (SSRF guard)", () => {
     const storedSkydropx = {
-      apiKey: "sd_stored_apikey_123456",
+      clientId: "sd_stored_client_123456",
+      clientSecret: "sd_stored_secret_123456",
       originZip: "64000",
-      baseUrl: "https://api.skydropx.com/v1",
+      baseUrl: "https://api-pro.skydropx.com/api/v1",
       taxInclusive: true,
     }
 
-    it("rejects a non-https candidate baseUrl and never exposes the stored apiKey", () => {
+    it("rejects a non-https candidate baseUrl and never exposes the stored secret", () => {
       const result = mergeProbeCredentials("skydropx", storedSkydropx, {
         baseUrl: "http://attacker.example",
       })
 
       expect(result.ok).toBe(false)
-      expect(JSON.stringify(result)).not.toContain(storedSkydropx.apiKey)
+      expect(JSON.stringify(result)).not.toContain(storedSkydropx.clientSecret)
     })
 
     it.each([
@@ -131,11 +142,12 @@ describe("mergeProbeCredentials", () => {
       expect(result.ok).toBe(false)
     })
 
-    it("accepts a re-entered https skydropx baseUrl paired with an apiKey", () => {
+    it("accepts a re-entered https skydropx baseUrl paired with the two secrets", () => {
       const result = mergeProbeCredentials("skydropx", null, {
-        apiKey: "sd_new_apikey_123456",
+        clientId: "sd_new_client_123456",
+        clientSecret: "sd_new_secret_123456",
         originZip: "06600",
-        baseUrl: "https://api-sandbox.skydropx.com/v1",
+        baseUrl: "https://api-sandbox.skydropx.com/api/v1",
       })
 
       expect(result.ok).toBe(true)
@@ -146,7 +158,7 @@ describe("mergeProbeCredentials", () => {
 
       expect(result.ok).toBe(true)
       if (result.ok) {
-        expect(result.creds.baseUrl).toBe("https://api.skydropx.com/v1")
+        expect(result.creds.baseUrl).toBe("https://api-pro.skydropx.com/api/v1")
       }
     })
   })

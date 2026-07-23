@@ -7,7 +7,7 @@
  * |-------------|--------------------------------------------|----------------------------------------|
  * | openpay     | privateKey, webhookUser, webhookPassword   | merchantId, publicKey, sandbox         |
  * | mercadopago | accessToken, webhookSecret                 | publicKey, sandbox                     |
- * | skydropx    | apiKey                                     | baseUrl (optional), originZip, taxInclusive |
+ * | skydropx    | clientId, clientSecret                     | baseUrl (optional), originZip, taxInclusive, consignmentNote, packageType |
  *
  * `ResolvedProviderConfig` variants mirror the exact options shape each
  * provider consumes today (explore §1 options mapping) so provider internals
@@ -24,8 +24,13 @@ export const SANDBOX_FLAG_PROVIDERS: readonly string[] = [
   "mercadopago",
 ]
 
-/** Default Skydropx API base URL (mirrors today's medusa-config default). */
-export const SKYDROPX_DEFAULT_BASE_URL = "https://api.skydropx.com/v1"
+/**
+ * Default Skydropx base URL — flipped to the Skydropx PRO host (design D1).
+ * `/api/v1` is baked into the base so client path-joining stays identical to the
+ * legacy shape (`${baseUrl}/quotations`, `${baseUrl}/oauth/token`, …). The host
+ * is under `*.skydropx.com`, so the SSRF allowlist is unchanged.
+ */
+export const SKYDROPX_DEFAULT_BASE_URL = "https://api-pro.skydropx.com/api/v1"
 
 /**
  * Non-secret masking hints computed AT WRITE TIME (design §1.1) so masked
@@ -49,12 +54,21 @@ export interface OpenpayResolvedConfig {
   webhookPassword: string
 }
 
-/** Options shape the Skydropx fulfillment provider consumes today. */
+/**
+ * Options shape the Skydropx fulfillment provider consumes (PRO / OAuth2).
+ * Mirrors `SkydropxCredentials` in the skydropx-fulfillment module: two
+ * encrypted secrets (`clientId`/`clientSecret`) plus public config. No `apiKey`.
+ */
 export interface SkydropxResolvedConfig {
-  apiKey: string
+  clientId: string
+  clientSecret: string
   baseUrl: string
   originZip: string
   taxInclusive?: boolean
+  /** MX Carta Porte SAT consignment note default (design D2). */
+  consignmentNote?: string
+  /** MX package_type default (design D2). */
+  packageType?: string
 }
 
 /**

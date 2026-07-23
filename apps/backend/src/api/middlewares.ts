@@ -46,11 +46,15 @@ export const TestProviderConnectionBody = z
     privateKey: z.string().optional(),
     webhookUser: z.string().optional(),
     webhookPassword: z.string().optional(),
-    // skydropx
-    apiKey: z.string().optional(),
+    // skydropx (PRO two-secret; .strip() drops anything unlisted, so both
+    // secrets + Carta Porte public fields MUST be listed explicitly)
+    clientId: z.string().optional(),
+    clientSecret: z.string().optional(),
     originZip: z.string().optional(),
     baseUrl: z.string().url().optional(),
     taxInclusive: z.boolean().optional(),
+    consignmentNote: z.string().optional(),
+    packageType: z.string().optional(),
     // mercadopago
     accessToken: z.string().optional(),
     webhookSecret: z.string().optional(),

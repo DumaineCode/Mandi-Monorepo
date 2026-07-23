@@ -100,12 +100,21 @@ const PROVIDER_MAPPINGS: ProviderEnvMapping[] = [
   },
   {
     provider: "skydropx",
-    requiredEnv: ["SKYDROPX_API_KEY", "SKYDROPX_ORIGIN_ZIP"],
-    secretEnv: { apiKey: "SKYDROPX_API_KEY" },
+    requiredEnv: [
+      "SKYDROPX_CLIENT_ID",
+      "SKYDROPX_CLIENT_SECRET",
+      "SKYDROPX_ORIGIN_ZIP",
+    ],
+    secretEnv: {
+      clientId: "SKYDROPX_CLIENT_ID",
+      clientSecret: "SKYDROPX_CLIENT_SECRET",
+    },
     publicEnv: {
       originZip: "SKYDROPX_ORIGIN_ZIP",
       baseUrl: "SKYDROPX_BASE_URL",
       taxInclusive: "SKYDROPX_TAX_INCLUSIVE",
+      consignmentNote: "SKYDROPX_CONSIGNMENT_NOTE",
+      packageType: "SKYDROPX_PACKAGE_TYPE",
     },
     // Skydropx has no sandbox/production concept today — single mode.
     mode: () => "sandbox",

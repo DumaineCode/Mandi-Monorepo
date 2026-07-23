@@ -8,6 +8,7 @@
 import { MedusaError } from "@medusajs/framework/utils"
 
 import {
+  PROVIDER_PUBLIC_FIELDS,
   PROVIDER_SECRET_FIELDS,
   validateProviderPayload,
   type ExistingSettingSnapshot,
@@ -146,18 +147,46 @@ describe("validateProviderPayload", () => {
     expect(result.retainedSecretFields).toEqual([])
   })
 
-  it("accepts a complete skydropx payload, defaults omitted optionals", () => {
+  it("classifies skydropx fields as two secrets + PRO public fields", () => {
+    expect(PROVIDER_SECRET_FIELDS.skydropx).toEqual(["clientId", "clientSecret"])
+    expect(PROVIDER_PUBLIC_FIELDS.skydropx).toEqual([
+      "baseUrl",
+      "originZip",
+      "taxInclusive",
+      "consignmentNote",
+      "packageType",
+    ])
+    // Legacy single-secret apiKey is no longer a skydropx field anywhere.
+    expect(PROVIDER_SECRET_FIELDS.skydropx).not.toContain("apiKey")
+    expect(PROVIDER_PUBLIC_FIELDS.skydropx).not.toContain("apiKey")
+  })
+
+  it("accepts a complete two-secret skydropx payload with the new public fields", () => {
     const result = validateProviderPayload(
       "skydropx",
-      { mode: "production", originZip: "64000", apiKey: "sd_key_12345678" },
+      {
+        mode: "production",
+        originZip: "64000",
+        clientId: "sd_client_1234",
+        clientSecret: "sd_secret_12345678",
+        consignmentNote: "31181701",
+        packageType: "4G",
+      },
       null
     )
 
-    expect(result.publicConfig).toEqual({ originZip: "64000" })
-    expect(result.secrets).toEqual({ apiKey: "sd_key_12345678" })
+    expect(result.publicConfig).toEqual({
+      originZip: "64000",
+      consignmentNote: "31181701",
+      packageType: "4G",
+    })
+    expect(result.secrets).toEqual({
+      clientId: "sd_client_1234",
+      clientSecret: "sd_secret_12345678",
+    })
   })
 
-  it("rejects a fresh skydropx save without originZip or apiKey", () => {
+  it("rejects a fresh skydropx save without originZip or the two secrets", () => {
     expect(() =>
       validateProviderPayload("skydropx", { mode: "production" }, null)
     ).toThrow(/originZip/)
@@ -167,7 +196,76 @@ describe("validateProviderPayload", () => {
         { mode: "production", originZip: "64000" },
         null
       )
-    ).toThrow(/apiKey/)
+    ).toThrow(/clientId/)
+  })
+
+  it("keeps the omitted skydropx secret on a same-mode partial update (S1-T1: one of two)", () => {
+    const existing: ExistingSettingSnapshot = {
+      mode: "production",
+      secret_hints: {
+        clientId: { last4: "1234", set: true },
+        clientSecret: { last4: "5678", set: true },
+      },
+    }
+
+    const result = validateProviderPayload(
+      "skydropx",
+      {
+        mode: "production",
+        originZip: "64000",
+        clientSecret: "sd_secret_rotated_9012",
+      },
+      existing
+    )
+
+    // Only the re-entered secret is new; the untouched one is retained (kept).
+    expect(result.secrets).toEqual({ clientSecret: "sd_secret_rotated_9012" })
+    expect(result.retainedSecretFields).toEqual(["clientId"])
+  })
+
+  it("does not treat apiKey as a valid skydropx secret", () => {
+    // apiKey is unknown to the schema (stripped) → the two secrets are still missing.
+    expect(() =>
+      validateProviderPayload(
+        "skydropx",
+        { mode: "production", originZip: "64000", apiKey: "sd_key_12345678" },
+        null
+      )
+    ).toThrow(/clientId/)
+  })
+
+  it("rejects a non-skydropx baseUrl on save (SSRF write-path guard, design D1)", () => {
+    expect(() =>
+      validateProviderPayload(
+        "skydropx",
+        {
+          mode: "production",
+          originZip: "64000",
+          clientId: "sd_client_1234",
+          clientSecret: "sd_secret_12345678",
+          baseUrl: "https://evil.example.com/api/v1",
+        },
+        null
+      )
+    ).toThrow(/skydropx\.com|base url/i)
+  })
+
+  it("accepts an allowlisted PRO baseUrl on save", () => {
+    const result = validateProviderPayload(
+      "skydropx",
+      {
+        mode: "production",
+        originZip: "64000",
+        clientId: "sd_client_1234",
+        clientSecret: "sd_secret_12345678",
+        baseUrl: "https://api-pro.skydropx.com/api/v1",
+      },
+      null
+    )
+
+    expect(result.publicConfig.baseUrl).toBe(
+      "https://api-pro.skydropx.com/api/v1"
+    )
   })
 
   it("accepts a complete mercadopago payload", () => {
