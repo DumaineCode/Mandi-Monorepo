@@ -1,3 +1,5 @@
+import Image from "next/image";
+
 import { listCategories } from "@lib/data/categories";
 import { listRegions } from "@lib/data/regions";
 import { listLocales } from "@lib/data/locales";
@@ -57,11 +59,14 @@ export default async function Footer() {
         <div className="flex flex-wrap justify-between gap-10">
           {/* Left block — wordmark + description */}
           <div className="max-w-[280px]">
-            <LocalizedClientLink
-              href="/"
-              className="font-bricolage text-2xl font-extrabold tracking-[-0.02em] text-white"
-            >
-              MANDO <span className="text-coral">OFICIAL</span>
+            <LocalizedClientLink href="/" className="inline-flex items-center">
+              <Image
+                src="/Logo_Crema_trim.png"
+                alt="MANDO Oficial"
+                width={802}
+                height={220}
+                className="h-10 w-auto"
+              />
             </LocalizedClientLink>
             <p className="mt-3 font-hanken text-sm leading-relaxed text-cream-muted">
               Insumos para cafeterías en todo México. Polvos, jarabes, botes y
