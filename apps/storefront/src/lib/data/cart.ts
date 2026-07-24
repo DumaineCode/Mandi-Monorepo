@@ -396,10 +396,12 @@ export async function submitPromotionForm(
 }
 
 // TODO: Pass a POJO instead of a form entity here
+export type SetAddressesResult = string | { ok: true }
+
 export async function setAddresses(
   currentState: unknown,
   formData: FormData
-): Promise<string | null> {
+): Promise<SetAddressesResult> {
   try {
     if (!formData) {
       throw new Error("No form data found when setting addresses")
@@ -451,7 +453,15 @@ export async function setAddresses(
   // shipping prices and client state survive. A server redirect here would
   // full-remount the checkout tree, wiping the prefetch and causing a layout
   // jump.
-  return null
+  //
+  // Return a fresh `{ ok: true }` object (NOT bare `null`) so every successful
+  // submit yields a new reference. `useActionState` starts at `null`, so the
+  // first success transitions `null` -> `{ ok: true }`, and each later success
+  // returns a distinct object. This guarantees the navigation effect's
+  // dependency changes on every success (Object.is), firing deterministically —
+  // a bare `null` would not change across the initial-state/happy-path submit
+  // and the effect would never re-run.
+  return { ok: true }
 }
 
 /**

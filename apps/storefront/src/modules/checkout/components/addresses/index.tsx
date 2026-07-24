@@ -41,20 +41,33 @@ const Addresses = ({
     router.push(pathname + "?step=address")
   }
 
-  const [message, formAction] = useActionState(setAddresses, null)
+  const [result, formAction] = useActionState(setAddresses, null)
+
+  // On error `setAddresses` returns a string; on success it returns a fresh
+  // `{ ok: true }` object. Derive the error string (or null) for display.
+  const errorMessage = typeof result === "string" ? result : null
 
   // Client-side navigation replacing the old server redirect: on a successful
-  // submit `setAddresses` returns null, so soft-navigate to the delivery step
-  // without a scroll jump. This preserves the client tree (and any prefetched
-  // shipping prices) instead of a full remount. Guarded so it fires only on the
-  // open address step and only after an actual submit.
+  // submit `setAddresses` returns a fresh `{ ok: true }` object, so soft-navigate
+  // to the delivery step without a scroll jump. This preserves the client tree
+  // (and any prefetched shipping prices) instead of a full remount.
+  //
+  // Navigate ONLY on success. Because `result` is a new object reference on
+  // every successful submit, the effect dependency changes deterministically
+  // (Object.is) and fires on each success — including the clean happy path where
+  // the previous state was the initial `null`. Error results (a string) never
+  // trigger navigation; the ErrorMessage renders instead. `pathname` already
+  // carries the `/{countryCode}` prefix (checkout is country-scoped), so the
+  // relative push lands on the correct locale's delivery step.
   const submittedRef = useRef(false)
   useEffect(() => {
-    if (submittedRef.current && isOpen && message === null) {
+    const isSuccess =
+      typeof result === "object" && result !== null && result.ok === true
+    if (submittedRef.current && isOpen && isSuccess) {
       submittedRef.current = false
       router.push(pathname + "?step=delivery", { scroll: false })
     }
-  }, [message, isOpen, pathname, router])
+  }, [result, isOpen, pathname, router])
 
   return (
     <div className="rounded-large border border-line bg-paper p-6 small:p-8">
@@ -110,7 +123,10 @@ const Addresses = ({
             <SubmitButton className="mt-6" data-testid="submit-address-button">
               Continuar al envío
             </SubmitButton>
-            <ErrorMessage error={message} data-testid="address-error-message" />
+            <ErrorMessage
+              error={errorMessage}
+              data-testid="address-error-message"
+            />
           </div>
         </form>
       ) : (
