@@ -8,7 +8,54 @@
  * (survive the strip) and that the legacy `apiKey` is not accepted (spec
  * Capability 1, R-B two-secret presence for the middleware layer).
  */
-import { TestProviderConnectionBody } from "../../../middlewares"
+import {
+  TestProviderConnectionBody,
+  UpsertProviderSettingsBody,
+} from "../../../middlewares"
+
+/**
+ * Regression: Medusa's `validateAndTransformBody` runs the schema through
+ * `zodValidator`, which FORCES `.strict()` (`if ("strict" in schema) schema =
+ * schema.strict()`), overriding `.passthrough()`. A save body must therefore list
+ * every candidate provider field explicitly, or Medusa rejects it with
+ * "Unrecognized fields". We assert the schema under the SAME forced-strict
+ * transform Medusa applies, so a future regression to `.passthrough()` fails here.
+ */
+describe("UpsertProviderSettingsBody (forced-strict save)", () => {
+  const forcedStrict = UpsertProviderSettingsBody.strict()
+
+  it("accepts a full skydropx save body under Medusa's forced .strict()", () => {
+    const body = {
+      mode: "sandbox",
+      clientId: "sd_client_1234",
+      clientSecret: "sd_secret_12345678",
+      originZip: "64000",
+      taxInclusive: true,
+    }
+    expect(() => forcedStrict.parse(body)).not.toThrow()
+    const parsed = forcedStrict.parse(body)
+    expect(parsed.clientId).toBe("sd_client_1234")
+    expect(parsed.originZip).toBe("64000")
+  })
+
+  it("accepts openpay and mercadopago save fields too", () => {
+    expect(() =>
+      forcedStrict.parse({ mode: "production", merchantId: "m1", publicKey: "pk" })
+    ).not.toThrow()
+    expect(() =>
+      forcedStrict.parse({ mode: "production", accessToken: "at" })
+    ).not.toThrow()
+  })
+
+  it("still rejects a genuinely unknown field and a bad baseUrl", () => {
+    expect(() =>
+      forcedStrict.parse({ mode: "sandbox", evil: "x" })
+    ).toThrow()
+    expect(() =>
+      forcedStrict.parse({ mode: "sandbox", baseUrl: "not-a-url" })
+    ).toThrow()
+  })
+})
 
 describe("TestProviderConnectionBody (strip schema)", () => {
   it("keeps the two skydropx secrets + Carta Porte public fields, drops apiKey", () => {

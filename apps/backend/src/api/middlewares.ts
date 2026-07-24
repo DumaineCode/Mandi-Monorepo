@@ -15,12 +15,38 @@ import {
 } from "@medusajs/framework/http"
 import { z } from "zod"
 
-export const UpsertProviderSettingsBody = z
-  .object({
-    mode: z.enum(["sandbox", "production"]),
-    is_enabled: z.boolean().optional(),
-  })
-  .passthrough()
+/**
+ * Upsert body schema.
+ *
+ * IMPORTANT: Medusa's `validateAndTransformBody` runs bodies through
+ * `zodValidator`, which FORCES `.strict()` on any object schema
+ * (`if ("strict" in schema) schema = schema.strict()`), overriding `.passthrough()`
+ * / `.strip()`. So the middleware schema MUST explicitly list every candidate
+ * field across providers, or a valid save is rejected with "Unrecognized fields".
+ * The strict PER-PROVIDER shape (which fields belong to which `:provider`) is still
+ * enforced downstream by the `validate-provider-payload` workflow step.
+ */
+export const UpsertProviderSettingsBody = z.object({
+  mode: z.enum(["sandbox", "production"]),
+  is_enabled: z.boolean().optional(),
+  // openpay
+  merchantId: z.string().optional(),
+  publicKey: z.string().optional(),
+  privateKey: z.string().optional(),
+  webhookUser: z.string().optional(),
+  webhookPassword: z.string().optional(),
+  // skydropx (PRO two-secret + Carta Porte public fields)
+  clientId: z.string().optional(),
+  clientSecret: z.string().optional(),
+  originZip: z.string().optional(),
+  baseUrl: z.string().url().optional(),
+  taxInclusive: z.boolean().optional(),
+  consignmentNote: z.string().optional(),
+  packageType: z.string().optional(),
+  // mercadopago
+  accessToken: z.string().optional(),
+  webhookSecret: z.string().optional(),
+})
 
 export type UpsertProviderSettingsBody = z.infer<
   typeof UpsertProviderSettingsBody
