@@ -1,3 +1,5 @@
+import { persistShippingForCalc } from "@lib/data/cart"
+import { calculatePriceForShippingOption } from "@lib/data/fulfillment"
 import { HttpTypes } from "@medusajs/types"
 import { Container } from "@modules/common/components/ui"
 import Checkbox from "@modules/common/components/checkbox"
@@ -12,16 +14,52 @@ import CountrySelect from "../country-select"
 /** Sentinel option value that switches the colonia dropdown to free text. */
 const COLONIA_OTHER = "__other__"
 
+/** Debounce window before a background shipping prefetch is fired (ms). */
+const PREFETCH_DEBOUNCE_MS = 600
+
+/**
+ * Deterministic signature of the shipping fields that affect calculated
+ * prices. Used to dedupe identical prefetches and to invalidate seeded prices
+ * once the address changes.
+ */
+const buildShippingSignature = (parts: {
+  postal_code: string
+  province: string
+  city: string
+  address_1: string
+  address_2: string
+  country_code: string
+}) =>
+  [
+    parts.postal_code,
+    parts.province,
+    parts.city,
+    parts.address_1,
+    parts.address_2,
+    parts.country_code,
+  ]
+    .map((p) => (p || "").trim())
+    .join("|")
+
+export type PrefetchedShipping = {
+  signature: string
+  prices: Record<string, number>
+}
+
 const ShippingAddress = ({
   customer,
   cart,
+  availableShippingMethods,
   checked,
   onChange,
+  onPrefetch,
 }: {
   customer: HttpTypes.StoreCustomer | null
   cart: HttpTypes.StoreCart | null
+  availableShippingMethods?: HttpTypes.StoreCartShippingOption[] | null
   checked: boolean
   onChange: () => void
+  onPrefetch?: (result: PrefetchedShipping) => void
 }) => {
   const [formData, setFormData] = useState<Record<string, string>>({
     "shipping_address.first_name": cart?.shipping_address?.first_name || "",
@@ -54,6 +92,25 @@ const ShippingAddress = ({
 
   // Guards against re-fetching the same CP on every keystroke/re-render.
   const lastLookedUpCp = useRef<string>("")
+
+  // Guards against re-running the background price prefetch for a signature we
+  // already prefetched (mirrors the `lastLookedUpCp` dedupe pattern).
+  const lastPrefetchedSignature = useRef<string>("")
+  // Stable ref to the latest `onPrefetch` so the effect doesn't re-run just
+  // because the parent passed a new callback identity.
+  const onPrefetchRef = useRef(onPrefetch)
+  useEffect(() => {
+    onPrefetchRef.current = onPrefetch
+  }, [onPrefetch])
+  // Stable ref to the calculated shipping options so the effect depends on
+  // their ids, not the array identity.
+  const calculatedOptionIds = useMemo(
+    () =>
+      (availableShippingMethods || [])
+        .filter((sm) => sm.price_type === "calculated")
+        .map((sm) => sm.id),
+    [availableShippingMethods]
+  )
 
   const countriesInRegion = useMemo(
     () => cart?.region?.countries?.map((c) => c.iso_2),
@@ -172,6 +229,112 @@ const ShippingAddress = ({
       cancelled = true
     }
   }, [postalCode])
+
+  // --- Background shipping-price prefetch ---
+  // When the address is complete and the CP resolved, persist the shipping
+  // subset and calculate option prices in the background so the delivery step
+  // shows prices instantly. Non-blocking enhancement: any failure is swallowed
+  // and the delivery step falls back to its own mount-time recalc.
+  const province = formData["shipping_address.province"]
+  const city = formData["shipping_address.city"]
+  const address1 = formData["shipping_address.address_1"]
+  const address2 = formData["shipping_address.address_2"]
+  const countryCode = formData["shipping_address.country_code"]
+
+  useEffect(() => {
+    // Gate: only run once the CP lookup succeeded and every required field is
+    // present. Anything missing means we do nothing (no persist, no calc).
+    if (
+      cpStatus !== "found" ||
+      !postalCode ||
+      !province ||
+      !city ||
+      !address1 ||
+      !address2 ||
+      !countryCode
+    ) {
+      return
+    }
+
+    if (!calculatedOptionIds.length || !cart?.id) {
+      return
+    }
+
+    const signature = buildShippingSignature({
+      postal_code: postalCode,
+      province,
+      city,
+      address_1: address1,
+      address_2: address2,
+      country_code: countryCode,
+    })
+
+    // Dedupe: identical data must not re-trigger backend work.
+    if (signature === lastPrefetchedSignature.current) {
+      return
+    }
+
+    const controller = new AbortController()
+    let cancelled = false
+
+    const timer = setTimeout(async () => {
+      const persisted = await persistShippingForCalc({
+        address_1: address1,
+        address_2: address2,
+        postal_code: postalCode,
+        city,
+        province,
+        country_code: countryCode,
+      })
+
+      // Bail if the address changed (superseded) or the effect was cleaned up
+      // while the persist was in flight — never surface stale/mixed prices.
+      if (cancelled || controller.signal.aborted || !persisted.ok) {
+        return
+      }
+
+      const cartId = cart.id
+      const results = await Promise.allSettled(
+        calculatedOptionIds.map((optionId) =>
+          calculatePriceForShippingOption(optionId, cartId)
+        )
+      )
+
+      if (cancelled || controller.signal.aborted) {
+        return
+      }
+
+      const prices: Record<string, number> = {}
+      results.forEach((r) => {
+        if (r.status === "fulfilled" && r.value?.id) {
+          prices[r.value.id] = r.value.amount ?? 0
+        }
+      })
+
+      // Accept the result only if this signature is still the current one.
+      lastPrefetchedSignature.current = signature
+      onPrefetchRef.current?.({ signature, prices })
+    }, PREFETCH_DEBOUNCE_MS)
+
+    // Invalidate-on-edit: clearing the timer / aborting on any dependency
+    // change collapses rapid edits into a single trailing call and drops any
+    // in-flight run for a now-stale signature.
+    return () => {
+      cancelled = true
+      controller.abort()
+      clearTimeout(timer)
+    }
+  }, [
+    cpStatus,
+    postalCode,
+    province,
+    city,
+    address1,
+    address2,
+    countryCode,
+    calculatedOptionIds,
+    cart?.id,
+  ])
 
   const handleChange = (
     e: React.ChangeEvent<
