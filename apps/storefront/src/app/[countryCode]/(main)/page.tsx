@@ -7,6 +7,7 @@ import FeaturedFlavor from "@modules/home/components/featured-flavor"
 import FlavorMarquee from "@modules/home/components/flavor-marquee"
 import Hero from "@modules/home/components/hero"
 import Newsletter from "@modules/home/components/newsletter"
+import ReviewsCarousel from "@modules/home/components/reviews-carousel"
 import StatsTestimonial from "@modules/home/components/stats-testimonial"
 import WholesaleBand from "@modules/home/components/wholesale-band"
 
@@ -37,6 +38,7 @@ export default async function Home(props: {
 
       <WholesaleBand />
       <StatsTestimonial />
+      <ReviewsCarousel />
       <Newsletter />
 
       {/* TODO: Footer (pending header/footer decision) */}
