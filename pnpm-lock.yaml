@@ -53,6 +53,9 @@ importers:
       '@tanstack/react-query':
         specifier: 5.64.2
         version: 5.64.2(react@18.3.1)
+      '@webrek/mx-cp':
+        specifier: ^0.2.0
+        version: 0.2.0
       react-i18next:
         specifier: 13.5.0
         version: 13.5.0(i18next@23.7.11)(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -4628,6 +4631,9 @@ packages:
 
   '@webassemblyjs/wast-printer@1.14.1':
     resolution: {integrity: sha512-kPSSXE6De1XOR820C90RIo2ogvZG+c3KiHzqUoO/F34Y2shGzesfqv7o57xrxovZJH/MetF5UjroJ/R/3isoiw==}
+
+  '@webrek/mx-cp@0.2.0':
+    resolution: {integrity: sha512-Pai24zCnZKJYSqGRzmpwaGyWSG1SZlL7WVYN8iwf38lg0Jb5jaqQIt4ixV9OHQH4ef2z1wQN4si9ibSo+7A00w==}
 
   '@whatwg-node/promise-helpers@1.3.2':
     resolution: {integrity: sha512-Nst5JdK47VIl9UcGwtv2Rcgyn5lWtZ0/mhRQ4G8NN2isxpq2TO30iqHzmwoJycjWuyUfg3GFXqP/gFHXeV57IA==}
@@ -14715,6 +14721,8 @@ snapshots:
     dependencies:
       '@webassemblyjs/ast': 1.14.1
       '@xtuc/long': 4.2.2
+
+  '@webrek/mx-cp@0.2.0': {}
 
   '@whatwg-node/promise-helpers@1.3.2':
     dependencies:

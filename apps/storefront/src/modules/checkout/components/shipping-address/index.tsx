@@ -2,10 +2,15 @@ import { HttpTypes } from "@medusajs/types"
 import { Container } from "@modules/common/components/ui"
 import Checkbox from "@modules/common/components/checkbox"
 import Input from "@modules/common/components/input"
+import NativeSelect from "@modules/common/components/native-select"
+import { getPostalCode } from "@lib/data/postal-code"
 import { mapKeys } from "lodash"
-import React, { useEffect, useMemo, useState } from "react"
+import React, { useEffect, useMemo, useRef, useState } from "react"
 import AddressSelect from "../address-select"
 import CountrySelect from "../country-select"
+
+/** Sentinel option value that switches the colonia dropdown to free text. */
+const COLONIA_OTHER = "__other__"
 
 const ShippingAddress = ({
   customer,
@@ -31,6 +36,24 @@ const ShippingAddress = ({
     "shipping_address.phone": cart?.shipping_address?.phone || "",
     email: cart?.email || "",
   })
+
+  // --- Postal-code (SEPOMEX) autocomplete state ---
+  const [colonias, setColonias] = useState<string[]>([])
+  const [cpStatus, setCpStatus] = useState<
+    "idle" | "loading" | "found" | "not_found"
+  >("idle")
+  // "Otra (especificar)" escape hatch: render the free-text colonia input even
+  // when a colonia list is available (e.g. a saved colonia not in the list).
+  const [coloniaManual, setColoniaManual] = useState(false)
+
+  // Latest colonia value, read inside the async lookup without a stale closure.
+  const currentColoniaRef = useRef(formData["shipping_address.address_2"] || "")
+  useEffect(() => {
+    currentColoniaRef.current = formData["shipping_address.address_2"] || ""
+  }, [formData])
+
+  // Guards against re-fetching the same CP on every keystroke/re-render.
+  const lastLookedUpCp = useRef<string>("")
 
   const countriesInRegion = useMemo(
     () => cart?.region?.countries?.map((c) => c.iso_2),
@@ -85,6 +108,71 @@ const ShippingAddress = ({
     }
   }, [cart]) // Add cart as a dependency
 
+  const postalCode = formData["shipping_address.postal_code"]
+
+  // Look up the CP whenever it becomes a valid 5-digit code and autofill
+  // State/Province + City, and populate the colonia dropdown. Degrades to
+  // manual entry on any failure (see getPostalCode) — never blocks the form.
+  useEffect(() => {
+    const cp = (postalCode || "").trim()
+
+    if (!/^\d{5}$/.test(cp)) {
+      setCpStatus("idle")
+      setColonias([])
+      return
+    }
+
+    if (cp === lastLookedUpCp.current) {
+      return
+    }
+    lastLookedUpCp.current = cp
+
+    let cancelled = false
+    setCpStatus("loading")
+
+    getPostalCode(cp)
+      .then((res) => {
+        if (cancelled) {
+          return
+        }
+
+        if (!res || !res.found) {
+          setColonias([])
+          setCpStatus("not_found")
+          return
+        }
+
+        const previousColonia = currentColoniaRef.current
+        const coloniaInList = res.colonias.includes(previousColonia)
+
+        setColonias(res.colonias)
+        // Keep a previously entered colonia that isn't in the list (e.g. from a
+        // saved address) as free text instead of silently wiping it.
+        setColoniaManual(previousColonia !== "" && !coloniaInList)
+        setCpStatus("found")
+
+        // The CP is authoritative for state + city, so overwrite them — this is
+        // also what fixes the missing-state cause of a "-" shipping price.
+        setFormData((prev) => ({
+          ...prev,
+          "shipping_address.province":
+            res.state || prev["shipping_address.province"],
+          "shipping_address.city": res.city || prev["shipping_address.city"],
+        }))
+      })
+      .catch(() => {
+        if (cancelled) {
+          return
+        }
+        setColonias([])
+        setCpStatus("not_found")
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [postalCode])
+
   const handleChange = (
     e: React.ChangeEvent<
       HTMLInputElement | HTMLInputElement | HTMLSelectElement
@@ -96,12 +184,14 @@ const ShippingAddress = ({
     })
   }
 
+  const showColoniaSelect = colonias.length > 0 && !coloniaManual
+
   return (
     <>
       {customer && (addressesInRegion?.length || 0) > 0 && (
-        <Container className="mb-6 flex flex-col gap-y-4 p-5">
-          <p className="text-small-regular">
-            {`Hi ${customer.first_name}, do you want to use one of your saved addresses?`}
+        <Container className="mb-6 flex flex-col gap-y-4 rounded-large border border-line bg-cream p-5">
+          <p className="text-small-regular text-ink">
+            {`Hola ${customer.first_name}, ¿quieres usar una de tus direcciones guardadas?`}
           </p>
           <AddressSelect
             addresses={customer.addresses}
@@ -116,7 +206,7 @@ const ShippingAddress = ({
       )}
       <div className="grid grid-cols-2 gap-4">
         <Input
-          label="First name"
+          label="Nombre"
           name="shipping_address.first_name"
           autoComplete="given-name"
           value={formData["shipping_address.first_name"]}
@@ -125,7 +215,7 @@ const ShippingAddress = ({
           data-testid="shipping-first-name-input"
         />
         <Input
-          label="Last name"
+          label="Apellido"
           name="shipping_address.last_name"
           autoComplete="family-name"
           value={formData["shipping_address.last_name"]}
@@ -134,7 +224,7 @@ const ShippingAddress = ({
           data-testid="shipping-last-name-input"
         />
         <Input
-          label="Address"
+          label="Dirección"
           name="shipping_address.address_1"
           autoComplete="address-line1"
           value={formData["shipping_address.address_1"]}
@@ -143,39 +233,91 @@ const ShippingAddress = ({
           data-testid="shipping-address-input"
         />
         <Input
-          label="Colonia"
-          name="shipping_address.address_2"
-          autoComplete="address-line2"
-          value={formData["shipping_address.address_2"]}
-          onChange={handleChange}
-          required
-          data-testid="shipping-address-2-input"
-        />
-        <Input
-          label="Company"
+          label="Empresa"
           name="shipping_address.company"
           value={formData["shipping_address.company"]}
           onChange={handleChange}
           autoComplete="organization"
           data-testid="shipping-company-input"
         />
+        {/* Postal code drives the autocomplete, so it comes before Colonia. */}
         <Input
-          label="Postal code"
+          label="Código postal"
           name="shipping_address.postal_code"
           autoComplete="postal-code"
+          inputMode="numeric"
+          maxLength={5}
           value={formData["shipping_address.postal_code"]}
           onChange={handleChange}
           required
           data-testid="shipping-postal-code-input"
         />
+        <div className="flex flex-col w-full">
+          {showColoniaSelect ? (
+            <NativeSelect
+              name="shipping_address.address_2"
+              placeholder="Selecciona tu colonia"
+              value={formData["shipping_address.address_2"]}
+              onChange={(e) => {
+                if (e.target.value === COLONIA_OTHER) {
+                  setColoniaManual(true)
+                  setFormData((prev) => ({
+                    ...prev,
+                    "shipping_address.address_2": "",
+                  }))
+                  return
+                }
+                handleChange(e)
+              }}
+              required
+              data-testid="shipping-address-2-select"
+            >
+              {colonias.map((colonia) => (
+                <option key={colonia} value={colonia}>
+                  {colonia}
+                </option>
+              ))}
+              <option value={COLONIA_OTHER}>Otra (especificar)</option>
+            </NativeSelect>
+          ) : (
+            <Input
+              label="Colonia"
+              name="shipping_address.address_2"
+              autoComplete="address-line2"
+              value={formData["shipping_address.address_2"]}
+              onChange={handleChange}
+              required
+              data-testid="shipping-address-2-input"
+            />
+          )}
+          {cpStatus === "loading" && (
+            <p className="mt-1 txt-small text-ink-muted">
+              Buscando código postal…
+            </p>
+          )}
+          {cpStatus === "not_found" && (
+            <p className="mt-1 txt-small text-ink-muted">
+              No encontramos ese código postal. Completa los datos a mano.
+            </p>
+          )}
+        </div>
         <Input
-          label="City"
+          label="Ciudad"
           name="shipping_address.city"
           autoComplete="address-level2"
           value={formData["shipping_address.city"]}
           onChange={handleChange}
           required
           data-testid="shipping-city-input"
+        />
+        <Input
+          label="Estado / Provincia"
+          name="shipping_address.province"
+          autoComplete="address-level1"
+          value={formData["shipping_address.province"]}
+          onChange={handleChange}
+          required
+          data-testid="shipping-province-input"
         />
         <CountrySelect
           name="shipping_address.country_code"
@@ -186,18 +328,10 @@ const ShippingAddress = ({
           required
           data-testid="shipping-country-select"
         />
-        <Input
-          label="State / Province"
-          name="shipping_address.province"
-          autoComplete="address-level1"
-          value={formData["shipping_address.province"]}
-          onChange={handleChange}
-          data-testid="shipping-province-input"
-        />
       </div>
       <div className="my-8">
         <Checkbox
-          label="Billing address same as shipping address"
+          label="La dirección de facturación es la misma que la de envío"
           name="same_as_billing"
           checked={checked}
           onChange={onChange}
@@ -209,7 +343,7 @@ const ShippingAddress = ({
           label="Email"
           name="email"
           type="email"
-          title="Enter a valid email address."
+          title="Ingresa un email válido."
           autoComplete="email"
           value={formData.email}
           onChange={handleChange}
@@ -217,7 +351,7 @@ const ShippingAddress = ({
           data-testid="shipping-email-input"
         />
         <Input
-          label="Phone"
+          label="Teléfono"
           name="shipping_address.phone"
           autoComplete="tel"
           value={formData["shipping_address.phone"]}
