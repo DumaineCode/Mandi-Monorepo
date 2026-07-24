@@ -247,7 +247,10 @@ const Shipping: React.FC<ShippingProps> = ({
               </span>
             </div>
             <div data-testid="delivery-options-container">
-              <div className="pb-8 md:pt-0 pt-2">
+              {/* Reserve vertical space so the address→delivery soft-nav settles
+                  without a collapse/expand jump while options render or prices
+                  seed. */}
+              <div className="pb-8 md:pt-0 pt-2 min-h-[7.5rem]">
                 {hasPickupOptions && (
                   <RadioGroup
                     value={showPickupOptions}
