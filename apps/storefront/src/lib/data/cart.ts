@@ -89,6 +89,68 @@ export async function getOrSetCart(countryCode: string) {
   return cart
 }
 
+/**
+ * Persists ONLY the shipping address subset used to calculate shipping prices,
+ * WITHOUT touching billing_address, email or same_as_billing, and WITHOUT
+ * redirecting. Used by the background prefetch during the address step so the
+ * delivery step can show calculated prices instantly.
+ *
+ * Cache: revalidates the `fulfillment` tag ONLY (so shipping-option prices are
+ * fresh) and deliberately NEVER the `carts` tag — revalidating carts mid-typing
+ * would remount the checkout tree and flicker the form.
+ *
+ * A partial shipping_address update is safe: Medusa's update-cart flow only
+ * touches billing_address when it is present in the payload (verified against
+ * @medusajs/core-flows update-carts step — falsy addresses are filtered out),
+ * so the existing billing_address is preserved.
+ */
+export async function persistShippingForCalc(
+  addr: Pick<
+    HttpTypes.StoreCartAddress,
+    | "address_1"
+    | "address_2"
+    | "postal_code"
+    | "city"
+    | "province"
+    | "country_code"
+  >
+): Promise<{ ok: boolean }> {
+  const cartId = await getCartId()
+
+  if (!cartId) {
+    return { ok: false }
+  }
+
+  const headers = {
+    ...(await getAuthHeaders()),
+  }
+
+  try {
+    await sdk.store.cart.update(
+      cartId,
+      {
+        shipping_address: {
+          address_1: addr.address_1,
+          address_2: addr.address_2,
+          postal_code: addr.postal_code,
+          city: addr.city,
+          province: addr.province,
+          country_code: addr.country_code,
+        },
+      },
+      {},
+      headers
+    )
+
+    const fulfillmentCacheTag = await getCacheTag("fulfillment")
+    revalidateTag(fulfillmentCacheTag)
+
+    return { ok: true }
+  } catch {
+    return { ok: false }
+  }
+}
+
 export async function updateCart(data: HttpTypes.StoreUpdateCart) {
   const cartId = await getCartId()
 
