@@ -1,12 +1,12 @@
 /**
- * Skydropx fulfillment provider (design §5, spec SD-1..SD-4).
+ * Skydropx PRO fulfillment provider (design §4, spec SD-1..SD-4 / Capabilities 3–6).
  *
- * Calculated shipping via the legacy quotations API (checkout, SD-2) and
- * label purchase via shipments → labels (admin, SD-4). Quote failures are
- * always graceful MedusaErrors so checkout degrades to manual options (SD-3);
- * label failures throw UNEXPECTED_STATE so no half-shipped fulfillment is
- * recorded. Rate selection is deterministic and shared by both paths:
- * cheapest total, then fewest estimated days, then carrier name alphabetical.
+ * Calculated shipping via the PRO async quotation API (checkout, Capability 3)
+ * and label purchase via the PRO shipment model (admin, Capability 5). Quote
+ * failures always surface as graceful MedusaErrors so checkout degrades to
+ * manual (SD-3); label failures throw UNEXPECTED_STATE so no half-shipped
+ * fulfillment is recorded (SD-4). Rate selection is deterministic and shared by
+ * both paths: cheapest `total`, then fewest `days`, then `provider_name`.
  */
 import {
   CalculatedShippingOptionPrice,
@@ -24,13 +24,19 @@ import {
   makeDbCredentialSource,
   type CredentialSource,
 } from "../../lib/provider-credentials"
-import { SkydropxClient } from "./client"
+import {
+  SkydropxClient,
+  SKYDROPX_QUOTATION_TIMEOUT_MS,
+  SKYDROPX_REQUEST_TIMEOUT_MS,
+} from "./client"
 import { buildParcel, MissingDimensionsError, ParcelItem } from "./parcel"
 import {
   SkydropxApiError,
   SkydropxCredentials,
   SkydropxOptions,
+  SkydropxQuoteAddress,
   SkydropxRate,
+  SkydropxShipAddress,
 } from "./types"
 
 type Logger = {
@@ -55,19 +61,173 @@ const describeError = (error: unknown): string =>
       ? error.message
       : String(error)
 
-/** IN_PROGRESS label polling is bounded to 30s total (design §5.4, SD-4). */
+/** Shipment (label) polling is bounded to 30s total (design §4, SD-4). */
 export const LABEL_POLL_BOUND_MS = 30_000
-/** Delay between label status polls. */
+/** Delay between shipment status polls. */
 export const LABEL_POLL_INTERVAL_MS = 2_000
 
+/** PRO rate statuses that carry no usable price. */
+const UNPRICED_STATUSES = new Set([
+  "no_coverage",
+  "tariff_price_not_found",
+  "not_applicable",
+  "pending",
+])
+
 /**
- * Deterministic rate selection shared by quote and label paths (SD-2):
- * cheapest `total_pricing`, ties broken by fewest `days`, then by carrier
- * name alphabetically so repeated calls always pick the same rate.
+ * MX ISO-3166-2 / common abbreviation → full state name PRO expects (design D3).
+ * Keys are upper-cased; the `MX-` prefix is stripped before lookup.
+ */
+const MX_STATE_NAMES: Record<string, string> = {
+  AGU: "Aguascalientes",
+  AGS: "Aguascalientes",
+  BCN: "Baja California",
+  BC: "Baja California",
+  BCS: "Baja California Sur",
+  CAM: "Campeche",
+  CAMP: "Campeche",
+  CHP: "Chiapas",
+  CHIS: "Chiapas",
+  CHH: "Chihuahua",
+  CHIH: "Chihuahua",
+  COA: "Coahuila",
+  COAH: "Coahuila",
+  COL: "Colima",
+  CMX: "Ciudad de México",
+  CDMX: "Ciudad de México",
+  DF: "Ciudad de México",
+  DUR: "Durango",
+  DGO: "Durango",
+  GUA: "Guanajuato",
+  GTO: "Guanajuato",
+  GRO: "Guerrero",
+  HID: "Hidalgo",
+  HGO: "Hidalgo",
+  JAL: "Jalisco",
+  MEX: "México",
+  EDOMEX: "México",
+  MIC: "Michoacán",
+  MICH: "Michoacán",
+  MOR: "Morelos",
+  NAY: "Nayarit",
+  NLE: "Nuevo León",
+  NL: "Nuevo León",
+  OAX: "Oaxaca",
+  PUE: "Puebla",
+  QUE: "Querétaro",
+  QRO: "Querétaro",
+  ROO: "Quintana Roo",
+  QROO: "Quintana Roo",
+  SLP: "San Luis Potosí",
+  SIN: "Sinaloa",
+  SON: "Sonora",
+  TAB: "Tabasco",
+  TAM: "Tamaulipas",
+  TAMPS: "Tamaulipas",
+  TLA: "Tlaxcala",
+  TLAX: "Tlaxcala",
+  VER: "Veracruz",
+  YUC: "Yucatán",
+  ZAC: "Zacatecas",
+}
+
+/**
+ * Map an ISO/abbreviated MX subdivision code to the full state name PRO expects;
+ * pass through unchanged when the value is already a full name (design D3).
+ */
+export const normalizeState = (province?: string | null): string | undefined => {
+  if (!province) {
+    return undefined
+  }
+  const key = province.trim().toUpperCase().replace(/^MX-/, "")
+  return MX_STATE_NAMES[key] ?? province.trim()
+}
+
+type AddressLike = {
+  country_code?: string | null
+  postal_code?: string | null
+  province?: string | null
+  city?: string | null
+  address_2?: string | null
+  metadata?: Record<string, unknown> | null
+}
+
+/**
+ * Address-sourcing seam (design §4.1): map a Medusa address to the PRO quote
+ * address hierarchy. Returns `undefined` when a required component
+ * (country/postal/state/city) is missing → the caller degrades to manual (SD-3).
+ * `area_level3` (colonia) is best-effort (address_2 / metadata.colonia), never
+ * fabricated when absent.
+ */
+const toAddress = (
+  address: AddressLike | undefined | null
+): SkydropxQuoteAddress | undefined => {
+  if (!address) {
+    return undefined
+  }
+  const country_code = address.country_code?.toUpperCase() || undefined
+  const postal_code = address.postal_code || undefined
+  const area_level1 = normalizeState(address.province)
+  const area_level2 = address.city || undefined
+  const colonia =
+    address.address_2 ||
+    (address.metadata?.colonia as string | undefined) ||
+    undefined
+
+  if (!country_code || !postal_code || !area_level1 || !area_level2) {
+    return undefined
+  }
+
+  return {
+    country_code,
+    postal_code,
+    area_level1,
+    area_level2,
+    ...(colonia ? { area_level3: colonia } : {}),
+  }
+}
+
+type ShipAddressLike = AddressLike & {
+  address_1?: string | null
+  first_name?: string | null
+  last_name?: string | null
+  company?: string | null
+  phone?: string | null
+}
+
+/**
+ * Contact/street address seam (design §4.1) for `POST /shipments`. Distinct from
+ * `toAddress` because the PRO ship address is `street1`-based with contact fields.
+ */
+const toShipAddress = (
+  address: ShipAddressLike,
+  extra: { name?: string; email?: string } = {}
+): SkydropxShipAddress => ({
+  street1: address.address_1 || "",
+  name:
+    extra.name ||
+    [address.first_name, address.last_name].filter(Boolean).join(" ") ||
+    undefined,
+  company: address.company || undefined,
+  phone: address.phone || undefined,
+  email: extra.email || undefined,
+  reference: address.address_2 || undefined,
+})
+
+/** A rate is usable only when priced and successful (spec Capability 3). */
+const isUsableRate = (rate: SkydropxRate): boolean =>
+  rate.success === true &&
+  Number.isFinite(Number(rate.total)) &&
+  !(rate.status !== undefined && UNPRICED_STATUSES.has(rate.status))
+
+/**
+ * Deterministic rate selection shared by quote and label paths (spec Capability
+ * 3): cheapest `total`, ties broken by fewest `days`, then `provider_name`
+ * alphabetically so repeated calls always pick the same rate.
  */
 const selectCheapestRate = (rates: SkydropxRate[]): SkydropxRate =>
   [...rates].sort((a, b) => {
-    const priceDiff = Number(a.total_pricing) - Number(b.total_pricing)
+    const priceDiff = Number(a.total) - Number(b.total)
     if (priceDiff !== 0) {
       return priceDiff
     }
@@ -75,14 +235,12 @@ const selectCheapestRate = (rates: SkydropxRate[]): SkydropxRate =>
     if (daysDiff !== 0) {
       return daysDiff
     }
-    return a.provider.localeCompare(b.provider)
+    return a.provider_name.localeCompare(b.provider_name)
   })[0]
 
 /**
  * SEAM (risk R10): the ONLY place where cart/order line items are read into
- * parcel inputs. If gate S5.0a finds that the 2.15.5 `calculatePrice` context
- * lacks variant dims, the documented fallback (explicit variant query inside
- * the provider) replaces this function's sourcing — nothing else changes.
+ * parcel inputs.
  */
 const toParcelItems = (
   items: { quantity?: number; variant?: Record<string, unknown> | null }[]
@@ -116,19 +274,18 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
   }
 
   /**
-   * Shape-only validation (slice 3 — always-registered): EMPTY options are
-   * valid because credentials are DB-resolved per operation. A present but
-   * malformed apiKey still fails loudly.
+   * Shape-only validation (always-registered): EMPTY options are valid because
+   * credentials are DB-resolved per operation. A present-but-empty `clientId`
+   * or `clientSecret` still fails loudly.
    */
   static validateOptions(options: Record<string, unknown>): void {
-    if (
-      "apiKey" in options &&
-      (typeof options.apiKey !== "string" || !options.apiKey)
-    ) {
-      throw new MedusaError(
-        MedusaError.Types.INVALID_DATA,
-        "Skydropx provider option `apiKey`, when set, must be a non-empty string."
-      )
+    for (const key of ["clientId", "clientSecret"] as const) {
+      if (key in options && (typeof options[key] !== "string" || !options[key])) {
+        throw new MedusaError(
+          MedusaError.Types.INVALID_DATA,
+          `Skydropx provider option \`${key}\`, when set, must be a non-empty string.`
+        )
+      }
     }
   }
 
@@ -148,13 +305,19 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
   private getClient_(config: SkydropxCredentials): SkydropxClient {
     const fingerprint = credentialFingerprint(config)
     if (this.clientCache_?.fingerprint !== fingerprint) {
-      this.clientCache_ = { fingerprint, client: new SkydropxClient(config) }
+      this.clientCache_ = {
+        fingerprint,
+        client: new SkydropxClient({
+          clientId: config.clientId,
+          clientSecret: config.clientSecret,
+          baseUrl: config.baseUrl,
+        }),
+      }
     }
     return this.clientCache_.client
   }
 
   async getFulfillmentOptions(): Promise<FulfillmentOption[]> {
-    // Single calculated option (SD-1). Name is MX-store UI copy.
     return [{ id: OPTION_ID, name: "Envío estándar" }]
   }
 
@@ -182,26 +345,9 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
     const config = await this.requireConfig_()
 
     const ctx = context as unknown as {
-      shipping_address?: { postal_code?: string }
-      from_location?: { address?: { postal_code?: string } }
+      shipping_address?: AddressLike
+      from_location?: { address?: AddressLike }
       items?: { quantity?: number; variant?: Record<string, unknown> | null }[]
-    }
-
-    const zipTo = ctx.shipping_address?.postal_code
-    if (!zipTo) {
-      throw new MedusaError(
-        MedusaError.Types.INVALID_DATA,
-        "Skydropx quote requires a destination postal code."
-      )
-    }
-
-    // Stock location zip wins; the DB-resolved originZip is the fallback.
-    const zipFrom = ctx.from_location?.address?.postal_code || config.originZip
-    if (!zipFrom) {
-      throw new MedusaError(
-        MedusaError.Types.INVALID_DATA,
-        "Skydropx quote requires an origin postal code (stock location or the origin zip setting)."
-      )
     }
 
     let parcel
@@ -215,22 +361,44 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
       throw error
     }
 
+    const addressTo = toAddress(ctx.shipping_address)
+    if (!addressTo) {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        "Skydropx quote requires a destination country, postal code, state, and city."
+      )
+    }
+
+    const addressFrom = toAddress(this.withOriginZip_(ctx.from_location?.address, config))
+    if (!addressFrom) {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        "Skydropx quote requires an origin country, postal code, state, and city (stock location or origin settings)."
+      )
+    }
+
     const client = this.getClient_(config)
-    const rates = await this.fetchRates_(() =>
-      client.createQuotation({
-        zip_from: zipFrom,
-        zip_to: zipTo,
-        parcel,
-      })
+    const deadline = Date.now() + SKYDROPX_QUOTATION_TIMEOUT_MS
+    const rates = await this.fetchUsableRates_(() =>
+      client.quoteAndPoll_(
+        {
+          quotation: {
+            address_from: addressFrom,
+            address_to: addressTo,
+            parcels: [parcel],
+          },
+        },
+        deadline
+      )
     )
 
     const rate = selectCheapestRate(rates)
 
     return {
-      // Amounts stay as-is MXN — never cent-converted (data-price-format rule).
-      calculated_amount: Number(rate.total_pricing),
-      // IVA inclusion is DB-resolved ONLY (spec: DB strictly authoritative);
-      // default true. TODO(sandbox-verify): pinned pending gate S5.0b.
+      // Amount as-is MXN — never cent-converted (data-price-format rule).
+      // `rate.total` is IVA-inclusive per the PRO reference (S5.0b closed).
+      calculated_amount: Number(rate.total),
+      // IVA inclusion is DB-resolved ONLY; default true.
       is_calculated_price_tax_inclusive: config.taxInclusive ?? true,
     }
   }
@@ -262,110 +430,139 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
       throw error
     }
 
-    const locationAddress = fulfillment?.location?.address ?? {}
     const shippingAddress = order?.shipping_address ?? {}
+    const locationAddress = fulfillment?.location?.address ?? {}
 
+    const addressTo = toAddress(shippingAddress)
+    if (!addressTo) {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        "Skydropx label requires a destination country, postal code, state, and city."
+      )
+    }
+    const addressFrom = toAddress(this.withOriginZip_(locationAddress, config))
+    if (!addressFrom) {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        "Skydropx label requires an origin country, postal code, state, and city."
+      )
+    }
+
+    let shipmentId: string | undefined
     try {
-      const shipment = await client.createShipment({
-        address_from: {
-          zip: locationAddress.postal_code,
-          name: fulfillment?.location?.name,
-          street1: locationAddress.address_1,
-          city: locationAddress.city,
-          province: locationAddress.province,
-          country: locationAddress.country_code?.toUpperCase(),
-        },
-        address_to: {
-          zip: shippingAddress.postal_code,
-          name: [shippingAddress.first_name, shippingAddress.last_name]
-            .filter(Boolean)
-            .join(" "),
-          street1: shippingAddress.address_1,
-          city: shippingAddress.city,
-          province: shippingAddress.province,
-          country: shippingAddress.country_code?.toUpperCase(),
-          phone: shippingAddress.phone,
-          email: order?.email,
-        },
-        parcels: [parcel],
-      })
+      // D4: fresh quotation at fulfillment time → deterministic cheapest rate.
+      const deadline = Date.now() + SKYDROPX_REQUEST_TIMEOUT_MS
+      const rates = await this.fetchUsableRates_(() =>
+        client.quoteAndPoll_(
+          {
+            quotation: {
+              address_from: addressFrom,
+              address_to: addressTo,
+              parcels: [parcel],
+            },
+          },
+          deadline
+        )
+      )
+      const rate = selectCheapestRate(rates)
 
-      if (!shipment.rates?.length) {
+      // D5: origin verification is a carrier-side one-time action — fail loud.
+      if (rate.requires_origin_verification === true) {
         throw new MedusaError(
           MedusaError.Types.UNEXPECTED_STATE,
-          "Skydropx shipment returned no rates — label cannot be purchased."
+          `Skydropx rate for carrier ${rate.provider_name} requires origin verification. ` +
+            "Verify the origin address for this carrier in the Skydropx dashboard (runbook §7), then retry."
         )
       }
 
-      // Same deterministic rule as the checkout quote (SD-2/SD-4).
-      const rate = selectCheapestRate(shipment.rates)
+      // D2: Carta Porte fields. Per-product override is a later enhancement;
+      // config default only for now. MX + absent → fail loud (no wrong SAT code).
+      const consignmentNote = config.consignmentNote
+      const packageType = config.packageType
+      const isMx = (addressTo.country_code ?? "").toUpperCase() === "MX"
+      if (isMx && (!consignmentNote || !packageType)) {
+        throw new MedusaError(
+          MedusaError.Types.UNEXPECTED_STATE,
+          "Skydropx MX label requires a consignment_note (Carta Porte SAT code) and package_type. " +
+            "Set them in the Skydropx provider settings before purchasing a label."
+        )
+      }
 
-      // Quote-vs-label rate delta for ops visibility (amendment INFO).
+      const shipment = await client.createShipment({
+        shipment: {
+          rate_id: rate.id,
+          address_from: toShipAddress(locationAddress, {
+            name: fulfillment?.location?.name,
+          }),
+          address_to: toShipAddress(shippingAddress, {
+            name: [shippingAddress.first_name, shippingAddress.last_name]
+              .filter(Boolean)
+              .join(" "),
+            email: order?.email,
+          }),
+          packages: [
+            {
+              package_number: "1",
+              consignment_note: consignmentNote ?? "",
+              package_type: packageType ?? "",
+            },
+          ],
+        },
+      })
+      shipmentId = shipment.id
+
+      // Quote-vs-label rate delta for ops visibility (spec Capability 6).
       const quotedAmount = Number(order?.shipping_methods?.[0]?.amount)
-      const labelAmount = Number(rate.total_pricing)
+      const labelAmount = Number(rate.total)
       if (Number.isFinite(quotedAmount)) {
         this.logger_.info(
           `Skydropx quote-vs-label rate delta for order #${order?.display_id}: ` +
             `quoted=${quotedAmount} label=${labelAmount} delta=${(
               labelAmount - quotedAmount
-            ).toFixed(2)} MXN (carrier=${rate.provider})`
+            ).toFixed(2)} MXN (carrier=${rate.provider_name})`
         )
       }
 
-      let label = await client.createLabel({ rate_id: rate.id })
-
-      // Bounded IN_PROGRESS polling (design §5.4): anchor the deadline once.
-      const deadline = Date.now() + LABEL_POLL_BOUND_MS
-      while (label.status === "IN_PROGRESS") {
-        if (Date.now() > deadline) {
-          await this.abandonLabel_(
-            client,
-            shipment.id,
-            label.id,
-            `still IN_PROGRESS after ${LABEL_POLL_BOUND_MS}ms`
-          )
+      // Bounded shipment polling (design §4): anchor the deadline once.
+      let current = shipment
+      const pollDeadline = Date.now() + LABEL_POLL_BOUND_MS
+      while (current.workflow_status !== "success") {
+        if (Date.now() > pollDeadline) {
           throw new MedusaError(
             MedusaError.Types.UNEXPECTED_STATE,
-            `Skydropx label ${label.id} still IN_PROGRESS after ${LABEL_POLL_BOUND_MS}ms.`
+            `Skydropx shipment ${shipment.id} not ready after ${LABEL_POLL_BOUND_MS}ms.`
           )
         }
         await this.sleep_(LABEL_POLL_INTERVAL_MS)
-        label = await client.getLabel(label.id)
+        current = await client.getShipment(shipment.id)
       }
 
-      if (label.status !== "COMPLETED") {
-        await this.abandonLabel_(
-          client,
-          shipment.id,
-          label.id,
-          `ended in status ${label.status}`
-        )
-        throw new MedusaError(
-          MedusaError.Types.UNEXPECTED_STATE,
-          `Skydropx label ${label.id} ended in status ${label.status}.`
-        )
-      }
+      const attrs = current.included?.[0]?.attributes
+      const trackingNumber =
+        attrs?.tracking_number ?? current.master_tracking_number
+      const labelUrl = attrs?.label_url ?? current.label_url
 
       return {
         data: {
           ...(data ?? {}),
           shipment_id: shipment.id,
-          label_id: label.id,
           rate_id: rate.id,
-          tracking_number: label.tracking_number,
-          tracking_url_provider: label.tracking_url_provider,
-          label_url: label.label_url,
+          tracking_number: trackingNumber,
+          label_url: labelUrl,
         },
         labels: [
           {
-            tracking_number: label.tracking_number ?? "",
-            tracking_url: label.tracking_url_provider ?? "",
-            label_url: label.label_url ?? "",
+            tracking_number: trackingNumber ?? "",
+            tracking_url: "",
+            label_url: labelUrl ?? "",
           },
         ],
       }
     } catch (error) {
-      // SD-4 failure: everything surfaces as UNEXPECTED_STATE, never a raw error.
+      // SD-4: orphaned-shipment best-effort cancel, then surface UNEXPECTED_STATE.
+      if (shipmentId) {
+        await this.abandonShipment_(client, shipmentId, describeError(error))
+      }
       if (error instanceof MedusaError) {
         throw error
       }
@@ -377,66 +574,85 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
   }
 
   /**
-   * Orphaned-label containment (SD-4): log shipment/label ids for manual
-   * reconciliation, then best-effort cancel the label. Cancel errors are
-   * swallowed (logged) so the original failure is always what surfaces.
+   * Orphaned-shipment containment (SD-4): log the shipment id for manual
+   * reconciliation, then best-effort cancel it. Cancel errors are swallowed
+   * (logged) so the original failure is always what surfaces.
    */
-  private async abandonLabel_(
+  private async abandonShipment_(
     client: SkydropxClient,
     shipmentId: string,
-    labelId: string,
     reason: string
   ): Promise<void> {
     this.logger_.error(
-      `Skydropx label abandoned (${reason}) — reconcile manually if cancel fails: ` +
-        `shipment_id=${shipmentId} label_id=${labelId}`
+      `Skydropx shipment abandoned (${reason}) — reconcile manually if cancel fails: ` +
+        `shipment_id=${shipmentId}`
     )
     try {
-      await client.cancelLabel(labelId)
+      await client.cancelShipment(shipmentId, `abandoned: ${reason}`)
     } catch (cancelError) {
       this.logger_.warn(
-        `Skydropx best-effort cancel of label ${labelId} failed: ${describeError(cancelError)}`
+        `Skydropx best-effort cancel of shipment ${shipmentId} failed: ${describeError(cancelError)}`
       )
     }
   }
 
   async cancelFulfillment(data: Record<string, unknown>): Promise<any> {
-    const labelId = data?.label_id as string | undefined
-    if (!labelId) {
+    const shipmentId = data?.shipment_id as string | undefined
+    if (!shipmentId) {
       // Nothing was purchased — nothing to cancel.
       return {}
     }
 
-    // Unconfigured → log-and-proceed: Medusa-side cancellation must never
-    // block on missing credentials (fail-safe, same spirit as "not cancellable").
+    // Unconfigured → log-and-proceed: Medusa-side cancellation must never block
+    // on missing credentials (fail-safe).
     const config = await this.credentialSource_()
     if (!config) {
       this.logger_.warn(
-        `Skydropx label ${labelId} could not be cancelled (provider unconfigured) — proceeding.`
+        `Skydropx shipment ${shipmentId} could not be cancelled (provider unconfigured) — proceeding.`
       )
       return {}
     }
 
     try {
-      await this.getClient_(config).cancelLabel(labelId)
+      await this.getClient_(config).cancelShipment(
+        shipmentId,
+        "Order fulfillment cancelled."
+      )
     } catch (error) {
-      // SD-4 cancel: log-and-proceed so Medusa-side cancellation never blocks
-      // on carrier "not cancellable" windows.
+      // Log-and-proceed so Medusa-side cancellation never blocks on carrier
+      // "not cancellable" windows.
       this.logger_.warn(
-        `Skydropx label ${labelId} could not be cancelled (proceeding): ${describeError(error)}`
+        `Skydropx shipment ${shipmentId} could not be cancelled (proceeding): ${describeError(error)}`
       )
     }
 
     return {}
   }
 
-  /** Quote-path error translation (SD-3): everything becomes a MedusaError. */
-  private async fetchRates_(
-    quote: () => Promise<{ rates?: SkydropxRate[] }>
+  /** Inject the fallback origin zip when the stock location has none. */
+  private withOriginZip_(
+    address: AddressLike | undefined | null,
+    config: SkydropxCredentials
+  ): AddressLike | undefined {
+    if (!address) {
+      return config.originZip ? { postal_code: config.originZip } : undefined
+    }
+    if (!address.postal_code && config.originZip) {
+      return { ...address, postal_code: config.originZip }
+    }
+    return address
+  }
+
+  /**
+   * Quote-path helper (SD-3): translate client errors to MedusaError, filter to
+   * usable rates, and fail gracefully when none remain (never emits NaN).
+   */
+  private async fetchUsableRates_(
+    quote: () => Promise<SkydropxRate[]>
   ): Promise<SkydropxRate[]> {
-    let response
+    let rates: SkydropxRate[]
     try {
-      response = await quote()
+      rates = await quote()
     } catch (error) {
       throw new MedusaError(
         MedusaError.Types.UNEXPECTED_STATE,
@@ -444,14 +660,14 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
       )
     }
 
-    if (!response.rates?.length) {
+    const usable = rates.filter(isUsableRate)
+    if (!usable.length) {
       throw new MedusaError(
         MedusaError.Types.UNEXPECTED_STATE,
-        "Skydropx returned no rates for this shipment."
+        "Skydropx returned no usable rates for this shipment."
       )
     }
-
-    return response.rates
+    return usable
   }
 
   /** Seam for tests to skip real polling delays. */

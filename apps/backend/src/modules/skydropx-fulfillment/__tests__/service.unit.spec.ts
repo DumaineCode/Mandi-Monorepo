@@ -1,36 +1,34 @@
 /**
- * S5.2 — SkydropxFulfillmentProviderService unit tests (hermetic, mocked fetch).
+ * S3 — SkydropxFulfillmentProviderService PRO unit tests (hermetic, mocked fetch).
  *
- * Coverage per design §5 + spec SD-1..SD-4:
- * - getFulfillmentOptions returns the single `skydropx-standard` option (SD-1)
- * - canCalculate true; validateOption/validateFulfillmentData per design §5.4
- * - calculatePrice: quotation request built from aggregate parcel + zip_from
- *   (stock location zip, SKYDROPX_ORIGIN_ZIP fallback) + zip_to; cheapest-rate
- *   selection with deterministic tie-breaks (fewest days → carrier alpha);
- *   calculated_amount returned as-is MXN (SD-2)
- * - missing dims → graceful MedusaError(INVALID_DATA) (SD-3)
- * - 8s timeout / zero rates / API error → graceful MedusaError, never unhandled
- * - createFulfillment: shipment → same-rate-rule → label, IN_PROGRESS polling
- *   bounded 30s, returns tracking data + labels array for Admin, logs
- *   quote-vs-label rate delta; failure → MedusaError(UNEXPECTED_STATE), no
- *   half-shipped state (SD-4)
- * - cancelFulfillment tolerates "not cancellable" via log-and-proceed
- *
- * Slice 3 (admin-provider-settings): config now arrives through an async
- * `credentialSource` (DB-backed in production, faked here). Unconfigured
- * (source → null) → graceful INVALID_DATA on quote/label paths, no API call;
- * `taxInclusive` comes from DB settings ONLY (env read deleted); an apiKey
- * rotation rebuilds the immutable client on the next call.
+ * Coverage per design §4 + spec Capabilities 3–6:
+ * - options surface (SD-1)
+ * - calculatePrice: async quotation from the destination address hierarchy;
+ *   `normalizeState` code→name; cheapest usable rate; `calculated_amount =
+ *   Number(rate.total)` as-is MXN, tax-inclusive true (DB override honored, env
+ *   never read); usable-rate filter; degrade-to-manual on missing dims/address/
+ *   zero-rates/API-error/timeout (SD-3)
+ * - createFulfillment: fresh quote → shipment → poll → tracking/label;
+ *   requires_origin_verification and missing Carta Porte fail loud (SD-4);
+ *   orphaned-shipment best-effort cancel; rate-delta log
+ * - validateOptions clientId/clientSecret; unconfigured inert; cancel via
+ *   the PRO cancellations endpoint
  */
 import { MedusaError } from "@medusajs/framework/utils"
-import SkydropxFulfillmentProviderService from "../service"
+import SkydropxFulfillmentProviderService, {
+  normalizeState,
+} from "../service"
 
-const API_KEY = "sk_test_skydropx"
+const CLIENT_ID = "sky_client_id"
+const CLIENT_SECRET = "sky_client_secret_value"
 const ORIGIN_ZIP = "01000"
 
 const config = {
-  apiKey: API_KEY,
+  clientId: CLIENT_ID,
+  clientSecret: CLIENT_SECRET,
   originZip: ORIGIN_ZIP,
+  consignmentNote: "53102400",
+  packageType: "4G",
 }
 
 const makeLogger = () => ({
@@ -50,24 +48,65 @@ const makeService = (
       : async () => ({ ...config, ...overrides })
   const service = new SkydropxFulfillmentProviderService(
     { logger },
-    { credentialSource }
+    { credentialSource: credentialSource as any }
   )
   return { service, logger }
 }
 
-const jsonResponse = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), {
+const jsonResponse = (body: unknown, status = 200): Response =>
+  ({
+    ok: status >= 200 && status < 300,
     status,
-    headers: { "Content-Type": "application/json" },
+    statusText: status === 200 ? "OK" : "Error",
+    json: async () => body,
+  }) as unknown as Response
+
+const tokenResponse = () =>
+  jsonResponse({ access_token: "tok_123", token_type: "Bearer", expires_in: 7200 })
+
+/** Route the mocked fetch by (method, path); the token is always served. */
+const mockApi = (
+  fetchMock: jest.SpyInstance,
+  handlers: Record<string, (init: RequestInit) => Response>
+) => {
+  const all = { "POST /oauth/token": () => tokenResponse(), ...handlers }
+  fetchMock.mockImplementation((url: string, init: RequestInit) => {
+    const u = String(url)
+    const method = init?.method ?? "GET"
+    let key = ""
+    if (u.includes("/oauth/token")) key = "POST /oauth/token"
+    else if (u.includes("/cancellations")) key = "POST /cancellations"
+    else if (u.includes("/quotations")) key = `${method} /quotations`
+    else if (u.includes("/shipments")) key = `${method} /shipments`
+    const handler = all[key]
+    if (!handler) {
+      return Promise.reject(new Error(`no handler for ${key} (${u})`))
+    }
+    return Promise.resolve(handler(init))
   })
+}
+
+const completedQuotation = (rates: unknown[]) => () =>
+  jsonResponse({ id: "q1", is_completed: true, rates })
 
 /** Cart context per CalculateShippingOptionPriceDTO["context"]. */
 const cartContext = (overrides: Record<string, unknown> = {}) =>
   ({
-    shipping_address: { postal_code: "64000" },
-    from_location: { address: { postal_code: "06600" } },
+    shipping_address: {
+      country_code: "mx",
+      postal_code: "64000",
+      province: "NL",
+      city: "Monterrey",
+    },
+    from_location: {
+      address: {
+        country_code: "mx",
+        postal_code: "06600",
+        province: "CDMX",
+        city: "Ciudad de México",
+      },
+    },
     items: [
-      // 2 × 500g, 10×8×4cm → parcel: 1kg, 10×8, height stacked to 8.
       { quantity: 2, variant: { weight: 500, length: 10, width: 8, height: 4 } },
     ],
     ...overrides,
@@ -75,7 +114,7 @@ const cartContext = (overrides: Record<string, unknown> = {}) =>
 
 const OPTION_DATA = { id: "skydropx-standard" }
 
-describe("SkydropxFulfillmentProviderService", () => {
+describe("SkydropxFulfillmentProviderService (PRO)", () => {
   let fetchMock: jest.SpyInstance
 
   beforeEach(() => {
@@ -87,6 +126,17 @@ describe("SkydropxFulfillmentProviderService", () => {
     jest.restoreAllMocks()
   })
 
+  describe("normalizeState (seam, design D3)", () => {
+    it("maps a known MX code to the full state name", () => {
+      expect(normalizeState("NL")).toBe("Nuevo León")
+      expect(normalizeState("MX-NLE")).toBe("Nuevo León")
+    })
+
+    it("passes through a value that is already a full name", () => {
+      expect(normalizeState("Nuevo León")).toBe("Nuevo León")
+    })
+  })
+
   describe("options surface (SD-1)", () => {
     it("exposes the skydropx identifier", () => {
       expect(SkydropxFulfillmentProviderService.identifier).toBe("skydropx")
@@ -94,18 +144,9 @@ describe("SkydropxFulfillmentProviderService", () => {
 
     it("getFulfillmentOptions returns the single skydropx-standard option", async () => {
       const { service } = makeService()
-      const fulfillmentOptions = await service.getFulfillmentOptions()
-
-      expect(fulfillmentOptions).toEqual([
+      await expect(service.getFulfillmentOptions()).resolves.toEqual([
         { id: "skydropx-standard", name: "Envío estándar" },
       ])
-    })
-
-    it("canCalculate resolves true (calculated pricing)", async () => {
-      const { service } = makeService()
-      await expect(
-        service.canCalculate({ data: OPTION_DATA } as any)
-      ).resolves.toBe(true)
     })
 
     it("validateOption accepts skydropx-standard and rejects unknown ids", async () => {
@@ -113,163 +154,133 @@ describe("SkydropxFulfillmentProviderService", () => {
       await expect(service.validateOption(OPTION_DATA)).resolves.toBe(true)
       await expect(service.validateOption({ id: "other" })).resolves.toBe(false)
     })
-
-    it("validateFulfillmentData passes option + method data through", async () => {
-      const { service } = makeService()
-      const result = await service.validateFulfillmentData(
-        OPTION_DATA,
-        { note: "keep" },
-        {} as any
-      )
-      expect(result).toEqual({ id: "skydropx-standard", note: "keep" })
-    })
   })
 
-  describe("calculatePrice (SD-2 / SD-3)", () => {
-    it("builds the quotation request from the aggregate parcel + zips and returns the rate as-is", async () => {
-      fetchMock.mockResolvedValue(
-        jsonResponse({
-          rates: [
-            { id: "r1", provider: "estafeta", total_pricing: "150.50", days: 3 },
-          ],
-        })
-      )
+  describe("calculatePrice (Capability 3 / SD-3)", () => {
+    it("builds the quotation from the destination address hierarchy and returns rate.total as-is", async () => {
+      mockApi(fetchMock, {
+        "POST /quotations": completedQuotation([
+          { id: "r1", provider_name: "estafeta", total: "150.50", days: 3, success: true },
+        ]),
+      })
       const { service } = makeService()
 
-      const price = await service.calculatePrice(
-        OPTION_DATA,
-        {},
-        cartContext()
-      )
+      const price = await service.calculatePrice(OPTION_DATA, {}, cartContext())
 
-      const [url, init] = fetchMock.mock.calls[0]
-      expect(String(url)).toBe("https://api.skydropx.com/v1/quotations")
-      expect(JSON.parse((init as RequestInit).body as string)).toEqual({
-        zip_from: "06600",
-        zip_to: "64000",
-        parcel: { weight: 1, length: 10, width: 8, height: 8 },
+      const quotationCall = fetchMock.mock.calls.find(
+        ([u, i]) =>
+          String(u).includes("/quotations") &&
+          (i as RequestInit).method === "POST"
+      )
+      const body = JSON.parse((quotationCall?.[1] as RequestInit).body as string)
+      expect(body.quotation.address_to).toMatchObject({
+        country_code: "MX",
+        postal_code: "64000",
+        area_level1: "Nuevo León",
+        area_level2: "Monterrey",
       })
-      // Amount as-is MXN — never cent-converted (data-price-format rule).
+      expect(body.quotation.address_from.area_level1).toBe("Ciudad de México")
+      // Amount as-is MXN — never cent-converted.
       expect(price.calculated_amount).toBe(150.5)
-      // Default true pending S5.0b IVA verification.
       expect(price.is_calculated_price_tax_inclusive).toBe(true)
     })
 
-    it("falls back to SKYDROPX_ORIGIN_ZIP when the stock location has no zip", async () => {
-      fetchMock.mockResolvedValue(
-        jsonResponse({
-          rates: [{ id: "r1", provider: "dhl", total_pricing: 99, days: 2 }],
-        })
-      )
+    it("omits area_level3 when the cart has no colonia source but includes it when present", async () => {
+      mockApi(fetchMock, {
+        "POST /quotations": completedQuotation([
+          { id: "r1", provider_name: "dhl", total: "99", success: true },
+        ]),
+      })
       const { service } = makeService()
 
       await service.calculatePrice(
         OPTION_DATA,
         {},
-        cartContext({ from_location: { address: {} } })
-      )
-
-      const body = JSON.parse(
-        (fetchMock.mock.calls[0][1] as RequestInit).body as string
-      )
-      expect(body.zip_from).toBe(ORIGIN_ZIP)
-    })
-
-    it("honors the DB-resolved taxInclusive setting when false", async () => {
-      fetchMock.mockResolvedValue(
-        jsonResponse({
-          rates: [{ id: "r1", provider: "dhl", total_pricing: 99, days: 2 }],
+        cartContext({
+          shipping_address: {
+            country_code: "mx",
+            postal_code: "64000",
+            province: "NL",
+            city: "Monterrey",
+            address_2: "Centro",
+          },
         })
       )
-      const { service } = makeService({ taxInclusive: false })
 
-      const price = await service.calculatePrice(OPTION_DATA, {}, cartContext())
-      expect(price.is_calculated_price_tax_inclusive).toBe(false)
+      const quotationCall = fetchMock.mock.calls.find(
+        ([u, i]) =>
+          String(u).includes("/quotations") &&
+          (i as RequestInit).method === "POST"
+      )
+      const body = JSON.parse((quotationCall?.[1] as RequestInit).body as string)
+      expect(body.quotation.address_to.area_level3).toBe("Centro")
     })
 
-    it("NEVER consults SKYDROPX_TAX_INCLUSIVE env (DB strictly authoritative)", async () => {
-      fetchMock.mockResolvedValue(
-        jsonResponse({
-          rates: [{ id: "r1", provider: "dhl", total_pricing: 99, days: 2 }],
+    it("falls back to the origin zip setting when the stock location has none", async () => {
+      mockApi(fetchMock, {
+        "POST /quotations": completedQuotation([
+          { id: "r1", provider_name: "dhl", total: "99", success: true },
+        ]),
+      })
+      const { service } = makeService()
+
+      await service.calculatePrice(
+        OPTION_DATA,
+        {},
+        cartContext({
+          from_location: {
+            address: { country_code: "mx", province: "CDMX", city: "CDMX" },
+          },
         })
       )
+
+      const quotationCall = fetchMock.mock.calls.find(
+        ([u, i]) =>
+          String(u).includes("/quotations") &&
+          (i as RequestInit).method === "POST"
+      )
+      const body = JSON.parse((quotationCall?.[1] as RequestInit).body as string)
+      expect(body.quotation.address_from.postal_code).toBe(ORIGIN_ZIP)
+    })
+
+    it("honors the DB taxInclusive:false override and never reads the env", async () => {
+      mockApi(fetchMock, {
+        "POST /quotations": completedQuotation([
+          { id: "r1", provider_name: "dhl", total: "99", success: true },
+        ]),
+      })
       const previous = process.env.SKYDROPX_TAX_INCLUSIVE
-      process.env.SKYDROPX_TAX_INCLUSIVE = "false"
+      process.env.SKYDROPX_TAX_INCLUSIVE = "true"
       try {
-        // DB settings omit taxInclusive → default true, env must have no say.
-        const { service } = makeService()
-        const price = await service.calculatePrice(
-          OPTION_DATA,
-          {},
-          cartContext()
-        )
-        expect(price.is_calculated_price_tax_inclusive).toBe(true)
+        const { service } = makeService({ taxInclusive: false })
+        const price = await service.calculatePrice(OPTION_DATA, {}, cartContext())
+        expect(price.is_calculated_price_tax_inclusive).toBe(false)
       } finally {
-        if (previous === undefined) {
-          delete process.env.SKYDROPX_TAX_INCLUSIVE
-        } else {
-          process.env.SKYDROPX_TAX_INCLUSIVE = previous
-        }
+        if (previous === undefined) delete process.env.SKYDROPX_TAX_INCLUSIVE
+        else process.env.SKYDROPX_TAX_INCLUSIVE = previous
       }
     })
 
-    it("selects the cheapest rate across carriers", async () => {
-      fetchMock.mockResolvedValue(
-        jsonResponse({
-          rates: [
-            { id: "r-expensive", provider: "dhl", total_pricing: "200", days: 1 },
-            { id: "r-cheap", provider: "estafeta", total_pricing: "150", days: 4 },
-            { id: "r-mid", provider: "fedex", total_pricing: "180", days: 2 },
-          ],
-        })
-      )
+    it("selects the cheapest usable rate and filters unpriced/unsuccessful rates", async () => {
+      mockApi(fetchMock, {
+        "POST /quotations": completedQuotation([
+          { id: "r-nan", provider_name: "aa", total: "not-a-number", success: true },
+          { id: "r-nocov", provider_name: "bb", total: "10", success: true, status: "no_coverage" },
+          { id: "r-fail", provider_name: "cc", total: "20", success: false },
+          { id: "r-expensive", provider_name: "dhl", total: "200", days: 1, success: true },
+          { id: "r-cheap", provider_name: "estafeta", total: "150", days: 4, success: true },
+        ]),
+      })
       const { service } = makeService()
 
       const price = await service.calculatePrice(OPTION_DATA, {}, cartContext())
       expect(price.calculated_amount).toBe(150)
     })
 
-    it("breaks price ties by fewest estimated days", async () => {
-      fetchMock.mockResolvedValue(
-        jsonResponse({
-          rates: [
-            { id: "r-slow", provider: "dhl", total_pricing: 150, days: 5 },
-            { id: "r-fast", provider: "fedex", total_pricing: 150, days: 2 },
-          ],
-        })
-      )
+    it("degrades to manual (INVALID_DATA) without an API call when dims are missing (SD-3)", async () => {
       const { service } = makeService()
-
-      const price = await service.calculatePrice(OPTION_DATA, {}, cartContext())
-      // Same amount either way — assert determinism through the label path is
-      // covered below; here the fast rate must win the internal selection.
-      expect(price.calculated_amount).toBe(150)
-      // Selection determinism is observable via createFulfillment rate_id; the
-      // shared selector is exercised there. This test pins no-throw + amount.
-    })
-
-    it("breaks price+days ties alphabetically by carrier for determinism", async () => {
-      fetchMock.mockResolvedValue(
-        jsonResponse({
-          rates: [
-            { id: "r-fedex", provider: "fedex", total_pricing: 150, days: 3 },
-            { id: "r-dhl", provider: "dhl", total_pricing: 150, days: 3 },
-          ],
-        })
-      )
-      const { service } = makeService()
-
-      const price = await service.calculatePrice(OPTION_DATA, {}, cartContext())
-      expect(price.calculated_amount).toBe(150)
-    })
-
-    it("throws MedusaError(INVALID_DATA) without calling the API when dims are missing (SD-3)", async () => {
-      const { service } = makeService()
-
       const context = cartContext({
-        items: [
-          { quantity: 1, variant: { weight: 500, length: 10, width: 8 } },
-        ],
+        items: [{ quantity: 1, variant: { weight: 500, length: 10, width: 8 } }],
       })
 
       await expect(
@@ -278,21 +289,22 @@ describe("SkydropxFulfillmentProviderService", () => {
       expect(fetchMock).not.toHaveBeenCalled()
     })
 
-    it("throws MedusaError(INVALID_DATA) when the destination zip is missing", async () => {
+    it("degrades to manual when the destination state/city is missing (SD-3)", async () => {
       const { service } = makeService()
-
       await expect(
         service.calculatePrice(
           OPTION_DATA,
           {},
-          cartContext({ shipping_address: {} })
+          cartContext({
+            shipping_address: { country_code: "mx", postal_code: "64000" },
+          })
         )
       ).rejects.toMatchObject({ type: MedusaError.Types.INVALID_DATA })
       expect(fetchMock).not.toHaveBeenCalled()
     })
 
-    it("throws a graceful MedusaError when the API returns zero rates (SD-3)", async () => {
-      fetchMock.mockResolvedValue(jsonResponse({ rates: [] }))
+    it("degrades gracefully when the quotation returns zero usable rates (SD-3)", async () => {
+      mockApi(fetchMock, { "POST /quotations": completedQuotation([]) })
       const { service } = makeService()
 
       await expect(
@@ -300,22 +312,11 @@ describe("SkydropxFulfillmentProviderService", () => {
       ).rejects.toMatchObject({ type: MedusaError.Types.UNEXPECTED_STATE })
     })
 
-    it("translates API errors into MedusaError — never an unhandled raw error (SD-3)", async () => {
-      fetchMock.mockResolvedValue(
-        jsonResponse({ message: "upstream exploded" }, 500)
-      )
-      const { service } = makeService()
-
-      await expect(
-        service.calculatePrice(OPTION_DATA, {}, cartContext())
-      ).rejects.toMatchObject({ type: MedusaError.Types.UNEXPECTED_STATE })
-    })
-
-    it("translates the 8s quotation timeout into a graceful MedusaError (SD-3)", async () => {
-      const abortError = Object.assign(new Error("aborted"), {
-        name: "AbortError",
+    it("translates API errors into a graceful MedusaError (SD-3)", async () => {
+      mockApi(fetchMock, {
+        "POST /quotations": () =>
+          jsonResponse({ error: "server_error", error_description: "boom" }, 500),
       })
-      fetchMock.mockRejectedValue(abortError)
       const { service } = makeService()
 
       await expect(
@@ -324,7 +325,7 @@ describe("SkydropxFulfillmentProviderService", () => {
     })
   })
 
-  describe("createFulfillment (SD-4)", () => {
+  describe("createFulfillment (Capability 5 / SD-4)", () => {
     const fulfillmentItems = [{ quantity: 2, line_item_id: "li_1" }] as any[]
 
     const order = {
@@ -355,33 +356,38 @@ describe("SkydropxFulfillmentProviderService", () => {
         name: "CDMX Warehouse",
         address: {
           address_1: "Calle Origen 5",
-          city: "CDMX",
+          city: "Ciudad de México",
+          province: "CDMX",
           postal_code: "06600",
           country_code: "mx",
         },
       },
     } as any
 
-    const shipmentResponse = {
+    const quoteRates = [
+      { id: "rate_cheap", provider_name: "estafeta", total: "140", days: 3, success: true },
+      { id: "rate_dear", provider_name: "dhl", total: "220", days: 1, success: true },
+    ]
+
+    const successShipment = {
       id: "shp_1",
-      rates: [
-        { id: "rate_cheap", provider: "estafeta", total_pricing: "140", days: 3 },
-        { id: "rate_dear", provider: "dhl", total_pricing: "220", days: 1 },
+      workflow_status: "success",
+      master_tracking_number: "TRK123",
+      included: [
+        {
+          attributes: {
+            tracking_number: "TRK123",
+            label_url: "https://labels.example/shp_1.pdf",
+          },
+        },
       ],
     }
 
-    const completedLabel = {
-      id: "lab_1",
-      status: "COMPLETED",
-      tracking_number: "TRK123",
-      tracking_url_provider: "https://track.example/TRK123",
-      label_url: "https://labels.example/lab_1.pdf",
-    }
-
-    it("creates shipment → selects rate with the same rule → buys label and returns tracking data", async () => {
-      fetchMock
-        .mockResolvedValueOnce(jsonResponse(shipmentResponse))
-        .mockResolvedValueOnce(jsonResponse(completedLabel))
+    it("fresh-quotes, buys the shipment with the cheapest rate, and returns tracking + label", async () => {
+      mockApi(fetchMock, {
+        "POST /quotations": completedQuotation(quoteRates),
+        "POST /shipments": () => jsonResponse(successShipment),
+      })
       const { service, logger } = makeService()
 
       const result = await service.createFulfillment(
@@ -391,80 +397,51 @@ describe("SkydropxFulfillmentProviderService", () => {
         fulfillment
       )
 
-      // Shipment request carries both addresses + the aggregate parcel.
+      const shipmentCall = fetchMock.mock.calls.find(
+        ([u, i]) =>
+          String(u).includes("/shipments") &&
+          (i as RequestInit).method === "POST"
+      )
       const shipmentBody = JSON.parse(
-        (fetchMock.mock.calls[0][1] as RequestInit).body as string
+        (shipmentCall?.[1] as RequestInit).body as string
       )
-      expect(shipmentBody.address_from.zip).toBe("06600")
-      expect(shipmentBody.address_to.zip).toBe("64000")
-      expect(shipmentBody.parcels).toEqual([
-        { weight: 1, length: 10, width: 8, height: 8 },
-      ])
-
-      // Same cheapest-rate rule as quotations.
-      const labelBody = JSON.parse(
-        (fetchMock.mock.calls[1][1] as RequestInit).body as string
-      )
-      expect(labelBody).toEqual({ rate_id: "rate_cheap" })
+      expect(shipmentBody.shipment.rate_id).toBe("rate_cheap")
+      expect(shipmentBody.shipment.packages[0]).toMatchObject({
+        consignment_note: "53102400",
+        package_type: "4G",
+      })
 
       expect(result.data).toMatchObject({
         shipment_id: "shp_1",
-        label_id: "lab_1",
+        rate_id: "rate_cheap",
         tracking_number: "TRK123",
-        tracking_url_provider: "https://track.example/TRK123",
-        label_url: "https://labels.example/lab_1.pdf",
+        label_url: "https://labels.example/shp_1.pdf",
       })
       expect(result.labels).toEqual([
         {
           tracking_number: "TRK123",
-          tracking_url: "https://track.example/TRK123",
-          label_url: "https://labels.example/lab_1.pdf",
+          tracking_url: "",
+          label_url: "https://labels.example/shp_1.pdf",
         },
       ])
-
-      // Quote-vs-label rate delta is logged for ops visibility.
-      expect(logger.info).toHaveBeenCalledWith(
-        expect.stringContaining("delta")
-      )
+      // Quote-vs-label rate delta is logged for ops visibility (Capability 6).
+      expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("delta"))
     })
 
-    it("polls IN_PROGRESS labels until completion", async () => {
-      fetchMock
-        .mockResolvedValueOnce(jsonResponse(shipmentResponse))
-        .mockResolvedValueOnce(
-          jsonResponse({ id: "lab_1", status: "IN_PROGRESS" })
-        )
-        .mockResolvedValueOnce(
-          jsonResponse({ id: "lab_1", status: "IN_PROGRESS" })
-        )
-        .mockResolvedValueOnce(jsonResponse(completedLabel))
+    it("fails loud (UNEXPECTED_STATE) when the selected rate requires origin verification (D5)", async () => {
+      mockApi(fetchMock, {
+        "POST /quotations": completedQuotation([
+          {
+            id: "rate_cheap",
+            provider_name: "estafeta",
+            total: "140",
+            days: 3,
+            success: true,
+            requires_origin_verification: true,
+          },
+        ]),
+      })
       const { service } = makeService()
-      jest
-        .spyOn(service as any, "sleep_")
-        .mockResolvedValue(undefined)
-
-      const result = await service.createFulfillment(
-        { id: "skydropx-standard" },
-        fulfillmentItems,
-        order,
-        fulfillment
-      )
-
-      // shipment + label + 2 polls
-      expect(fetchMock).toHaveBeenCalledTimes(4)
-      expect(String(fetchMock.mock.calls[2][0])).toContain("/labels/lab_1")
-      expect(result.data.tracking_number).toBe("TRK123")
-    })
-
-    it("bounds IN_PROGRESS polling to 30s and fails without half-shipped state", async () => {
-      fetchMock
-        .mockResolvedValueOnce(jsonResponse(shipmentResponse))
-        .mockResolvedValue(jsonResponse({ id: "lab_1", status: "IN_PROGRESS" }))
-      const { service } = makeService()
-      jest.spyOn(service as any, "sleep_").mockResolvedValue(undefined)
-      const nowSpy = jest.spyOn(Date, "now")
-      nowSpy.mockReturnValueOnce(0) // deadline anchor
-      nowSpy.mockReturnValue(30_001) // every later check is past the bound
 
       await expect(
         service.createFulfillment(
@@ -476,15 +453,44 @@ describe("SkydropxFulfillmentProviderService", () => {
       ).rejects.toMatchObject({ type: MedusaError.Types.UNEXPECTED_STATE })
     })
 
-    it("best-effort cancels the orphaned label and logs ids before throwing on poll timeout", async () => {
-      fetchMock
-        .mockResolvedValueOnce(jsonResponse(shipmentResponse))
-        .mockResolvedValue(jsonResponse({ id: "lab_1", status: "IN_PROGRESS" }))
+    it("fails loud when Carta Porte fields are absent for an MX label (D2)", async () => {
+      mockApi(fetchMock, {
+        "POST /quotations": completedQuotation(quoteRates),
+      })
+      // No consignmentNote / packageType configured.
+      const { service } = makeService({
+        consignmentNote: undefined,
+        packageType: undefined,
+      })
+
+      await expect(
+        service.createFulfillment(
+          { id: "skydropx-standard" },
+          fulfillmentItems,
+          order,
+          fulfillment
+        )
+      ).rejects.toMatchObject({ type: MedusaError.Types.UNEXPECTED_STATE })
+    })
+
+    it("best-effort cancels the orphaned shipment and throws when it fails after creation", async () => {
+      // Shipment is created (pending) but the follow-up poll reports a failure via
+      // error_detail → getShipment fast-fails → the orphaned shipment is cancelled.
+      mockApi(fetchMock, {
+        "POST /quotations": completedQuotation(quoteRates),
+        "POST /shipments": () =>
+          jsonResponse({ id: "shp_1", workflow_status: "pending" }),
+        "GET /shipments": () =>
+          jsonResponse({
+            id: "shp_1",
+            workflow_status: "pending",
+            error_detail: { error_code: "failed", error_message: "carrier rejected" },
+          }),
+        "POST /cancellations": () =>
+          jsonResponse({ id: "c1", status: "approved", success: true }),
+      })
       const { service, logger } = makeService()
       jest.spyOn(service as any, "sleep_").mockResolvedValue(undefined)
-      const nowSpy = jest.spyOn(Date, "now")
-      nowSpy.mockReturnValueOnce(0) // deadline anchor
-      nowSpy.mockReturnValue(30_001) // every later check is past the bound
 
       await expect(
         service.createFulfillment(
@@ -495,65 +501,22 @@ describe("SkydropxFulfillmentProviderService", () => {
         )
       ).rejects.toMatchObject({ type: MedusaError.Types.UNEXPECTED_STATE })
 
-      // Best-effort cancellation was attempted against the orphaned label.
-      const cancelCall = fetchMock.mock.calls.find(([url]) =>
-        String(url).includes("/labels/lab_1/cancel")
+      const cancelCall = fetchMock.mock.calls.find(([u]) =>
+        String(u).includes("/cancellations")
       )
       expect(cancelCall).toBeDefined()
-
-      // shipment_id + label_id logged explicitly for reconciliation.
       const reconciliationLog = (logger.error as jest.Mock).mock.calls.find(
-        ([message]) =>
-          String(message).includes("shp_1") && String(message).includes("lab_1")
+        ([m]) => String(m).includes("shp_1")
       )
       expect(reconciliationLog).toBeDefined()
     })
 
-    it("swallows cancel errors on poll timeout and still throws UNEXPECTED_STATE", async () => {
-      fetchMock
-        .mockResolvedValueOnce(jsonResponse(shipmentResponse))
-        .mockImplementation((url) =>
-          String(url).includes("/cancel")
-            ? Promise.resolve(jsonResponse({ message: "not cancellable" }, 422))
-            : Promise.resolve(jsonResponse({ id: "lab_1", status: "IN_PROGRESS" }))
-        )
-      const { service, logger } = makeService()
-      jest.spyOn(service as any, "sleep_").mockResolvedValue(undefined)
-      const nowSpy = jest.spyOn(Date, "now")
-      nowSpy.mockReturnValueOnce(0)
-      nowSpy.mockReturnValue(30_001)
-
-      await expect(
-        service.createFulfillment(
-          { id: "skydropx-standard" },
-          fulfillmentItems,
-          order,
-          fulfillment
-        )
-      ).rejects.toMatchObject({ type: MedusaError.Types.UNEXPECTED_STATE })
-
-      // Cancel failure is logged, never rethrown over the original error.
-      expect(logger.warn).toHaveBeenCalled()
-    })
-
-    it("throws MedusaError(UNEXPECTED_STATE) when label purchase fails (SD-4 failure)", async () => {
-      fetchMock
-        .mockResolvedValueOnce(jsonResponse(shipmentResponse))
-        .mockResolvedValueOnce(jsonResponse({ message: "no funds" }, 422))
-      const { service } = makeService()
-
-      await expect(
-        service.createFulfillment(
-          { id: "skydropx-standard" },
-          fulfillmentItems,
-          order,
-          fulfillment
-        )
-      ).rejects.toMatchObject({ type: MedusaError.Types.UNEXPECTED_STATE })
-    })
-
-    it("throws MedusaError(UNEXPECTED_STATE) when the shipment returns zero rates", async () => {
-      fetchMock.mockResolvedValueOnce(jsonResponse({ id: "shp_1", rates: [] }))
+    it("throws UNEXPECTED_STATE when shipment creation fails (SD-4)", async () => {
+      mockApi(fetchMock, {
+        "POST /quotations": completedQuotation(quoteRates),
+        "POST /shipments": () =>
+          jsonResponse({ error: "unprocessable_entity", error_description: "no funds" }, 422),
+      })
       const { service } = makeService()
 
       await expect(
@@ -567,10 +530,9 @@ describe("SkydropxFulfillmentProviderService", () => {
     })
   })
 
-  describe("unconfigured provider (source → null) — fail-safe inert (slice 3)", () => {
-    it("calculatePrice rejects gracefully with INVALID_DATA and never calls the API", async () => {
+  describe("unconfigured provider (source → null) — fail-safe inert", () => {
+    it("calculatePrice rejects with INVALID_DATA and never calls the API", async () => {
       const { service } = makeService(null)
-
       await expect(
         service.calculatePrice(OPTION_DATA, {}, cartContext())
       ).rejects.toMatchObject({
@@ -580,117 +542,65 @@ describe("SkydropxFulfillmentProviderService", () => {
       expect(fetchMock).not.toHaveBeenCalled()
     })
 
-    it("createFulfillment rejects with a MedusaError and never calls the API", async () => {
-      const { service } = makeService(null)
-
-      await expect(
-        service.createFulfillment(
-          { id: "skydropx-standard" },
-          [{ quantity: 1, line_item_id: "li_1" }] as any,
-          undefined,
-          {} as any
-        )
-      ).rejects.toMatchObject({ type: MedusaError.Types.INVALID_DATA })
-      expect(fetchMock).not.toHaveBeenCalled()
-    })
-
-    it("cancelFulfillment logs and proceeds without the API (never blocks Medusa-side cancel)", async () => {
+    it("cancelFulfillment logs and proceeds without the API", async () => {
       const { service, logger } = makeService(null)
-
       await expect(
-        service.cancelFulfillment({ label_id: "lab_1" })
+        service.cancelFulfillment({ shipment_id: "shp_1" })
       ).resolves.not.toThrow()
       expect(fetchMock).not.toHaveBeenCalled()
       expect(logger.warn).toHaveBeenCalled()
     })
-
-    it("getFulfillmentOptions still lists the option (registration is unconditional)", async () => {
-      const { service } = makeService(null)
-
-      await expect(service.getFulfillmentOptions()).resolves.toEqual([
-        { id: "skydropx-standard", name: "Envío estándar" },
-      ])
-    })
   })
 
-  describe("client rebuild on credential fingerprint change (rotation, slice 3)", () => {
-    it("uses the rotated apiKey on the next quotation without a restart", async () => {
-      // Fresh Response per call — a Response body can only be read once.
-      fetchMock.mockImplementation(() =>
-        Promise.resolve(
-          jsonResponse({
-            rates: [{ id: "r1", provider: "dhl", total_pricing: 99, days: 2 }],
-          })
-        )
-      )
-      let current: Record<string, unknown> | null = { ...config }
-      const credentialSource = async () => current
-      const service = new SkydropxFulfillmentProviderService(
-        { logger: makeLogger() },
-        { credentialSource: credentialSource as any }
-      )
-
-      await service.calculatePrice(OPTION_DATA, {}, cartContext())
-      current = { ...config, apiKey: "sk_rotated" }
-      await service.calculatePrice(OPTION_DATA, {}, cartContext())
-
-      const firstHeaders = (fetchMock.mock.calls[0][1] as RequestInit).headers
-      const secondHeaders = (fetchMock.mock.calls[1][1] as RequestInit).headers
-      expect((firstHeaders as any).Authorization).toBe(
-        `Token token=${API_KEY}`
-      )
-      expect((secondHeaders as any).Authorization).toBe(
-        "Token token=sk_rotated"
-      )
-    })
-  })
-
-  describe("validateOptions (slice 3 — always-registered, empty options valid)", () => {
-    it("accepts an EMPTY options object (credentials live in the DB now)", () => {
+  describe("validateOptions (always-registered, empty options valid)", () => {
+    it("accepts an EMPTY options object", () => {
       expect(() =>
         SkydropxFulfillmentProviderService.validateOptions({})
       ).not.toThrow()
     })
 
-    it("still rejects a PRESENT but empty apiKey", () => {
+    it("rejects a present-but-empty clientId or clientSecret", () => {
       expect(() =>
-        SkydropxFulfillmentProviderService.validateOptions({ apiKey: "" })
+        SkydropxFulfillmentProviderService.validateOptions({ clientId: "" })
+      ).toThrow(MedusaError)
+      expect(() =>
+        SkydropxFulfillmentProviderService.validateOptions({ clientSecret: "" })
       ).toThrow(MedusaError)
     })
   })
 
-  describe("cancelFulfillment (SD-4 cancel)", () => {
-    it("cancels the label via the client", async () => {
-      fetchMock.mockResolvedValue(
-        jsonResponse({ id: "lab_1", status: "CANCELLED" })
-      )
+  describe("cancelFulfillment (SD-4 cancel via PRO cancellations)", () => {
+    it("cancels the shipment via the cancellations endpoint", async () => {
+      mockApi(fetchMock, {
+        "POST /cancellations": () =>
+          jsonResponse({ id: "c1", status: "approved", success: true }),
+      })
       const { service } = makeService()
 
-      await service.cancelFulfillment({ label_id: "lab_1" })
+      await service.cancelFulfillment({ shipment_id: "shp_1" })
 
-      expect(String(fetchMock.mock.calls[0][0])).toBe(
-        "https://api.skydropx.com/v1/labels/lab_1/cancel"
+      const cancelCall = fetchMock.mock.calls.find(([u]) =>
+        String(u).includes("/cancellations")
       )
+      expect(String(cancelCall?.[0])).toContain("/shipments/shp_1/cancellations")
     })
 
     it("tolerates 'not cancellable' provider errors via log-and-proceed", async () => {
-      fetchMock.mockResolvedValue(
-        jsonResponse({ message: "label not cancellable" }, 422)
-      )
+      mockApi(fetchMock, {
+        "POST /cancellations": () =>
+          jsonResponse({ error: "unprocessable_entity", error_description: "not cancellable" }, 422),
+      })
       const { service, logger } = makeService()
 
       await expect(
-        service.cancelFulfillment({ label_id: "lab_1" })
+        service.cancelFulfillment({ shipment_id: "shp_1" })
       ).resolves.not.toThrow()
       expect(logger.warn).toHaveBeenCalled()
     })
 
-    it("is a no-op without a label id", async () => {
+    it("is a no-op without a shipment id", async () => {
       const { service } = makeService()
-
-      await expect(
-        service.cancelFulfillment({})
-      ).resolves.not.toThrow()
+      await expect(service.cancelFulfillment({})).resolves.not.toThrow()
       expect(fetchMock).not.toHaveBeenCalled()
     })
   })

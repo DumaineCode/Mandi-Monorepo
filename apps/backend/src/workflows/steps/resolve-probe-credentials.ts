@@ -17,7 +17,7 @@ import { isAllowedSkydropxBaseUrl } from "./probes/skydropx"
 /** Minimum material each probe needs (design §6). */
 export const PROBE_REQUIRED_FIELDS: Record<string, readonly string[]> = {
   openpay: ["merchantId", "privateKey"],
-  skydropx: ["apiKey", "originZip"],
+  skydropx: ["clientId", "clientSecret", "originZip"],
   mercadopago: ["accessToken"],
 }
 
@@ -64,8 +64,8 @@ export function mergeProbeCredentials(
   const creds: Record<string, unknown> = { ...(stored ?? {}), ...overlay }
 
   // FIX 1 (SSRF + stored-secret exfiltration): never let a candidate/stored
-  // baseUrl redirect the skydropx apiKey to an untrusted host. Fail BEFORE
-  // returning creds so the secret is never handed to the probe.
+  // baseUrl redirect the skydropx clientId/clientSecret to an untrusted host.
+  // Fail BEFORE returning creds so the secrets are never handed to the probe.
   if (
     provider === "skydropx" &&
     creds.baseUrl !== undefined &&

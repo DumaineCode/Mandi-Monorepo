@@ -18,6 +18,7 @@ import type {
   ProviderMode,
   SecretHints,
 } from "../../modules/provider-settings/types"
+import { isAllowedSkydropxBaseUrl } from "./probes/skydropx"
 
 const modeSchema = z.enum(["sandbox", "production"])
 
@@ -40,12 +41,28 @@ export const openpayUpsertSchema = baseSchema.extend({
   webhookPassword: z.string().min(1).optional(),
 })
 
-export const skydropxUpsertSchema = baseSchema.extend({
-  originZip: z.string().min(1),
-  baseUrl: z.string().url().optional(),
-  taxInclusive: z.boolean().optional(),
-  apiKey: z.string().min(1).optional(),
-})
+export const skydropxUpsertSchema = baseSchema
+  .extend({
+    originZip: z.string().min(1),
+    baseUrl: z.string().url().optional(),
+    taxInclusive: z.boolean().optional(),
+    consignmentNote: z.string().optional(),
+    packageType: z.string().optional(),
+    clientId: z.string().min(1).optional(),
+    clientSecret: z.string().min(1).optional(),
+  })
+  // SSRF write-path guard (design D1): a stored non-skydropx.com baseUrl would
+  // exfiltrate clientId/clientSecret via the cold-checkout OAuth token POST, so
+  // reject it on save (the client also re-checks defensively in S2).
+  .refine(
+    (data) =>
+      data.baseUrl === undefined || isAllowedSkydropxBaseUrl(data.baseUrl),
+    {
+      path: ["baseUrl"],
+      message:
+        "Skydropx base URL must be an https skydropx.com host (SSRF allowlist).",
+    }
+  )
 
 export const mercadopagoUpsertSchema = baseSchema.extend({
   publicKey: z.string().min(1),
@@ -62,14 +79,20 @@ export const PROVIDER_UPSERT_SCHEMAS: Record<string, z.ZodTypeAny> = {
 /** Secret fields per provider — stored ONLY inside `encrypted_secrets`. */
 export const PROVIDER_SECRET_FIELDS: Record<string, readonly string[]> = {
   openpay: ["privateKey", "webhookUser", "webhookPassword"],
-  skydropx: ["apiKey"],
+  skydropx: ["clientId", "clientSecret"],
   mercadopago: ["accessToken", "webhookSecret"],
 }
 
 /** Non-secret fields per provider — stored in `public_config`. */
 export const PROVIDER_PUBLIC_FIELDS: Record<string, readonly string[]> = {
   openpay: ["merchantId", "publicKey"],
-  skydropx: ["baseUrl", "originZip", "taxInclusive"],
+  skydropx: [
+    "baseUrl",
+    "originZip",
+    "taxInclusive",
+    "consignmentNote",
+    "packageType",
+  ],
   mercadopago: ["publicKey"],
 }
 

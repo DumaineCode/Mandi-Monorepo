@@ -28,7 +28,8 @@ const TEST_KEK = Buffer.from("0123456789abcdef0123456789abcdef").toString(
 const OPENPAY_PRIVATE = "sk_openpay_private_abcd"
 const OPENPAY_WH_PASS = "whpass_secret_1234"
 const OPENPAY_WH_USER = "whuser_secret"
-const SKYDROPX_KEY = "sky_apikey_secret_9999"
+const SKYDROPX_CLIENT_ID = "sky_clientid_secret_9999"
+const SKYDROPX_CLIENT_SECRET = "sky_clientsecret_secret_9999"
 const MP_TOKEN = "mp_token_secret_5678"
 const MP_WH_SECRET = "mp_whsecret_secret_val"
 
@@ -36,7 +37,8 @@ const ALL_SECRET_VALUES = [
   OPENPAY_PRIVATE,
   OPENPAY_WH_PASS,
   OPENPAY_WH_USER,
-  SKYDROPX_KEY,
+  SKYDROPX_CLIENT_ID,
+  SKYDROPX_CLIENT_SECRET,
   MP_TOKEN,
   MP_WH_SECRET,
 ]
@@ -52,10 +54,13 @@ function fullEnv(
     OPENPAY_SANDBOX: "true",
     OPENPAY_WEBHOOK_USER: OPENPAY_WH_USER,
     OPENPAY_WEBHOOK_PASSWORD: OPENPAY_WH_PASS,
-    SKYDROPX_API_KEY: SKYDROPX_KEY,
+    SKYDROPX_CLIENT_ID: SKYDROPX_CLIENT_ID,
+    SKYDROPX_CLIENT_SECRET: SKYDROPX_CLIENT_SECRET,
     SKYDROPX_ORIGIN_ZIP: "11000",
-    SKYDROPX_BASE_URL: "https://api.skydropx.com/v1",
+    SKYDROPX_BASE_URL: "https://api-pro.skydropx.com/api/v1",
     SKYDROPX_TAX_INCLUSIVE: "true",
+    SKYDROPX_CONSIGNMENT_NOTE: "31181701",
+    SKYDROPX_PACKAGE_TYPE: "4G",
     MP_ACCESS_TOKEN: MP_TOKEN,
     MP_WEBHOOK_SECRET: MP_WH_SECRET,
     MP_PUBLIC_KEY: "mp_pubkey",
@@ -174,14 +179,36 @@ describe("seedFromEnv", () => {
     const skydropx = service.created.find((r) => r.provider === "skydropx")!
     expect(skydropx.public_config).toEqual({
       originZip: "11000",
-      baseUrl: "https://api.skydropx.com/v1",
+      baseUrl: "https://api-pro.skydropx.com/api/v1",
       taxInclusive: true,
+      consignmentNote: "31181701",
+      packageType: "4G",
     })
     const decrypted = createProviderSettingsCrypto(TEST_KEK).decryptSecrets(
       "skydropx",
       skydropx.encrypted_secrets!
     )
-    expect(decrypted).toEqual({ apiKey: SKYDROPX_KEY })
+    expect(decrypted).toEqual({
+      clientId: SKYDROPX_CLIENT_ID,
+      clientSecret: SKYDROPX_CLIENT_SECRET,
+    })
+  })
+
+  it("skips a partial single-secret skydropx env as incomplete without writing a row", async () => {
+    const service = makeService()
+    const logger = makeLogger()
+
+    // Only clientId present (clientSecret missing) → partial, not seeded.
+    const env = fullEnv({ SKYDROPX_CLIENT_SECRET: undefined })
+    const results = await seedFromEnv(service, env, logger)
+
+    const skydropx = results.find((r) => r.provider === "skydropx")!
+    expect(skydropx.outcome).toBe("skipped-incomplete")
+    expect(
+      service.created.find((r) => r.provider === "skydropx")
+    ).toBeUndefined()
+    const warnMsg = logger.warn.mock.calls.map((c) => c[0]).join(" ")
+    expect(warnMsg).toContain("SKYDROPX_CLIENT_SECRET")
   })
 
   it("skips a provider whose env set is partial and WARNs with the missing names", async () => {
@@ -211,7 +238,8 @@ describe("seedFromEnv", () => {
     const logger = makeLogger()
 
     const env = fullEnv({
-      SKYDROPX_API_KEY: undefined,
+      SKYDROPX_CLIENT_ID: undefined,
+      SKYDROPX_CLIENT_SECRET: undefined,
       SKYDROPX_ORIGIN_ZIP: undefined,
     })
     const results = await seedFromEnv(service, env, logger)
@@ -221,7 +249,9 @@ describe("seedFromEnv", () => {
     expect(service.created.find((r) => r.provider === "skydropx")).toBeUndefined()
     // Absent is not a misconfiguration → no WARN for skydropx absence.
     const warnMsg = logger.warn.mock.calls.map((c) => c[0]).join(" ")
-    expect(warnMsg).not.toContain("SKYDROPX_API_KEY")
+    expect(warnMsg).not.toContain("SKYDROPX_CLIENT_ID")
+    // The legacy env var is never referenced by the seed.
+    expect(logger.all.join(" ")).not.toContain("SKYDROPX_API_KEY")
   })
 
   it("preserves an existing row as skipped-existing without creating a duplicate", async () => {

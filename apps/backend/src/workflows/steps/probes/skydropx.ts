@@ -1,13 +1,11 @@
 /**
- * Skydropx test-connection probe (design §6).
+ * Skydropx PRO test-connection probe (design §6).
  *
- * `POST /quotations` from the configured origin zip to a fixed well-known
- * destination (CDMX 06600) with the smallest parcel. Labeled best-effort:
- * quotation success also depends on carrier availability, not only on the
- * API key.
- *
- * TODO(sandbox-verify): wire shape gated on S5.0b — legacy token auth and
- * quotation body carried from the existing SkydropxClient TODO markers.
+ * Performs the OAuth2 client-credentials token exchange against
+ * `POST /oauth/token`. A 200 response proves the stored clientId/clientSecret are
+ * valid PRO credentials (the connection is live); a 401 means the credentials
+ * were rejected. This is the minimal, secret-safe connectivity check — it issues
+ * no quotation, so it does not depend on carrier availability or address data.
  */
 import {
   probeFailure,
@@ -16,14 +14,11 @@ import {
   type ProbeResult,
 } from "./types"
 
-const DEFAULT_BASE_URL = "https://api.skydropx.com/v1"
-
-/** Fixed, well-known destination zip for the probe quotation (CDMX centro). */
-export const PROBE_DESTINATION_ZIP = "06600"
+const DEFAULT_BASE_URL = "https://api-pro.skydropx.com/api/v1"
 
 /**
  * FIX 1 (SSRF + stored-secret exfiltration guard). The Skydropx probe sends the
- * stored/candidate `apiKey` in the Authorization header to `${base}/quotations`,
+ * stored/candidate secret in the Authorization header to `${base}/quotations`,
  * so a caller-supplied `baseUrl` must NEVER be able to redirect that secret to
  * an arbitrary host. Only https URLs on `skydropx.com` (or a `*.skydropx.com`
  * subdomain) are allowed; http, cloud-metadata IPs, localhost, and non-skydropx
@@ -47,7 +42,8 @@ export function isAllowedSkydropxBaseUrl(value: unknown): boolean {
 }
 
 export interface SkydropxProbeCredentials {
-  apiKey: string
+  clientId: string
+  clientSecret: string
   originZip: string
   baseUrl?: string
 }
@@ -69,17 +65,17 @@ export async function probeSkydropx(
 
   try {
     const response = await probeFetch(
-      `${base}/quotations`,
+      `${base}/oauth/token`,
       {
         method: "POST",
         headers: {
-          Authorization: `Token token=${creds.apiKey}`,
           "Content-Type": "application/json",
+          Accept: "application/json",
         },
         body: JSON.stringify({
-          zip_from: creds.originZip,
-          zip_to: PROBE_DESTINATION_ZIP,
-          parcel: { weight: 1, height: 10, width: 10, length: 10 },
+          grant_type: "client_credentials",
+          client_id: creds.clientId,
+          client_secret: creds.clientSecret,
         }),
       },
       options
@@ -88,16 +84,14 @@ export async function probeSkydropx(
     if (response.ok) {
       return {
         ok: true,
-        detail:
-          "Skydropx credentials accepted (quotation probe, best-effort — " +
-          "carrier availability may still vary).",
+        detail: "Skydropx PRO credentials accepted (OAuth token issued).",
       }
     }
 
     if (response.status === 401) {
       return {
         ok: false,
-        detail: "Skydropx rejected the API key (HTTP 401).",
+        detail: "Skydropx rejected the credentials (HTTP 401).",
       }
     }
 
