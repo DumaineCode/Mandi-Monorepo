@@ -7,18 +7,23 @@ import { HttpTypes } from "@medusajs/types"
 import { Heading, Text } from "@modules/common/components/ui"
 import Spinner from "@modules/common/icons/spinner"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
-import { useActionState } from "react"
+import { useActionState, useEffect, useRef } from "react"
 import BillingAddress from "../billing_address"
 import ErrorMessage from "../error-message"
 import ShippingAddress from "../shipping-address"
+import type { PrefetchedShipping } from "../shipping-address"
 import { SubmitButton } from "../submit-button"
 
 const Addresses = ({
   cart,
   customer,
+  availableShippingMethods,
+  onPrefetch,
 }: {
   cart: HttpTypes.StoreCart | null
   customer: HttpTypes.StoreCustomer | null
+  availableShippingMethods?: HttpTypes.StoreCartShippingOption[] | null
+  onPrefetch?: (result: PrefetchedShipping) => void
 }) => {
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -37,6 +42,19 @@ const Addresses = ({
   }
 
   const [message, formAction] = useActionState(setAddresses, null)
+
+  // Client-side navigation replacing the old server redirect: on a successful
+  // submit `setAddresses` returns null, so soft-navigate to the delivery step
+  // without a scroll jump. This preserves the client tree (and any prefetched
+  // shipping prices) instead of a full remount. Guarded so it fires only on the
+  // open address step and only after an actual submit.
+  const submittedRef = useRef(false)
+  useEffect(() => {
+    if (submittedRef.current && isOpen && message === null) {
+      submittedRef.current = false
+      router.push(pathname + "?step=delivery", { scroll: false })
+    }
+  }, [message, isOpen, pathname, router])
 
   return (
     <div className="rounded-large border border-line bg-paper p-6 small:p-8">
@@ -61,13 +79,20 @@ const Addresses = ({
         )}
       </div>
       {isOpen ? (
-        <form action={formAction}>
+        <form
+          action={formAction}
+          onSubmit={() => {
+            submittedRef.current = true
+          }}
+        >
           <div className="pb-8">
             <ShippingAddress
               customer={customer}
               checked={sameAsBilling}
               onChange={toggleSameAsBilling}
               cart={cart}
+              availableShippingMethods={availableShippingMethods}
+              onPrefetch={onPrefetch}
             />
 
             {!sameAsBilling && (

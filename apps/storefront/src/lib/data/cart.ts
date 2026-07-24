@@ -396,7 +396,10 @@ export async function submitPromotionForm(
 }
 
 // TODO: Pass a POJO instead of a form entity here
-export async function setAddresses(currentState: unknown, formData: FormData) {
+export async function setAddresses(
+  currentState: unknown,
+  formData: FormData
+): Promise<string | null> {
   try {
     if (!formData) {
       throw new Error("No form data found when setting addresses")
@@ -443,9 +446,12 @@ export async function setAddresses(currentState: unknown, formData: FormData) {
     return e.message
   }
 
-  redirect(
-    `/${formData.get("shipping_address.country_code")}/checkout?step=delivery`
-  )
+  // Navigation moved to the client: `Addresses` performs a soft
+  // `router.push('?step=delivery', { scroll: false })` on success so prefetched
+  // shipping prices and client state survive. A server redirect here would
+  // full-remount the checkout tree, wiping the prefetch and causing a layout
+  // jump.
+  return null
 }
 
 /**

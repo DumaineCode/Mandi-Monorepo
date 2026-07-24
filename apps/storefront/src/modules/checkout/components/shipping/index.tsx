@@ -11,6 +11,7 @@ import { Button, clx, Heading, Text } from "@modules/common/components/ui"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { useEffect, useState } from "react"
 import { CORAL_CTA } from "../submit-button"
+import type { PrefetchedShipping } from "../shipping-address"
 
 const PICKUP_OPTION_ON = "__PICKUP_ON"
 const PICKUP_OPTION_OFF = "__PICKUP_OFF"
@@ -18,6 +19,27 @@ const PICKUP_OPTION_OFF = "__PICKUP_OFF"
 type ShippingProps = {
   cart: HttpTypes.StoreCart
   availableShippingMethods: HttpTypes.StoreCartShippingOption[] | null
+  prefetchedShipping?: PrefetchedShipping | null
+}
+
+/**
+ * Signature of the persisted cart shipping address, matching the one produced
+ * by the prefetch trigger. Used to confirm the prefetched prices belong to the
+ * address currently on the cart before consuming them.
+ */
+function buildCartShippingSignature(
+  address?: HttpTypes.StoreCartAddress | null
+): string {
+  return [
+    address?.postal_code,
+    address?.province,
+    address?.city,
+    address?.address_1,
+    address?.address_2,
+    address?.country_code,
+  ]
+    .map((p) => (p || "").trim())
+    .join("|")
 }
 
 function formatAddress(address: HttpTypes.StoreCartAddress) {
@@ -49,15 +71,30 @@ function formatAddress(address: HttpTypes.StoreCartAddress) {
 const Shipping: React.FC<ShippingProps> = ({
   cart,
   availableShippingMethods,
+  prefetchedShipping,
 }) => {
   const [isLoading, setIsLoading] = useState(false)
-  const [isLoadingPrices, setIsLoadingPrices] = useState(true)
+
+  // Zero-regression consume path: seed the calculated prices from the prefetch
+  // ONLY when its signature matches the address currently persisted on the
+  // cart. On any mismatch / absence / failure we fall back to today's mount
+  // recalc (initial isLoadingPrices=true, empty map).
+  const cartShippingSignature = buildCartShippingSignature(
+    cart.shipping_address
+  )
+  const hasValidPrefetch =
+    !!prefetchedShipping &&
+    prefetchedShipping.signature === cartShippingSignature &&
+    cartShippingSignature !== "" &&
+    Object.keys(prefetchedShipping.prices).length > 0
+
+  const [isLoadingPrices, setIsLoadingPrices] = useState(!hasValidPrefetch)
 
   const [showPickupOptions, setShowPickupOptions] =
     useState<string>(PICKUP_OPTION_OFF)
   const [calculatedPricesMap, setCalculatedPricesMap] = useState<
     Record<string, number>
-  >({})
+  >(hasValidPrefetch ? prefetchedShipping!.prices : {})
   const [error, setError] = useState<string | null>(null)
   const [shippingMethodId, setShippingMethodId] = useState<string | null>(
     cart.shipping_methods?.at(-1)?.shipping_option_id || null
@@ -80,6 +117,19 @@ const Shipping: React.FC<ShippingProps> = ({
   const hasPickupOptions = !!_pickupMethods?.length
 
   useEffect(() => {
+    // Consume path: valid prefetch matching the persisted cart address means
+    // prices are already seeded — skip the mount recalc entirely.
+    if (hasValidPrefetch) {
+      setCalculatedPricesMap(prefetchedShipping!.prices)
+      setIsLoadingPrices(false)
+
+      if (_pickupMethods?.find((m) => m.id === shippingMethodId)) {
+        setShowPickupOptions(PICKUP_OPTION_ON)
+      }
+      return
+    }
+
+    // Fallback path (legacy): no usable prefetch, calculate on mount as before.
     setIsLoadingPrices(true)
 
     if (_shippingMethods?.length) {
@@ -107,7 +157,8 @@ const Shipping: React.FC<ShippingProps> = ({
     if (_pickupMethods?.find((m) => m.id === shippingMethodId)) {
       setShowPickupOptions(PICKUP_OPTION_ON)
     }
-  }, [availableShippingMethods])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableShippingMethods, hasValidPrefetch])
 
   const handleEdit = () => {
     router.push(pathname + "?step=delivery", { scroll: false })
