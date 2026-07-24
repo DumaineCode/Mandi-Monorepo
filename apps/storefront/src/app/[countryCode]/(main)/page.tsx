@@ -9,6 +9,7 @@ import Hero from "@modules/home/components/hero"
 import Newsletter from "@modules/home/components/newsletter"
 import ReviewsCarousel from "@modules/home/components/reviews-carousel"
 import StatsTestimonial from "@modules/home/components/stats-testimonial"
+import TrustBadges from "@modules/home/components/trust-badges"
 import WholesaleBand from "@modules/home/components/wholesale-band"
 
 export const metadata: Metadata = {
@@ -36,6 +37,7 @@ export default async function Home(props: {
       <FeaturedFlavor countryCode={countryCode} />
       <BestSellers countryCode={countryCode} />
 
+      <TrustBadges />
       <WholesaleBand />
       <StatsTestimonial />
       <ReviewsCarousel />
