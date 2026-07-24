@@ -12,6 +12,7 @@ import { Button } from "@modules/common/components/ui"
 import { useElements, useStripe } from "@stripe/react-stripe-js"
 import React, { useState } from "react"
 import ErrorMessage from "../error-message"
+import { CORAL_CTA } from "../submit-button"
 
 type PaymentButtonProps = {
   cart: HttpTypes.StoreCart
@@ -57,9 +58,14 @@ const PaymentButton: React.FC<PaymentButtonProps> = ({
         <ManualTestPaymentButton notReady={notReady} data-testid={dataTestId} />
       )
     default:
-      return <Button disabled>Select a payment method</Button>
+      return <Button disabled>Selecciona un método de pago</Button>
   }
 }
+
+// Coral brand override for the final place-order CTA (visual only). Reuses the
+// shared CORAL_CTA constant so the coral surface stays identical to every other
+// checkout CTA.
+const PLACE_ORDER_CTA = CORAL_CTA
 
 const StripePaymentButton = ({
   cart,
@@ -155,10 +161,11 @@ const StripePaymentButton = ({
         disabled={disabled || notReady}
         onClick={handlePayment}
         size="large"
+        className={PLACE_ORDER_CTA}
         isLoading={submitting}
         data-testid={dataTestId}
       >
-        Place order
+        Realizar pedido
       </Button>
       <ErrorMessage
         error={errorMessage}
@@ -219,10 +226,11 @@ const OpenpayPaymentButton = ({
         disabled={notReady}
         onClick={handlePayment}
         size="large"
+        className={PLACE_ORDER_CTA}
         isLoading={submitting}
         data-testid={dataTestId}
       >
-        Place order
+        Realizar pedido
       </Button>
       <ErrorMessage
         error={errorMessage}
@@ -269,10 +277,11 @@ const MercadoPagoPaymentButton = ({
         disabled={notReady}
         onClick={handlePayment}
         size="large"
+        className={PLACE_ORDER_CTA}
         isLoading={submitting}
         data-testid={dataTestId}
       >
-        Pay with Mercado Pago
+        Pagar con Mercado Pago
       </Button>
       <ErrorMessage
         error={errorMessage}
@@ -309,9 +318,10 @@ const ManualTestPaymentButton = ({ notReady }: { notReady: boolean }) => {
         isLoading={submitting}
         onClick={handlePayment}
         size="large"
+        className={PLACE_ORDER_CTA}
         data-testid="submit-order-button"
       >
-        Place order
+        Realizar pedido
       </Button>
       <ErrorMessage
         error={errorMessage}
