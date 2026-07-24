@@ -1,6 +1,7 @@
 import Image from "next/image"
 import LocalizedClientLink from "@modules/common/components/localized-client-link"
 import ChevronDown from "@modules/common/icons/chevron-down"
+import PaymentBadges from "@modules/layout/components/payment-badges"
 
 export default function CheckoutLayout({
   children,
@@ -78,9 +79,15 @@ export default function CheckoutLayout({
 
       {/* Minimal branded footer (replaces MedusaCTA). */}
       <div className="w-full border-t border-line bg-cream py-6">
-        <p className="text-center text-small-regular font-hanken text-ink-muted">
-          © {year} MANDO · Pago 100% seguro
-        </p>
+        <div className="content-container flex flex-col items-center gap-5">
+          <PaymentBadges
+            labelClassName="text-ink-muted"
+            className="flex justify-center [&_ul]:justify-center [&>div>div]:items-center [&>div>div]:text-center"
+          />
+          <p className="text-center text-small-regular font-hanken text-ink-muted">
+            © {year} MANDO · Pago 100% seguro
+          </p>
+        </div>
       </div>
     </div>
   )
