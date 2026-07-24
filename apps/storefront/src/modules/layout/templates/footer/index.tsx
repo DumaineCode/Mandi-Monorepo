@@ -5,6 +5,7 @@ import { getLocale } from "@lib/data/locale-actions";
 
 import LocalizedClientLink from "@modules/common/components/localized-client-link";
 import RegionLanguageSelect from "@modules/layout/components/region-language-select";
+import PaymentBadges from "@modules/layout/components/payment-badges";
 
 // Editorial "Tienda" column. We prefer the REAL category handles when they
 // exist in the catalog, mapping by handle (with a title fallback). If a handle
@@ -129,8 +130,13 @@ export default async function Footer() {
           </div>
         </div>
 
+        {/* Payment methods + processors */}
+        <div className="mt-9 border-t border-[#36322b] pt-7">
+          <PaymentBadges />
+        </div>
+
         {/* Bottom bar */}
-        <div className="mt-9 flex flex-wrap items-center justify-between gap-x-8 gap-y-4 border-t border-[#36322b] pt-5 font-mono text-[11px] text-cream-soft">
+        <div className="mt-8 flex flex-wrap items-center justify-between gap-x-8 gap-y-4 border-t border-[#36322b] pt-5 font-mono text-[11px] text-cream-soft">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
             <span>© {currentYear} Mando Oficial</span>
             {/* Preserved region/language selector — logic & data untouched.
