@@ -43,7 +43,20 @@ RUN pnpm --filter @dtc/backend run build
 # 3) Install runtime deps INSIDE the standalone build output.
 #    npm gives a flat node_modules (no symlinks), so it copies cleanly between
 #    stages. This is the official Medusa v2 production step.
-RUN cd apps/backend/.medusa/server && npm install --no-audit --no-fund
+#
+#    ROOT CAUSE of repeated build failures: this Hetzner build IP got
+#    rate-limited (E429) by registry.npmjs.org after many deploy retries.
+#    Fix: install from the Yarn registry mirror (Cloudflare-backed, 1:1 sync
+#    with npmjs, not blocking this IP). Verified working via a direct alpine
+#    wget test. --mount=type=cache persists downloads to avoid re-hammering.
+RUN --mount=type=cache,target=/root/.npm \
+    cd apps/backend/.medusa/server && \
+    npm install --no-audit --no-fund \
+      --registry=https://registry.yarnpkg.com \
+      --fetch-retries=5 \
+      --fetch-retry-factor=2 \
+      --fetch-retry-mintimeout=10000 \
+      --fetch-retry-maxtimeout=60000
 
 ############################
 # Runner
