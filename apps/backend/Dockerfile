@@ -46,13 +46,15 @@ RUN pnpm --filter @dtc/backend run build
 #
 #    ROOT CAUSE of repeated build failures: this Hetzner build IP got
 #    rate-limited (E429) by registry.npmjs.org after many deploy retries.
-#    Fix: install from the Yarn registry mirror (Cloudflare-backed, 1:1 sync
-#    with npmjs, not blocking this IP). Verified working via a direct alpine
-#    wget test. --mount=type=cache persists downloads to avoid re-hammering.
+#    Both npmjs.org AND its Yarn/Cloudflare proxy (registry.yarnpkg.com) returned
+#    E429 because the proxy still resolves against npm. registry.npmmirror.com is
+#    an INDEPENDENT mirror (Alibaba CDN, own package copy) that is NOT blocking
+#    this IP — verified working via a direct alpine wget test on the exact
+#    package that was failing. --mount=type=cache persists downloads.
 RUN --mount=type=cache,target=/root/.npm \
     cd apps/backend/.medusa/server && \
     npm install --no-audit --no-fund \
-      --registry=https://registry.yarnpkg.com \
+      --registry=https://registry.npmmirror.com \
       --fetch-retries=5 \
       --fetch-retry-factor=2 \
       --fetch-retry-mintimeout=10000 \
