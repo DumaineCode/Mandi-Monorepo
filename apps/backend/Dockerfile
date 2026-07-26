@@ -43,27 +43,7 @@ RUN pnpm --filter @dtc/backend run build
 # 3) Install runtime deps INSIDE the standalone build output.
 #    npm gives a flat node_modules (no symlinks), so it copies cleanly between
 #    stages. This is the official Medusa v2 production step.
-#
-#    MEMORY-CONSTRAINED BUILD: this 8GB Hetzner host runs the full app stack
-#    (dokploy, storefront, medusa, postgres, redis, traefik) alongside the
-#    build, leaving <4GB free. Medusa v2's dependency install can spike to
-#    several GB and the kernel OOM-kills it. We throttle npm hard to cap peak
-#    memory, trading a slower install for a build that actually finishes.
-#
-#    --mount=type=cache: persist npm's download cache across builds.
-#    --maxsockets=2: minimal parallelism -> minimal in-flight memory.
-#    --no-audit/--no-fund/--prefer-offline: skip extra registry work.
-#    NODE_OPTIONS caps npm's own V8 heap so it can't balloon unbounded.
-RUN --mount=type=cache,target=/root/.npm \
-    cd apps/backend/.medusa/server && \
-    NODE_OPTIONS="--max-old-space-size=1536" \
-    npm install --no-audit --no-fund --prefer-offline \
-      --registry=https://registry.yarnpkg.com \
-      --fetch-retries=4 \
-      --fetch-retry-factor=2 \
-      --fetch-retry-mintimeout=10000 \
-      --fetch-retry-maxtimeout=60000 \
-      --maxsockets=2
+RUN cd apps/backend/.medusa/server && npm install --no-audit --no-fund
 
 ############################
 # Runner
