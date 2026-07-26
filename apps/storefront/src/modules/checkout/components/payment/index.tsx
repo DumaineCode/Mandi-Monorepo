@@ -125,6 +125,16 @@ const Payment = ({
             token_id: tokenId,
             device_session_id: openpay.deviceSessionId,
             return_url: `${getBaseURL()}/${params.countryCode}/payment/openpay/return`,
+            // Openpay requires a `customer` object on the charge (API error 1001
+            // otherwise). These come from the cart so they are present for guest
+            // AND logged-in checkout; the backend keeps input.context.customer as
+            // a fallback. Card data is NEVER included here (PCI boundary).
+            customer: {
+              name: cart.billing_address?.first_name ?? undefined,
+              last_name: cart.billing_address?.last_name ?? undefined,
+              email: cart.email ?? undefined,
+              phone_number: cart.billing_address?.phone ?? undefined,
+            },
           },
         })
 

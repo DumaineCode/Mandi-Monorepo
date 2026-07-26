@@ -1,9 +1,11 @@
 "use server"
 
 import { sdk } from "@lib/config"
+import { isOpenpay } from "@lib/constants"
 import medusaError from "@lib/util/medusa-error"
 import { HttpTypes } from "@medusajs/types"
 import { revalidateTag } from "next/cache"
+import { headers } from "next/headers"
 import { redirect } from "next/navigation"
 import {
   getAuthHeaders,
@@ -299,6 +301,24 @@ export async function setShippingMethod({
     .catch(medusaError)
 }
 
+/**
+ * Resolves the real client IP from the incoming request headers (server-side).
+ * `x-forwarded-for` may be a comma-separated chain (client, proxy1, proxy2…);
+ * the FIRST entry is the original client. Falls back to `x-real-ip`. Returns
+ * undefined when neither is present so callers omit the value entirely.
+ */
+async function getClientIp(): Promise<string | undefined> {
+  const headerStore = await headers()
+  const forwardedFor = headerStore.get("x-forwarded-for")
+  if (forwardedFor) {
+    const first = forwardedFor.split(",")[0]?.trim()
+    if (first) {
+      return first
+    }
+  }
+  return headerStore.get("x-real-ip")?.trim() || undefined
+}
+
 export async function initiatePaymentSession(
   cart: HttpTypes.StoreCart,
   data: HttpTypes.StoreInitializePaymentSession
@@ -307,8 +327,23 @@ export async function initiatePaymentSession(
     ...(await getAuthHeaders()),
   }
 
+  // Openpay mandates the real client IP for E-commerce anti-fraud. Resolve it
+  // SERVER-SIDE here (the client cannot be trusted to report its own IP) and
+  // attach it to the session data; the backend forwards it as X-Forwarded-For.
+  // Only added for Openpay sessions so other providers are untouched.
+  let sessionData = data
+  if (isOpenpay(data.provider_id)) {
+    const clientIp = await getClientIp()
+    if (clientIp) {
+      sessionData = {
+        ...data,
+        data: { ...(data.data ?? {}), customer_ip: clientIp },
+      }
+    }
+  }
+
   return sdk.store.payment
-    .initiatePaymentSession(cart, data, {}, headers)
+    .initiatePaymentSession(cart, sessionData, {}, headers)
     .then(async (resp) => {
       const cartCacheTag = await getCacheTag("carts")
       revalidateTag(cartCacheTag)
