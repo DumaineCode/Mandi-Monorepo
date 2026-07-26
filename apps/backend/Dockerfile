@@ -51,6 +51,7 @@ RUN pnpm --filter @dtc/backend run build
 RUN --mount=type=cache,target=/root/.npm \
     cd apps/backend/.medusa/server && \
     npm install --no-audit --no-fund --prefer-offline \
+      --registry=https://registry.yarnpkg.com \
       --fetch-retries=4 \
       --fetch-retry-factor=2 \
       --fetch-retry-mintimeout=10000 \
