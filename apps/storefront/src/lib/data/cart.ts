@@ -535,7 +535,15 @@ export async function placeOrder(cartId?: string) {
     redirect(`/${countryCode}/order/${cartRes?.order.id}/confirmed`)
   }
 
-  return cartRes.cart
+  // Medusa returns `type: "cart"` (HTTP 200, not an error) when completion
+  // FAILED — e.g. the card was declined. The `error` field carries the reason
+  // and the payment is already rolled back by Medusa. We MUST throw here so the
+  // payment button's catch surfaces the message and stops its loading state;
+  // returning the cart silently leaves the button spinning forever.
+  throw new Error(
+    cartRes?.error?.message ||
+      "No pudimos completar tu pago. Tu tarjeta fue rechazada o el pago no se autorizó. Podés intentar de nuevo o con otra tarjeta."
+  )
 }
 
 /**

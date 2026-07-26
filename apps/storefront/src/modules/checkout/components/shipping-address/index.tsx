@@ -154,16 +154,30 @@ const ShippingAddress = ({
     }
   }
 
+  // Hydrate the form from the cart/customer EXACTLY ONCE on mount. The parent
+  // `CheckoutForm` is an async server component, so any background cart
+  // persistence (e.g. the shipping-price prefetch below) re-runs it and streams
+  // down a NEW `cart` reference. Depending on `[cart]` here made that fresh
+  // object overwrite whatever the user was typing — deleting their email or
+  // fields mid-entry. This effect must NOT react to later cart updates; once the
+  // form is mounted, user input is the source of truth. Explicit saved-address
+  // selection still flows through `setFormAddress` via AddressSelect.
+  const hydratedRef = useRef(false)
   useEffect(() => {
-    // Ensure cart is not null and has a shipping_address before setting form data
+    if (hydratedRef.current) {
+      return
+    }
     if (cart && cart.shipping_address) {
-      setFormAddress(cart?.shipping_address, cart?.email)
+      setFormAddress(cart.shipping_address, cart.email ?? undefined)
+      hydratedRef.current = true
     }
 
     if (cart && !cart.email && customer?.email) {
       setFormAddress(undefined, customer.email)
+      hydratedRef.current = true
     }
-  }, [cart]) // Add cart as a dependency
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cart, customer])
 
   const postalCode = formData["shipping_address.postal_code"]
 
@@ -341,6 +355,9 @@ const ShippingAddress = ({
       HTMLInputElement | HTMLInputElement | HTMLSelectElement
     >
   ) => {
+    // Once the user starts typing, lock out the mount-time hydration effect so a
+    // late/background cart update can never overwrite in-progress input.
+    hydratedRef.current = true
     setFormData({
       ...formData,
       [e.target.name]: e.target.value,
