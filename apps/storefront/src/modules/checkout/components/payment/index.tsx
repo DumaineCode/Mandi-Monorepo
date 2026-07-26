@@ -29,7 +29,7 @@ import {
   useRouter,
   useSearchParams,
 } from "next/navigation"
-import { useCallback, useContext, useEffect, useState } from "react"
+import { useCallback, useContext, useEffect, useRef, useState } from "react"
 import { CORAL_CTA } from "../submit-button"
 
 const Payment = ({
@@ -47,9 +47,17 @@ const Payment = ({
   const [error, setError] = useState<string | null>(null)
   const [cardBrand, setCardBrand] = useState<string | null>(null)
   const [cardComplete, setCardComplete] = useState(false)
-  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState(
-    activeSession?.provider_id ?? ""
-  )
+  // Default preference: an already-active session wins (the shopper's own prior
+  // choice is never overridden); otherwise pre-select Openpay when it's offered
+  // — it carries the lower processing fee — while still letting the shopper
+  // switch to Mercado Pago or any other method.
+  const defaultPaymentMethod =
+    activeSession?.provider_id ??
+    availablePaymentMethods.find((method) => isOpenpay(method.id))?.id ??
+    ""
+
+  const [selectedPaymentMethod, setSelectedPaymentMethod] =
+    useState(defaultPaymentMethod)
 
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -178,6 +186,27 @@ const Payment = ({
   useEffect(() => {
     setError(null)
   }, [isOpen])
+
+  // When Openpay (or Stripe) is the pre-selected default, no click ran through
+  // setPaymentMethod, so its payment session was never created and openpay.js
+  // never mounts. Initiate it once on open for the pre-selected provider —
+  // unless a session for that same provider already exists. A manual switch
+  // goes through setPaymentMethod as before, so this only covers the default.
+  const initiatedDefaultRef = useRef(false)
+  useEffect(() => {
+    if (initiatedDefaultRef.current || !isOpen || !selectedPaymentMethod) {
+      return
+    }
+    if (activeSession?.provider_id === selectedPaymentMethod) {
+      return
+    }
+    if (isStripeLike(selectedPaymentMethod) || isOpenpay(selectedPaymentMethod)) {
+      initiatedDefaultRef.current = true
+      initiatePaymentSession(cart, { provider_id: selectedPaymentMethod }).catch(
+        (err) => setError(err instanceof Error ? err.message : String(err))
+      )
+    }
+  }, [isOpen, selectedPaymentMethod, activeSession, cart])
 
   return (
     <div className="rounded-large border border-line bg-paper p-6 small:p-8">

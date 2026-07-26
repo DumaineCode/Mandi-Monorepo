@@ -150,6 +150,36 @@ const EXPIRY_INPUT_LENGTH = 5
 // Shortest valid CVV (Amex uses 4) — don't flag errors before this.
 const MIN_CVV_LENGTH = 3
 
+/**
+ * Formats raw expiry keystrokes into "MM/YY" as the user types: keeps only
+ * digits and auto-inserts the "/" once two month digits are entered. This is
+ * what the expiry validation below expects — it splits on "/" to separate
+ * month and year, so without the slash the year is never parsed and the form
+ * can never complete.
+ */
+const formatExpiry = (raw: string): string => {
+  const digits = raw.replace(/\D/g, "").slice(0, 4)
+  if (digits.length <= 2) {
+    return digits
+  }
+  return `${digits.slice(0, 2)}/${digits.slice(2)}`
+}
+
+// Longest PAN is 19 digits (Amex 15, Visa/MC 16, some cards 19) — cap on digits,
+// never on brand. The trailing length/Luhn check is openpay.card.validateCardNumber.
+const MAX_PAN_DIGITS = 19
+
+/**
+ * Formats raw card-number keystrokes into 4-digit groups as the user types
+ * (e.g. "4111 1111 1111 1111"), keeping only digits and capping at 19 digits
+ * so Amex (15) and 19-digit PANs are never truncated. The validation below
+ * strips the spaces before running openpay.js Luhn/brand checks.
+ */
+const formatCardNumber = (raw: string): string => {
+  const digits = raw.replace(/\D/g, "").slice(0, MAX_PAN_DIGITS)
+  return digits.replace(/(.{4})/g, "$1 ").trim()
+}
+
 export const OpenpayCardContainer = ({
   paymentProviderId,
   selectedPaymentOptionId,
@@ -256,9 +286,7 @@ export const OpenpayCardContainer = ({
               aria-label="Card number"
               className={cardInputClasses}
               value={cardNumber}
-              onChange={(e) =>
-                setCardNumber(e.target.value.replace(/[^\d\s]/g, ""))
-              }
+              onChange={(e) => setCardNumber(formatCardNumber(e.target.value))}
               maxLength={MAX_PAN_INPUT_LENGTH}
               data-testid="openpay-card-number-input"
             />
@@ -281,9 +309,7 @@ export const OpenpayCardContainer = ({
                 aria-label="Expiration date (MM/YY)"
                 className={cardInputClasses}
                 value={expiry}
-                onChange={(e) =>
-                  setExpiry(e.target.value.replace(/[^\d/]/g, ""))
-                }
+                onChange={(e) => setExpiry(formatExpiry(e.target.value))}
                 maxLength={EXPIRY_INPUT_LENGTH}
                 data-testid="openpay-card-expiry-input"
               />

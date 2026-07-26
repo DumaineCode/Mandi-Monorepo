@@ -311,7 +311,10 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
         currency: (data.currency_code ?? "mxn").toUpperCase(),
         device_session_id: data.device_session_id,
         order_id: `${sessionId}-${attempt}`,
-        use_3d_secure: true,
+        // DIAGNOSTIC (sandbox only, Paso 1): 3DS temporarily disabled to isolate
+        // the checkout loading-forever bug from the 3DS redirect flow. The 3DS
+        // "requires_more" resume path must be re-enabled and fixed before prod.
+        use_3d_secure: false,
         capture: true,
         redirect_url: data.return_url,
         ...(customer

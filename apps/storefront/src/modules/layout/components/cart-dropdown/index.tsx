@@ -9,7 +9,8 @@ import {
 import { convertToLocale } from "@lib/util/money"
 import { ShoppingBag } from "@medusajs/icons"
 import { HttpTypes } from "@medusajs/types"
-import { Button } from "@modules/common/components/ui"
+import { Button, clx } from "@modules/common/components/ui"
+import { CORAL_CTA } from "@modules/checkout/components/submit-button"
 import DeleteButton from "@modules/common/components/delete-button"
 import LineItemOptions from "@modules/common/components/line-item-options"
 import LineItemPrice from "@modules/common/components/line-item-price"
@@ -83,16 +84,16 @@ const CartDropdown = ({
       <Popover className="relative h-full">
         <PopoverButton className="h-full">
           <LocalizedClientLink
-            className="hover:text-ui-fg-base flex items-center relative"
+            className="hover:text-coral flex items-center relative transition-colors"
             href="/cart"
             data-testid="nav-cart-link"
-            aria-label="Cart"
-            title="Cart"
+            aria-label="Carrito"
+            title="Carrito"
           >
             <ShoppingBag className="w-5 h-5" />
             {totalItems > 0 && (
               <span
-                className="absolute -top-2 -right-2 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-gray-900 text-white text-[10px] leading-none"
+                className="absolute -top-2 -right-2 min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-coral text-coral-foreground text-[10px] leading-none"
                 data-testid="nav-cart-count"
                 data-value={totalItems}
               >
@@ -100,7 +101,7 @@ const CartDropdown = ({
               </span>
             )}
             <span className="sr-only" aria-live="polite">
-              {`${totalItems} items in cart`}
+              {`${totalItems} artículos en el carrito`}
             </span>
           </LocalizedClientLink>
         </PopoverButton>
@@ -116,15 +117,17 @@ const CartDropdown = ({
         >
           <PopoverPanel
             static
-            className="hidden small:block absolute top-[calc(100%+1px)] right-0 bg-white border-x border-b border-gray-200 w-[420px] text-ui-fg-base"
+            className="hidden small:block absolute top-[calc(100%+1px)] right-0 bg-paper border border-line rounded-large shadow-xl w-[420px] text-ink"
             data-testid="nav-cart-dropdown"
           >
-            <div className="p-4 flex items-center justify-center">
-              <h3 className="text-large-semi">Cart</h3>
+            <div className="p-4 flex items-center justify-center border-b border-line">
+              <h3 className="font-bricolage text-lg font-bold text-ink">
+                Tu carrito
+              </h3>
             </div>
             {cartState && cartState.items?.length ? (
               <>
-                <div className="overflow-y-scroll max-h-[402px] px-4 grid grid-cols-1 gap-y-8 no-scrollbar p-px">
+                <div className="overflow-y-scroll max-h-[402px] px-4 py-4 grid grid-cols-1 gap-y-6 no-scrollbar">
                   {cartState.items
                     .sort((a, b) => {
                       return (a.created_at ?? "") > (b.created_at ?? "")
@@ -149,9 +152,9 @@ const CartDropdown = ({
                         </LocalizedClientLink>
                         <div className="flex flex-col justify-between flex-1">
                           <div className="flex flex-col flex-1">
-                            <div className="flex items-start justify-between">
-                              <div className="flex flex-col overflow-ellipsis whitespace-nowrap mr-4 w-[180px]">
-                                <h3 className="text-base-regular overflow-hidden text-ellipsis">
+                            <div className="flex items-start justify-between gap-x-2">
+                              <div className="flex flex-col min-w-0 flex-1">
+                                <h3 className="text-base-regular truncate">
                                   <LocalizedClientLink
                                     href={`/products/${item.product_handle}`}
                                     data-testid="product-link"
@@ -165,13 +168,14 @@ const CartDropdown = ({
                                   data-value={item.variant}
                                 />
                                 <span
+                                  className="text-ink-muted"
                                   data-testid="cart-item-quantity"
                                   data-value={item.quantity}
                                 >
-                                  Quantity: {item.quantity}
+                                  Cantidad: {item.quantity}
                                 </span>
                               </div>
-                              <div className="flex justify-end">
+                              <div className="flex justify-end shrink-0">
                                 <LineItemPrice
                                   item={item}
                                   style="tight"
@@ -182,23 +186,25 @@ const CartDropdown = ({
                           </div>
                           <DeleteButton
                             id={item.id}
-                            className="mt-1"
+                            className="mt-1 text-xs text-ink-muted hover:text-coral"
                             data-testid="cart-item-remove-button"
                           >
-                            Remove
+                            Eliminar
                           </DeleteButton>
                         </div>
                       </div>
                     ))}
                 </div>
-                <div className="p-4 flex flex-col gap-y-4 text-small-regular">
+                <div className="p-4 flex flex-col gap-y-4 text-small-regular border-t border-line">
                   <div className="flex items-center justify-between">
-                    <span className="text-ui-fg-base font-semibold">
+                    <span className="text-ink font-semibold">
                       Subtotal{" "}
-                      <span className="font-normal">(excl. taxes)</span>
+                      <span className="font-normal text-ink-muted">
+                        (sin impuestos)
+                      </span>
                     </span>
                     <span
-                      className="text-large-semi"
+                      className="font-bricolage text-lg font-bold text-ink"
                       data-testid="cart-subtotal"
                       data-value={subtotal}
                     >
@@ -210,11 +216,11 @@ const CartDropdown = ({
                   </div>
                   <LocalizedClientLink href="/cart" passHref>
                     <Button
-                      className="w-full"
+                      className={clx("w-full", CORAL_CTA)}
                       size="large"
                       data-testid="go-to-cart-button"
                     >
-                      Go to cart
+                      Ir al carrito
                     </Button>
                   </LocalizedClientLink>
                 </div>
@@ -222,15 +228,24 @@ const CartDropdown = ({
             ) : (
               <div>
                 <div className="flex py-16 flex-col gap-y-4 items-center justify-center">
-                  <div className="bg-gray-900 text-small-regular flex items-center justify-center w-6 h-6 rounded-full text-white">
+                  <div className="bg-coral text-coral-foreground text-small-regular flex items-center justify-center w-6 h-6 rounded-full">
                     <span>0</span>
                   </div>
-                  <span>Your shopping bag is empty.</span>
+                  <span className="text-ink-muted">
+                    Tu carrito está vacío.
+                  </span>
                   <div>
                     <LocalizedClientLink href="/store">
                       <>
-                        <span className="sr-only">Go to all products page</span>
-                        <Button onClick={close}>Explore products</Button>
+                        <span className="sr-only">
+                          Ir a todos los productos
+                        </span>
+                        <Button
+                          className={clx(CORAL_CTA)}
+                          onClick={close}
+                        >
+                          Explorar productos
+                        </Button>
                       </>
                     </LocalizedClientLink>
                   </div>
