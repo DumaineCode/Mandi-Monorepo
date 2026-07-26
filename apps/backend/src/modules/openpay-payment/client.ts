@@ -54,7 +54,20 @@ export class OpenpayClient {
   }
 
   async createCharge(body: OpenpayCreateChargeRequest): Promise<OpenpayCharge> {
-    return await this.request<OpenpayCharge>("POST", "/charges", body)
+    // Openpay mandates the client IP in the X-Forwarded-For header for
+    // E-commerce anti-fraud. It is NOT part of the charge JSON body, so strip
+    // it out and send it as a header only when a real IP is present (never the
+    // server IP).
+    const { customer_ip, ...chargeBody } = body
+    const extraHeaders = customer_ip
+      ? { "X-Forwarded-For": customer_ip }
+      : undefined
+    return await this.request<OpenpayCharge>(
+      "POST",
+      "/charges",
+      chargeBody,
+      extraHeaders
+    )
   }
 
   /**
@@ -90,7 +103,8 @@ export class OpenpayClient {
   private async request<T>(
     method: "GET" | "POST",
     path: string,
-    body?: unknown
+    body?: unknown,
+    extraHeaders?: Record<string, string>
   ): Promise<T> {
     const controller = new AbortController()
     const timer = setTimeout(
@@ -105,6 +119,7 @@ export class OpenpayClient {
           Authorization: this.authHeader,
           "Content-Type": "application/json",
           Accept: "application/json",
+          ...extraHeaders,
         },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,

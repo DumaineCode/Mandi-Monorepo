@@ -108,6 +108,22 @@ type SessionData = {
   charge_id?: string
   charge_status?: string
   redirect_url?: string
+  /**
+   * Customer identity for the Openpay charge (API requires it — error 1001
+   * otherwise). Sent from the storefront off the cart so it is present for
+   * guest checkout too. NEVER contains card data (PCI boundary).
+   */
+  customer?: {
+    name?: string
+    last_name?: string
+    email?: string
+    phone_number?: string
+  }
+  /**
+   * Real client IP forwarded from the storefront for Openpay's mandatory
+   * anti-fraud E-commerce header (X-Forwarded-For). Never the server IP.
+   */
+  customer_ip?: string
   /** Charge-creation attempt counter persisted in session data (multi-instance safe). */
   attempt?: number
   [key: string]: unknown
@@ -301,7 +317,26 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
     // incremented `{session_id}-{n}` nonce that survives across instances.
     const attempt = (typeof data.attempt === "number" ? data.attempt : 0) + 1
 
-    const customer = input.context?.customer
+    // Openpay REQUIRES a customer object on card charges (API error 1001
+    // otherwise). Prefer the identity the storefront put on the session (present
+    // for guest checkout); fall back to the authenticated context customer.
+    const contextCustomer = input.context?.customer
+    const customer = {
+      name: data.customer?.name ?? contextCustomer?.first_name ?? undefined,
+      last_name:
+        data.customer?.last_name ?? contextCustomer?.last_name ?? undefined,
+      email: data.customer?.email ?? contextCustomer?.email ?? undefined,
+      phone_number:
+        data.customer?.phone_number ?? contextCustomer?.phone ?? undefined,
+    }
+
+    if (!customer.name || !customer.email) {
+      throw new MedusaError(
+        MedusaError.Types.PAYMENT_AUTHORIZATION_ERROR,
+        "Openpay charge requires customer name and email — none found on the payment session or context. Ensure the cart has a billing address and email."
+      )
+    }
+
     let charge: OpenpayCharge
     try {
       charge = await client.createCharge({
@@ -311,22 +346,18 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
         currency: (data.currency_code ?? "mxn").toUpperCase(),
         device_session_id: data.device_session_id,
         order_id: `${sessionId}-${attempt}`,
-        // DIAGNOSTIC (sandbox only, Paso 1): 3DS temporarily disabled to isolate
-        // the checkout loading-forever bug from the 3DS redirect flow. The 3DS
-        // "requires_more" resume path must be re-enabled and fixed before prod.
-        use_3d_secure: false,
+        // 3DS ON: Openpay returns charge_pending + payment_method.url; the
+        // charge_id is persisted on the session (mapChargeToAuthorizeOutput) so
+        // the post-3DS return re-fetches instead of recreating (OP-4). Required
+        // for the liability shift on Mexican cards in production.
+        use_3d_secure: true,
         capture: true,
         redirect_url: data.return_url,
-        ...(customer
-          ? {
-              customer: {
-                name: customer.first_name ?? undefined,
-                last_name: customer.last_name ?? undefined,
-                email: customer.email,
-                phone_number: customer.phone ?? undefined,
-              },
-            }
-          : {}),
+        customer,
+        // Client IP for Openpay's mandatory anti-fraud E-commerce header
+        // (X-Forwarded-For). Forwarded from the storefront off the session;
+        // omitted when unavailable so the client only sets the header when real.
+        customer_ip: data.customer_ip,
       })
     } catch (error) {
       throw this.translateApiError(error)

@@ -65,6 +65,14 @@ const baseSessionData = {
   token_id: "tok_abc",
   device_session_id: "dev_xyz",
   return_url: "https://store.example/mx/payment/openpay/return",
+  // Openpay requires a customer on card charges (API error 1001). The storefront
+  // sends this off the cart so it is present for guest checkout too.
+  customer: {
+    name: "Juan",
+    last_name: "Perez",
+    email: "juan@example.com",
+    phone_number: "5512345678",
+  },
 }
 
 describe("OpenpayPaymentProviderService", () => {
@@ -362,6 +370,13 @@ describe("OpenpayPaymentProviderService", () => {
         use_3d_secure: true,
         capture: true,
         redirect_url: baseSessionData.return_url,
+        // Openpay requires customer (API error 1001) — sent off the cart.
+        customer: {
+          name: "Juan",
+          last_name: "Perez",
+          email: "juan@example.com",
+          phone_number: "5512345678",
+        },
       })
     })
 
@@ -389,6 +404,49 @@ describe("OpenpayPaymentProviderService", () => {
         charge_id: "ch_3ds",
         redirect_url: "https://sandbox-api.openpay.mx/3ds/ch_3ds",
       })
+    })
+
+    it("sends the client IP as X-Forwarded-For (anti-fraud) and NOT in the charge body", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          id: "ch_ip",
+          status: "completed",
+          amount: 150.5,
+          currency: "MXN",
+          order_id: `${SESSION_ID}-1`,
+        })
+      )
+      const service = makeService()
+
+      await service.authorizePayment({
+        data: { ...baseSessionData, customer_ip: "201.150.10.20" },
+      })
+
+      const [, init] = fetchMock.mock.calls[0]
+      expect(init.headers).toMatchObject({ "X-Forwarded-For": "201.150.10.20" })
+      // The IP is a header, never part of the JSON charge body.
+      const body = JSON.parse(init.body as string)
+      expect(body).not.toHaveProperty("customer_ip")
+    })
+
+    it("omits X-Forwarded-For entirely when no client IP is present (never sends server IP)", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          id: "ch_noip",
+          status: "completed",
+          amount: 150.5,
+          currency: "MXN",
+          order_id: `${SESSION_ID}-1`,
+        })
+      )
+      const service = makeService()
+
+      await service.authorizePayment({
+        data: { ...baseSessionData, customer_ip: undefined },
+      })
+
+      const [, init] = fetchMock.mock.calls[0]
+      expect(init.headers).not.toHaveProperty("X-Forwarded-For")
     })
 
     it("throws a MedusaError carrying the Openpay error code on decline (OP-3)", async () => {
@@ -470,6 +528,53 @@ describe("OpenpayPaymentProviderService", () => {
         type: MedusaError.Types.PAYMENT_AUTHORIZATION_ERROR,
       })
       expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it("throws (no API call) when neither session nor context carries a customer — Openpay requires it (API error 1001)", async () => {
+      const service = makeService()
+
+      await expect(
+        service.authorizePayment({
+          data: { ...baseSessionData, customer: undefined },
+        })
+      ).rejects.toMatchObject({
+        constructor: MedusaError,
+        type: MedusaError.Types.PAYMENT_AUTHORIZATION_ERROR,
+      })
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it("falls back to input.context.customer when the session has no customer (logged-in checkout)", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          id: "ch_ctx",
+          status: "completed",
+          amount: 150.5,
+          currency: "MXN",
+          order_id: `${SESSION_ID}-1`,
+        })
+      )
+      const service = makeService()
+
+      await service.authorizePayment({
+        data: { ...baseSessionData, customer: undefined },
+        context: {
+          customer: {
+            first_name: "Ana",
+            last_name: "Lopez",
+            email: "ana@example.com",
+            phone: "5599998888",
+          },
+        },
+      } as never)
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+      expect(body.customer).toMatchObject({
+        name: "Ana",
+        last_name: "Lopez",
+        email: "ana@example.com",
+        phone_number: "5599998888",
+      })
     })
   })
 

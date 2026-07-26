@@ -85,6 +85,12 @@ export interface OpenpayCreateChargeRequest {
   description?: string
   redirect_url?: string
   customer?: OpenpayCustomer
+  /**
+   * Real client IP. NOT part of the charge JSON body — the client sends it as
+   * the mandatory `X-Forwarded-For` anti-fraud header and strips it from the
+   * body. Undefined → header omitted (never send the server IP).
+   */
+  customer_ip?: string
 }
 
 /**
