@@ -43,7 +43,19 @@ RUN pnpm --filter @dtc/backend run build
 # 3) Install runtime deps INSIDE the standalone build output.
 #    npm gives a flat node_modules (no symlinks), so it copies cleanly between
 #    stages. This is the official Medusa v2 production step.
-RUN cd apps/backend/.medusa/server && npm install --no-audit --no-fund
+#
+#    --mount=type=cache: persist npm's download cache across builds so we stop
+#      hammering the registry on every rebuild (root cause of the E429 errors).
+#    --maxsockets=3 + retry flags: throttle parallelism and back off on 429s
+#      instead of failing on the first "Too Many Requests".
+RUN --mount=type=cache,target=/root/.npm \
+    cd apps/backend/.medusa/server && \
+    npm install --no-audit --no-fund \
+      --fetch-retries=5 \
+      --fetch-retry-factor=4 \
+      --fetch-retry-mintimeout=20000 \
+      --fetch-retry-maxtimeout=120000 \
+      --maxsockets=3
 
 ############################
 # Runner
