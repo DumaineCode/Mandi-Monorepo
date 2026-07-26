@@ -50,12 +50,12 @@ RUN pnpm --filter @dtc/backend run build
 #      instead of failing on the first "Too Many Requests".
 RUN --mount=type=cache,target=/root/.npm \
     cd apps/backend/.medusa/server && \
-    npm install --no-audit --no-fund \
-      --fetch-retries=5 \
-      --fetch-retry-factor=4 \
-      --fetch-retry-mintimeout=20000 \
-      --fetch-retry-maxtimeout=120000 \
-      --maxsockets=3
+    npm install --no-audit --no-fund --prefer-offline \
+      --fetch-retries=4 \
+      --fetch-retry-factor=2 \
+      --fetch-retry-mintimeout=10000 \
+      --fetch-retry-maxtimeout=60000 \
+      --maxsockets=8
 
 ############################
 # Runner
