@@ -85,7 +85,7 @@ jobs:
         run: pnpm build
 
   storefront:
-    name: Storefront (compile check)
+    name: Storefront (tests + compile check)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -101,6 +101,24 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      # Mirrors the backend job's guard. Kept per-job, rather than widening the
+      # backend one to grep apps/storefront, so each job polices its own suite and
+      # a focused storefront test fails in the storefront job.
+      - name: Focused-test guard (no .only / fit / fdescribe)
+        run: |
+          if grep -rnE "\.(only)\(|fit\(|fdescribe\(" apps/storefront/src --include="*.spec.ts"; then
+            echo "::error::Focused tests found (.only/fit/fdescribe). Remove them before merging — they silently skip the rest of the suite."
+            exit 1
+          fi
+          echo "No focused tests found."
+
+      # Vitest, node environment. These are the pure checkout modules (phone
+      # pattern + step resolver) whose defects reached a live demo; unlike the
+      # build below, this step is a hard gate and needs no backend.
+      - name: Unit tests
+        working-directory: apps/storefront
+        run: pnpm test
 
       # The compile step is the gate. Page-data collection needs a live Medusa
       # backend, so a post-compile fetch failure is soft-passed with a warning.
