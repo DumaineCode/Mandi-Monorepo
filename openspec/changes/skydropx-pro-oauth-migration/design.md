@@ -64,6 +64,7 @@ reuse, refresh-on-401, PRO endpoints, quotation polling helper.
 DEFAULT_BASE_URL = "https://api-pro.skydropx.com/api/v1"
 SKYDROPX_QUOTATION_TIMEOUT_MS = 8_000    // checkout overall deadline
 SKYDROPX_REQUEST_TIMEOUT_MS   = 15_000   // admin per-request
+SKYDROPX_CANCEL_TIMEOUT_MS    = 10_000   // orphan-containment cancel (self-anchored)
 SKYDROPX_TOKEN_TIMEOUT_MS     = 3_000    // token sub-bound (capped by remaining budget)
 TOKEN_EXPIRY_SKEW_MS          = 60_000
 QUOTE_POLL_INTERVAL_MS        = 1_000    // ≤ 1 req/s < 2 req/s cap
@@ -299,6 +300,53 @@ call so any sub-step aborts against the same wall clock.
   with margin; no explicit pacer required (add a 500ms min-gap only if sandbox shows 429s).
 - Admin label path uses `SKYDROPX_REQUEST_TIMEOUT_MS` (15s) per request and the existing
   `LABEL_POLL_BOUND_MS=30000` / `LABEL_POLL_INTERVAL_MS=2000` for shipment polling — not the 8s budget.
+- **Superseded (post-incident).** Using the 15s PER-REQUEST bound as the deadline for the whole
+  async quote+poll cycle made any quotation needing >15s of polling impossible to complete, and the
+  abort surfaced as `Skydropx request timed out after 912ms` — the caller's spent budget reported as a
+  Skydropx timeout. `createFulfillment` now anchors ONE `SKYDROPX_FULFILLMENT_BUDGET_MS=55_000`
+  deadline and carves every sub-bound out of it (`LABEL_QUOTE_BUDGET_MS=25_000` for the quote,
+  `LABEL_POLL_BOUND_MS` capped by the same anchor, `getShipment`/`createShipment` deadline-aware), so
+  the worst case of the call is the budget by construction rather than a sum of independent bounds.
+  `remaining_` now returns `budgetBound` so an abort can name whose deadline ran out.
+
+  Budgets are DERIVED from the ceiling, not chosen independently:
+
+  ```
+  ASSUMED_GATEWAY_TIMEOUT_MS  = 60_000   // the real ceiling, outside this repo; env-overridable
+                                         // via SKYDROPX_GATEWAY_TIMEOUT_MS, VALIDATED (a `=60`
+                                         // seconds/ms typo would derive a negative anchor and
+                                         // fail 100% of label purchases instantly)
+  GATEWAY_SAFETY_MARGIN       = 0.9      // slack for TLS/DNS/parse/event-loop/workflow overhead
+  PRE_ANCHOR_BUDGET_MS        =  6_000   // DERIVED: CREDENTIAL_RESOLUTION + STOCK_LOCATION_RESOLUTION
+  SKYDROPX_CANCEL_TIMEOUT_MS  = 10_000   // post-failure containment, outside the anchor by design
+  MIN_VIABLE_ANCHOR_MS        = 17_000   // DERIVED: one request + one poll interval
+  MIN_VIABLE_GATEWAY_TIMEOUT_MS = 36_667 // DERIVED: smallest gateway yielding a viable anchor
+  SKYDROPX_FULFILLMENT_BUDGET_MS = floor(gateway*margin) - preAnchor - cancel   // = 38_000
+  LABEL_QUOTE_BUDGET_MS          = 45% of the anchor                           // = 17_100
+  ```
+
+  Worst case 54_000 against a 60_000 ceiling: 6_000 of real slack. Every value below the gateway is
+  derived, so retuning one number cannot silently starve a stage.
+
+  | Stage | Bound | Note |
+  |---|---|---|
+  | quote+poll | `LABEL_QUOTE_BUDGET_MS` | capped by the anchor |
+  | `POST /shipments` | anchor | see KNOWN GAP below |
+  | shipment poll | `min(LABEL_POLL_BOUND_MS, anchor)` | reports the bound APPLIED, not the nominal one |
+  | containment cancel | `SKYDROPX_CANCEL_TIMEOUT_MS` | self-anchored so the 401 retry cannot make it 26s |
+
+  Four invariants make it hold, all covered in `constants.unit.spec.ts` / `client.unit.spec.ts`:
+  `fetch_` refuses to dispatch a request with `timeoutMs <= 0`; every poll loop clamps its sleep to
+  the remaining budget and re-checks the deadline AFTER sleeping; a retry the budget cannot afford
+  surfaces the ORIGINAL cause (e.g. a 401) WITH the budget fact appended, never one in place of the
+  other; and a token joiner that inherits a failed shared fetch retries as ONE new single-flight
+  leader rather than one fetch per joiner.
+
+  **KNOWN GAP — orphaned label on an aborted purchase.** Aborting `POST /shipments` does not undo it
+  server-side: Skydropx can accept the shipment while the client sees an `AbortError`, and
+  `shipmentId` is assigned only after the await, so SD-4 containment never runs and never even logs
+  the id for reconciliation. Pre-existing and NOT closed by this change; closing it needs an
+  idempotency key or a post-abort lookup, which is a design change rather than a timeout fix.
 
 ---
 
