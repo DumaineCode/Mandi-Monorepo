@@ -22,9 +22,18 @@ import {
   STOCK_LOCATION_RESOLUTION_TIMEOUT_MS,
 } from "../../../lib/stock-location-address"
 import SkydropxFulfillmentProviderService, {
+  LABEL_POLL_BOUND_MS,
+  LABEL_POLL_INTERVAL_MS,
+  LABEL_QUOTE_BUDGET_MS,
+  SKYDROPX_FULFILLMENT_BUDGET_MS,
   normalizePhone,
   normalizeState,
 } from "../service"
+import {
+  QUOTE_POLL_INTERVAL_MS,
+  SKYDROPX_REQUEST_TIMEOUT_MS,
+  SkydropxClient,
+} from "../client"
 
 const CLIENT_ID = "sky_client_id"
 const CLIENT_SECRET = "sky_client_secret_value"
@@ -97,6 +106,9 @@ const jsonResponse = (body: unknown, status = 200): Response =>
     status,
     statusText: status === 200 ? "OK" : "Error",
     json: async () => body,
+    // Mirrors a real Response: the error path reads text() so an unanticipated
+    // body shape is never lost.
+    text: async () => (typeof body === "string" ? body : JSON.stringify(body)),
   }) as unknown as Response
 
 const tokenResponse = () =>
@@ -490,12 +502,36 @@ describe("SkydropxFulfillmentProviderService (PRO)", () => {
       { id: "rate_dear", provider_name: "dhl", total: "220", days: 1, success: true },
     ]
 
+    /**
+     * The REAL PRO shape, per docs (`POST /api/v1/shipments` → 202):
+     * `{ data: { id, type, attributes: {...} }, included: [{ type, attributes }] }`.
+     *
+     * These mocks used to encode the flattened shape the code ASSUMED, so the
+     * whole suite passed while production returned
+     * `GET /shipments/undefined → HTTP 404`. A mock that mirrors the assumption
+     * instead of the contract tests nothing.
+     */
+    const pendingShipment = (id = "shp_1") => ({
+      data: {
+        id,
+        type: "shipment",
+        attributes: { workflow_status: "pending", payment_status: "paid" },
+      },
+    })
+
     const successShipment = {
-      id: "shp_1",
-      workflow_status: "success",
-      master_tracking_number: "TRK123",
+      data: {
+        id: "shp_1",
+        type: "shipment",
+        attributes: {
+          workflow_status: "success",
+          carrier_name: "estafeta",
+          master_tracking_number: "TRK123",
+        },
+      },
       included: [
         {
+          type: "package",
           attributes: {
             tracking_number: "TRK123",
             label_url: "https://labels.example/shp_1.pdf",
@@ -549,6 +585,169 @@ describe("SkydropxFulfillmentProviderService (PRO)", () => {
       expect(logger.info).toHaveBeenCalledWith(expect.stringContaining("delta"))
     })
 
+    /**
+     * Regression for the production 500 ("timed out after 912ms"): the label path
+     * used to anchor its quote deadline on SKYDROPX_REQUEST_TIMEOUT_MS, a PER-REQUEST
+     * bound, so a PRO quotation needing more than 15s of poll rounds could never
+     * complete no matter how healthy Skydropx was.
+     *
+     * Asserted through observable behaviour — how many poll rounds the label path
+     * can actually afford — rather than by reading the constant back, so the test
+     * fails if the budget regresses to the per-request bound. The clock is faked and
+     * advanced only by the poll sleep, so the count is deterministic.
+     */
+    it("affords more quote poll rounds than the per-request bound allowed (regression)", async () => {
+      let now = 1_700_000_000_000
+      jest.spyOn(Date, "now").mockImplementation(() => now)
+
+      let getCalls = 0
+      mockApi(fetchMock, {
+        "POST /quotations": () => jsonResponse({ id: "q1", is_completed: false }),
+        "GET /quotations": () => {
+          getCalls += 1
+          return jsonResponse({ id: "q1", is_completed: false })
+        },
+      })
+      jest
+        .spyOn(SkydropxClient.prototype as any, "sleep_")
+        .mockImplementation(async (ms) => {
+          now += ms as number
+        })
+      const { service } = makeService()
+
+      const error = await failLabel(service)
+
+      expect(error).toBeInstanceOf(MedusaError)
+      expect(error.message).toMatch(/did not reach is_completed within the budget/)
+      // The old bound could not have bought this many rounds.
+      expect(getCalls).toBeGreaterThan(
+        SKYDROPX_REQUEST_TIMEOUT_MS / QUOTE_POLL_INTERVAL_MS
+      )
+      // ...and the quote slice is still bounded, not open-ended.
+      expect(getCalls).toBeLessThanOrEqual(
+        LABEL_QUOTE_BUDGET_MS / QUOTE_POLL_INTERVAL_MS
+      )
+      // No label may be bought when the quote never produced a rate.
+      expect(
+        fetchMock.mock.calls.some(([u, i]) =>
+          String(u).includes("/shipments") && (i as RequestInit).method === "POST"
+        )
+      ).toBe(false)
+    })
+
+    /**
+     * Observed in the sandbox: Skydropx generates labels asynchronously and can
+     * stay `in_progress` well past any budget an HTTP request may hold open — the
+     * dashboard still says "en creación" while we give up.
+     *
+     * A shipment in a HEALTHY state is progressing normally. Failing here used to
+     * destroy a perfectly good shipment by "abandoning" it, and told the operator
+     * about milliseconds instead of about their shipment. The fulfillment is real;
+     * it just has no label YET.
+     */
+    it("creates the fulfillment without a label when Skydropx is still working", async () => {
+      let now = 1_700_000_000_000
+      jest.spyOn(Date, "now").mockImplementation(() => now)
+
+      mockApi(fetchMock, {
+        "POST /quotations": completedQuotation(quoteRates),
+        "POST /shipments": () => jsonResponse(pendingShipment()),
+        // Never finishes inside the budget — exactly the production behaviour.
+        "GET /shipments": () =>
+          jsonResponse({
+            data: {
+              id: "shp_1",
+              type: "shipment",
+              attributes: { workflow_status: "in_progress" },
+            },
+          }),
+      })
+      const { service, logger } = makeService()
+      jest
+        .spyOn(service as any, "sleep_")
+        .mockImplementation(async (ms) => {
+          now += ms as number
+        })
+
+      const result = await service.createFulfillment(
+        { id: "skydropx-standard" },
+        fulfillmentItems,
+        order,
+        fulfillment
+      )
+
+      // The shipment id must survive, or nothing can ever complete the label.
+      expect(result.data).toMatchObject({
+        shipment_id: "shp_1",
+        rate_id: "rate_cheap",
+        label_pending: true,
+        label_status: "in_progress",
+      })
+      // No fabricated label: an empty-string row would show a label that does not
+      // exist and cannot be downloaded.
+      expect(result.labels).toEqual([])
+      // A healthy shipment must NEVER be cancelled for being slow.
+      expect(
+        fetchMock.mock.calls.some(([u]) => String(u).includes("/cancellations"))
+      ).toBe(false)
+      // Logged as information, not as an error.
+      expect(logger.info).toHaveBeenCalledWith(
+        expect.stringContaining("still in_progress")
+      )
+      expect(logger.error).not.toHaveBeenCalled()
+    })
+
+    it("returns the label as soon as Skydropx finishes, without waiting further", async () => {
+      let now = 1_700_000_000_000
+      jest.spyOn(Date, "now").mockImplementation(() => now)
+
+      let getCalls = 0
+      mockApi(fetchMock, {
+        "POST /quotations": completedQuotation(quoteRates),
+        "POST /shipments": () => jsonResponse(pendingShipment()),
+        "GET /shipments": () => {
+          getCalls += 1
+          return getCalls < 2
+            ? jsonResponse({
+                data: {
+                  id: "shp_1",
+                  type: "shipment",
+                  attributes: { workflow_status: "in_progress" },
+                },
+              })
+            : jsonResponse(successShipment)
+        },
+      })
+      const { service } = makeService()
+      jest
+        .spyOn(service as any, "sleep_")
+        .mockImplementation(async (ms) => {
+          now += ms as number
+        })
+
+      const result = await service.createFulfillment(
+        { id: "skydropx-standard" },
+        fulfillmentItems,
+        order,
+        fulfillment
+      )
+
+      expect(result.data).toMatchObject({
+        label_pending: false,
+        tracking_number: "TRK123",
+        label_url: "https://labels.example/shp_1.pdf",
+      })
+      expect(result.labels).toEqual([
+        {
+          tracking_number: "TRK123",
+          tracking_url: "",
+          label_url: "https://labels.example/shp_1.pdf",
+        },
+      ])
+      // Stopped at the first success rather than polling to the bound.
+      expect(getCalls).toBe(2)
+    })
+
     it("fails loud (UNEXPECTED_STATE) when the selected rate requires origin verification (D5)", async () => {
       mockApi(fetchMock, {
         "POST /quotations": completedQuotation([
@@ -600,12 +799,20 @@ describe("SkydropxFulfillmentProviderService (PRO)", () => {
       mockApi(fetchMock, {
         "POST /quotations": completedQuotation(quoteRates),
         "POST /shipments": () =>
-          jsonResponse({ id: "shp_1", workflow_status: "pending" }),
+          jsonResponse(pendingShipment()),
         "GET /shipments": () =>
           jsonResponse({
-            id: "shp_1",
-            workflow_status: "pending",
-            error_detail: { error_code: "failed", error_message: "carrier rejected" },
+            data: {
+              id: "shp_1",
+              type: "shipment",
+              attributes: {
+                workflow_status: "pending",
+                error_detail: {
+                  error_code: "failed",
+                  error_message: "carrier rejected",
+                },
+              },
+            },
           }),
         "POST /cancellations": () =>
           jsonResponse({ id: "c1", status: "approved", success: true }),

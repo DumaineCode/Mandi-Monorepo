@@ -21,6 +21,7 @@ import {
 import { SKYDROPX_IDENTIFIER } from "../../lib/constants"
 import {
   credentialFingerprint,
+  CREDENTIAL_RESOLUTION_TIMEOUT_MS,
   makeDbCredentialSource,
   type CredentialSource,
 } from "../../lib/provider-credentials"
@@ -34,6 +35,7 @@ import {
 } from "../../lib/stock-location-address"
 import {
   SkydropxClient,
+  SKYDROPX_CANCEL_TIMEOUT_MS,
   SKYDROPX_QUOTATION_TIMEOUT_MS,
   SKYDROPX_REQUEST_TIMEOUT_MS,
 } from "./client"
@@ -85,17 +87,177 @@ type ResolvedOrigin = {
 const OPTION_ID = "skydropx-standard"
 
 /** Normalizes unknown errors into a log/message-safe description string. */
-const describeError = (error: unknown): string =>
-  error instanceof SkydropxApiError
-    ? error.description
-    : error instanceof Error
-      ? error.message
-      : String(error)
+/**
+ * Never returns an empty string.
+ *
+ * A blank description produced "Skydropx label purchase failed: " in production —
+ * an error with no status, no body and no failing endpoint. Whatever the shape of
+ * the failure, the operator gets SOMETHING to act on.
+ */
+const describeError = (error: unknown): string => {
+  const described =
+    error instanceof SkydropxApiError
+      ? error.description || error.message
+      : error instanceof Error
+        ? error.message || error.name
+        : String(error)
 
-/** Shipment (label) polling is bounded to 30s total (design §4, SD-4). */
-export const LABEL_POLL_BOUND_MS = 30_000
+  const trimmed = described?.trim()
+  if (trimmed) {
+    return trimmed
+  }
+  // Last resort: dump whatever the value actually is rather than say nothing.
+  try {
+    return `unrecognised error: ${JSON.stringify(error)}`
+  } catch {
+    return `unrecognised error: ${Object.prototype.toString.call(error)}`
+  }
+}
+
+/**
+ * Budget composition (post-incident, design §4).
+ *
+ * Declared in DEPENDENCY order, and every value below the gateway is DERIVED from
+ * it rather than picked. The incident that produced this block was a per-REQUEST
+ * bound (15s) used as the budget for a whole multi-round async cycle: each number
+ * looked reasonable alone, only the composition was wrong, and nothing failed
+ * when it drifted. `constants.unit.spec.ts` pins the composition.
+ */
+
 /** Delay between shipment status polls. */
 export const LABEL_POLL_INTERVAL_MS = 2_000
+/**
+ * Budget a status poll needs to COMPLETE, not merely to be dispatched.
+ *
+ * Below this the loop stops and reports the shipment state instead of firing a
+ * request that is guaranteed to abort — which produced the unactionable
+ * "only 14ms of the shared deadline remained" in place of the carrier's reason.
+ */
+export const LABEL_POLL_MIN_REQUEST_MS = 3_000
+/** `workflow_status` that means the label exists and is downloadable. */
+export const LABEL_STATUS_SUCCESS = "success"
+/**
+ * `workflow_status` values that mean Skydropx has STOPPED working on the label.
+ * Polling past one of these cannot change the outcome; it only burns the budget
+ * and replaces the carrier's reason with a timeout.
+ */
+export const TERMINAL_LABEL_FAILURE_STATUSES = new Set([
+  "error",
+  "failed",
+  "failure",
+  "cancelled",
+  "canceled",
+  "rejected",
+  "expired",
+])
+
+export const isTerminalLabelFailure = (status?: string): boolean =>
+  status !== undefined &&
+  TERMINAL_LABEL_FAILURE_STATUSES.has(status.trim().toLowerCase())
+/** Shipment (label) polling is bounded to 30s total (design §4, SD-4). */
+export const LABEL_POLL_BOUND_MS = 30_000
+/**
+ * Bounded work that runs BEFORE the anchor is taken and therefore is NOT covered
+ * by it. DERIVED from the two bounds that actually enforce it — `requireConfig_`
+ * races the credential read against `CREDENTIAL_RESOLUTION_TIMEOUT_MS`, and
+ * `resolveOrigin_` races the stock location read against
+ * `STOCK_LOCATION_RESOLUTION_TIMEOUT_MS` — so it can never drift into a claim
+ * about work that nothing actually bounds.
+ */
+export const PRE_ANCHOR_BUDGET_MS =
+  CREDENTIAL_RESOLUTION_TIMEOUT_MS + STOCK_LOCATION_RESOLUTION_TIMEOUT_MS
+/**
+ * Fraction of the gateway this design is allowed to spend. Nothing else budgets
+ * for TLS, DNS, JSON parsing, event-loop lag or workflow overhead, and a ceiling
+ * with zero slack is a ceiling that is already breached.
+ */
+export const GATEWAY_SAFETY_MARGIN = 0.9
+/**
+ * Smallest anchor that can fund one label purchase and read one status poll.
+ * Below this the derived budget is arithmetically incapable of buying a label.
+ */
+export const MIN_VIABLE_ANCHOR_MS =
+  SKYDROPX_REQUEST_TIMEOUT_MS + LABEL_POLL_INTERVAL_MS
+/**
+ * DERIVED, not guessed: the smallest gateway timeout from which a viable anchor
+ * can be derived at all. A hand-picked floor here was wrong — it accepted 30_000,
+ * which derives an 11_000ms anchor that cannot fund a single 15s request.
+ *
+ * An override below this is rejected. That is not merely typo defence: it tells
+ * the operator their environment cannot support a SYNCHRONOUS label purchase,
+ * which is real information rather than a nuisance.
+ */
+export const MIN_VIABLE_GATEWAY_TIMEOUT_MS = Math.ceil(
+  (PRE_ANCHOR_BUDGET_MS + SKYDROPX_CANCEL_TIMEOUT_MS + MIN_VIABLE_ANCHOR_MS) /
+    GATEWAY_SAFETY_MARGIN
+)
+export const DEFAULT_GATEWAY_TIMEOUT_MS = 60_000
+
+/**
+ * Validated, because an unvalidated override is an outage waiting to happen: the
+ * realistic typo `SKYDROPX_GATEWAY_TIMEOUT_MS=60` (seconds, not ms) would derive a
+ * NEGATIVE anchor, every deadline would land in the past, and EVERY label purchase
+ * would fail instantly with "0ms remained". Reject and fall back loudly instead.
+ *
+ * Parameterised for tests; production reads `process.env` and `console.warn`.
+ */
+export function readGatewayTimeout(
+  raw: string | undefined = process.env.SKYDROPX_GATEWAY_TIMEOUT_MS,
+  warn: (message: string) => void = console.warn
+): number {
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_GATEWAY_TIMEOUT_MS
+  }
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed < MIN_VIABLE_GATEWAY_TIMEOUT_MS) {
+    // Throwing here would take the whole boot down for an optional tuning knob,
+    // and the provider is required to stay inert-safe (see medusa-config.ts).
+    warn(
+      `[skydropx] Ignoring SKYDROPX_GATEWAY_TIMEOUT_MS=${raw}: expected a number ` +
+        `of milliseconds >= ${MIN_VIABLE_GATEWAY_TIMEOUT_MS}. ` +
+        `Falling back to ${DEFAULT_GATEWAY_TIMEOUT_MS}ms.`
+    )
+    return DEFAULT_GATEWAY_TIMEOUT_MS
+  }
+  return parsed
+}
+
+/**
+ * Assumed edge gateway request timeout — the REAL ceiling on this call.
+ *
+ * It lives outside this repo (Medusa 2.15 exposes no
+ * `projectConfig.http.requestTimeout`), so 60s is a conservative default for a
+ * managed platform, overridable without a code change once the deployment
+ * target's actual limit is known. Exceeding it is the worst available failure
+ * mode: the client sees a 504 while this process keeps going, buys a real label,
+ * and orphans it — SD-4 containment never runs, because this process was never
+ * the one that gave up.
+ */
+export const ASSUMED_GATEWAY_TIMEOUT_MS = readGatewayTimeout()
+/**
+ * Total wall-clock budget for the Skydropx work in ONE `createFulfillment` call,
+ * anchored once.
+ *
+ * Every outbound bound is a SUB-bound of this one, so the worst case is this
+ * number by construction rather than a sum that must be recomputed whenever
+ * someone touches an individual constant.
+ */
+export const SKYDROPX_FULFILLMENT_BUDGET_MS =
+  Math.floor(ASSUMED_GATEWAY_TIMEOUT_MS * GATEWAY_SAFETY_MARGIN) -
+  PRE_ANCHOR_BUDGET_MS -
+  SKYDROPX_CANCEL_TIMEOUT_MS
+/**
+ * Sub-bound: how much of the fulfillment budget the async quote+poll cycle may
+ * consume before the label purchase itself is starved. A PRO quotation needs
+ * several poll rounds to reach `is_completed` — the 15s per-REQUEST bound that
+ * used to be misused here was never sized for a multi-round cycle.
+ *
+ * Expressed as a share of the anchor rather than a literal so it cannot silently
+ * grow past it when the anchor is retuned.
+ */
+export const LABEL_QUOTE_BUDGET_MS = Math.floor(
+  SKYDROPX_FULFILLMENT_BUDGET_MS * 0.45
+)
 
 /** PRO rate statuses that carry no usable price. */
 const UNPRICED_STATUSES = new Set([
@@ -741,7 +903,15 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
     let shipmentId: string | undefined
     try {
       // D4: fresh quotation at fulfillment time → deterministic cheapest rate.
-      const deadline = Date.now() + SKYDROPX_REQUEST_TIMEOUT_MS
+      // One anchor for the whole call; every bound below is carved out of it, so
+      // the worst case is SKYDROPX_FULFILLMENT_BUDGET_MS and nothing else.
+      const fulfillmentDeadline = Date.now() + SKYDROPX_FULFILLMENT_BUDGET_MS
+      // The quote gets its own slice: a slow quotation must not eat the budget the
+      // label purchase and its polling still need.
+      const quoteDeadline = Math.min(
+        Date.now() + LABEL_QUOTE_BUDGET_MS,
+        fulfillmentDeadline
+      )
       const rates = await this.fetchUsableRates_(() =>
         client.quoteAndPoll_(
           {
@@ -751,7 +921,7 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
               parcels: [parcel],
             },
           },
-          deadline
+          quoteDeadline
         )
       )
       const rate = selectCheapestRate(rates)
@@ -778,6 +948,11 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
         )
       }
 
+      // KNOWN GAP (not closed here): aborting this POST does not undo it
+      // server-side. Skydropx can accept the shipment while we see an AbortError,
+      // and `shipmentId` is only assigned below, so SD-4 containment cannot even
+      // log it for reconciliation. Closing that needs an idempotency key or a
+      // post-abort lookup — a design change, not a timeout fix.
       const shipment = await client.createShipment({
         shipment: {
           rate_id: rate.id,
@@ -801,7 +976,7 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
             },
           ],
         },
-      })
+      }, fulfillmentDeadline)
       shipmentId = shipment.id
 
       // Quote-vs-label rate delta for ops visibility (spec Capability 6).
@@ -818,22 +993,98 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
 
       // Bounded shipment polling (design §4): anchor the deadline once.
       let current = shipment
-      const pollDeadline = Date.now() + LABEL_POLL_BOUND_MS
-      while (current.workflow_status !== "success") {
-        if (Date.now() > pollDeadline) {
-          throw new MedusaError(
-            MedusaError.Types.UNEXPECTED_STATE,
-            `Skydropx shipment ${shipment.id} not ready after ${LABEL_POLL_BOUND_MS}ms.`
-          )
+      // Capped by the shared deadline too: LABEL_POLL_BOUND_MS alone bounded the
+      // GUARD, not the loop — a getShipment issued at t=29.9s with its own 15s
+      // bound resolved the "30s" limit at ~47s.
+      const pollStart = Date.now()
+      const pollDeadline = Math.min(
+        pollStart + LABEL_POLL_BOUND_MS,
+        fulfillmentDeadline
+      )
+      // The bound actually APPLIED, which is not LABEL_POLL_BOUND_MS whenever the
+      // shared anchor is the binding constraint — reporting the nominal one would
+      // be the same dishonest-timing message this change exists to remove.
+      const appliedBound = pollDeadline - pollStart
+      let polls = 0
+      // The state sequence is the diagnosis: "pending→pending→error" and
+      // "pending→pending→pending" are entirely different failures, and the final
+      // message is the only place an operator ever sees either of them.
+      const observedStatuses: string[] = [shipment.workflowStatus ?? "unknown"]
+      // Distinguishes "Skydropx refused the label" (a real failure) from
+      // "Skydropx has not finished yet" (normal, and not ours to punish).
+      let labelPending = false
+      /**
+       * Always names the LAST OBSERVED STATE, never just the elapsed time.
+       * "not ready after 38000ms" says nothing an operator can act on; the state
+       * Skydropx left the shipment in, plus whatever `error_detail` it attached,
+       * is the whole diagnosis.
+       */
+      const notReady = (reason: string) =>
+        new MedusaError(
+          MedusaError.Types.UNEXPECTED_STATE,
+          `Skydropx shipment ${shipment.id} did not produce a label (${reason}). ` +
+            `Last workflow_status=${current.workflowStatus ?? "unknown"}` +
+            (current.errorDetail
+              ? `, carrier error: ${
+                  current.errorDetail.error_message ??
+                  current.errorDetail.error_code
+                }${
+                  current.errorDetail.error_message_detail
+                    ? ` — ${current.errorDetail.error_message_detail}`
+                    : ""
+                }`
+              : "") +
+            `. Polled ${polls} time(s) over ${Date.now() - pollStart}ms ` +
+            `(bound ${appliedBound}ms), states seen: ${observedStatuses.join("→")}. ` +
+            `The shipment exists in Skydropx and may need manual reconciliation.`
+        )
+
+      // `workflowStatus` comes from `data.attributes` (see `normalizeShipment`).
+      while (current.workflowStatus !== LABEL_STATUS_SUCCESS) {
+        // A shipment that FAILED is not a shipment that is "still working": polling
+        // it again cannot change the answer. Without this, a sandbox label rejected
+        // at t=2s burned the entire 38s budget and then reported a timeout, hiding
+        // the carrier's actual reason for refusing the label.
+        if (isTerminalLabelFailure(current.workflowStatus)) {
+          throw notReady(`Skydropx reported a terminal failure state`)
         }
-        await this.sleep_(LABEL_POLL_INTERVAL_MS)
-        current = await client.getShipment(shipment.id)
+
+        const remaining = pollDeadline - Date.now()
+        // Require enough budget for the poll to actually COMPLETE, not merely to
+        // start. Firing a request with 14ms left guarantees an abort, and the
+        // caller then gets transport jargon ("only 14ms remained") in place of the
+        // shipment state that explains the failure.
+        if (remaining < LABEL_POLL_MIN_REQUEST_MS) {
+          labelPending = true
+          break
+        }
+        await this.sleep_(Math.min(LABEL_POLL_INTERVAL_MS, remaining))
+        if (pollDeadline - Date.now() < LABEL_POLL_MIN_REQUEST_MS) {
+          labelPending = true
+          break
+        }
+        current = await client.getShipment(shipment.id, pollDeadline)
+        polls += 1
+        observedStatuses.push(current.workflowStatus ?? "unknown")
       }
 
-      const attrs = current.included?.[0]?.attributes
       const trackingNumber =
-        attrs?.tracking_number ?? current.master_tracking_number
-      const labelUrl = attrs?.label_url ?? current.label_url
+        current.trackingNumber ?? current.masterTrackingNumber
+      const labelUrl = current.labelUrl
+
+      if (labelPending) {
+        // NOT an error. Skydropx generates labels asynchronously and can take
+        // longer than any HTTP request may reasonably last; a shipment still in a
+        // healthy state is progressing normally, and failing here used to destroy
+        // a perfectly good shipment by "abandoning" it. The fulfillment is real —
+        // it simply has no label YET.
+        this.logger_.info(
+          `Skydropx shipment ${shipment.id} for order #${order?.display_id} is still ` +
+            `${current.workflowStatus ?? "unknown"} after ${polls} poll(s) over ` +
+            `${Date.now() - pollStart}ms. The fulfillment was created WITHOUT a label; ` +
+            `Skydropx is still generating it. States seen: ${observedStatuses.join("→")}.`
+        )
+      }
 
       return {
         data: {
@@ -842,14 +1093,22 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
           rate_id: rate.id,
           tracking_number: trackingNumber,
           label_url: labelUrl,
+          // Marks the fulfillment as awaiting its label, so whatever completes it
+          // later (job, webhook, manual refresh) can find it without guessing.
+          label_pending: labelPending,
+          label_status: current.workflowStatus,
         },
-        labels: [
-          {
-            tracking_number: trackingNumber ?? "",
-            tracking_url: "",
-            label_url: labelUrl ?? "",
-          },
-        ],
+        // No fabricated label: emitting a row of empty strings would show the
+        // operator a label that does not exist and cannot be downloaded.
+        labels: labelUrl
+          ? [
+              {
+                tracking_number: trackingNumber ?? "",
+                tracking_url: "",
+                label_url: labelUrl,
+              },
+            ]
+          : [],
       }
     } catch (error) {
       // SD-4: orphaned-shipment best-effort cancel, then surface UNEXPECTED_STATE.
@@ -859,6 +1118,11 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
       if (error instanceof MedusaError) {
         throw error
       }
+      // Logged as well as thrown: the workflow wraps this message, and the raw
+      // detail is what makes a carrier-side failure diagnosable at all.
+      this.logger_.error(
+        `Skydropx label purchase failed for order #${order?.display_id}: ${describeError(error)}`
+      )
       throw new MedusaError(
         MedusaError.Types.UNEXPECTED_STATE,
         `Skydropx label purchase failed: ${describeError(error)}`

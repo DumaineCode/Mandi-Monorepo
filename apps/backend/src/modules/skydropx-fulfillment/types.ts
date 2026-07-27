@@ -153,23 +153,71 @@ export interface SkydropxCreateShipmentRequest {
   }
 }
 
-export interface SkydropxShipment {
-  id: string
-  workflow_status?: "pending" | "success"
+/**
+ * Shipment attributes as PRO actually returns them: inside the JSON:API resource
+ * object, NOT at the root.
+ *
+ * Getting this wrong produced `GET /shipments/undefined → HTTP 404` in
+ * production. The previous model flattened `data.attributes.*` onto the root
+ * while correctly keeping `included` at the root — a half-applied envelope. The
+ * unit tests passed because the mocks encoded the same wrong assumption.
+ */
+export interface SkydropxShipmentAttributes {
+  workflow_status?: "pending" | "success" | string
+  payment_status?: string
+  carrier_name?: string
   master_tracking_number?: string
   label_url?: string
+  total?: string
+  error_detail?: SkydropxShipmentErrorDetail
+}
+
+export interface SkydropxShipmentErrorDetail {
+  error_code?: string
+  error_message?: string
+  error_message_detail?: string
+}
+
+/** Raw JSON:API envelope from `POST /shipments` and `GET /shipments/{id}`. */
+export interface SkydropxShipmentResponse {
+  data?: {
+    id?: string
+    type?: string
+    attributes?: SkydropxShipmentAttributes
+  }
   included?: {
+    type?: string
     attributes?: {
       tracking_number?: string
       label_url?: string
       tracking_status?: string
     }
   }[]
-  error_detail?: {
-    error_code?: string
-    error_message?: string
-    error_message_detail?: string
-  }
+  /**
+   * Root-level mirrors. PRO documents the enveloped shape, but these are kept as
+   * a tolerated fallback so a response that IS flat still works instead of
+   * silently yielding `undefined` — the exact failure this type replaces.
+   */
+  id?: string
+  workflow_status?: string
+  master_tracking_number?: string
+  label_url?: string
+  error_detail?: SkydropxShipmentErrorDetail
+}
+
+/**
+ * Envelope-free shipment the rest of the module works with. Normalising at the
+ * client boundary keeps JSON:API knowledge in exactly one place.
+ */
+export interface SkydropxShipment {
+  id: string
+  workflowStatus?: string
+  masterTrackingNumber?: string
+  labelUrl?: string
+  trackingNumber?: string
+  errorDetail?: SkydropxShipmentErrorDetail
+  /** Untouched payload, for diagnostics when normalisation finds nothing. */
+  raw: SkydropxShipmentResponse
 }
 
 export interface SkydropxCancellation {
