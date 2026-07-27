@@ -102,7 +102,15 @@ describe("buildPublicProviderConfig", () => {
         provider: "skydropx",
         mode: "production",
         is_enabled: true,
-        public_config: { originZip: "06600", taxInclusive: true },
+        public_config: {
+          originZip: "06600",
+          taxInclusive: true,
+          // Origin contact fallbacks (design §4.1) are admin-only — the
+          // storefront must never see the operator's contact details.
+          originEmail: "ops@mandi.mx",
+          originCompany: "Mandi",
+          originPhone: "5555555555",
+        },
         encrypted_secrets: "pset.v1.iv.tag.ct",
       },
     ])
@@ -111,6 +119,10 @@ describe("buildPublicProviderConfig", () => {
     expect(
       (result as unknown as Record<string, unknown>).skydropx
     ).toBeUndefined()
+    const serialized = JSON.stringify(result)
+    for (const value of ["ops@mandi.mx", "Mandi", "5555555555"]) {
+      expect(serialized).not.toContain(value)
+    }
   })
 
   it("derives sandbox from mode when public_config.sandbox is absent", () => {

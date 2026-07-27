@@ -46,7 +46,26 @@ export interface SkydropxProbeCredentials {
   clientSecret: string
   originZip: string
   baseUrl?: string
+  /**
+   * Origin contact email. Optional at every admin layer (stored schema, both
+   * HTTP schemas, the workflow step) but MANDATORY at the label layer
+   * (`missingOriginFields`), because `stock_location_address` has no email
+   * column and PRO marks `email` Required on `address_from` (design §4.1).
+   */
+  originEmail?: string
 }
+
+/**
+ * WARNING 4: make the label-layer requirement visible at CONFIGURATION time.
+ *
+ * The credentials can be perfectly valid while the provider is still unable to
+ * buy a single label, and nothing before the first label attempt said so. A
+ * successful probe therefore carries this warning rather than failing: the
+ * connection IS ok, the configuration is not finished.
+ */
+export const MISSING_ORIGIN_EMAIL_DETAIL =
+  ' Warning: no "Origin contact email" is set. Skydropx PRO requires an email on ' +
+  "the origin address, so buying a label will fail until you fill it in."
 
 export async function probeSkydropx(
   creds: SkydropxProbeCredentials,
@@ -84,7 +103,9 @@ export async function probeSkydropx(
     if (response.ok) {
       return {
         ok: true,
-        detail: "Skydropx PRO credentials accepted (OAuth token issued).",
+        detail:
+          "Skydropx PRO credentials accepted (OAuth token issued)." +
+          (creds.originEmail?.trim() ? "" : MISSING_ORIGIN_EMAIL_DETAIL),
       }
     }
 

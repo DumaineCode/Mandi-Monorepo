@@ -7,7 +7,7 @@
  * |-------------|--------------------------------------------|----------------------------------------|
  * | openpay     | privateKey, webhookUser, webhookPassword   | merchantId, publicKey, sandbox         |
  * | mercadopago | accessToken, webhookSecret                 | publicKey, sandbox                     |
- * | skydropx    | clientId, clientSecret                     | baseUrl (optional), originZip, taxInclusive, consignmentNote, packageType |
+ * | skydropx    | clientId, clientSecret                     | baseUrl (optional), originZip, taxInclusive, consignmentNote, packageType, originEmail, originCompany, originPhone |
  *
  * `ResolvedProviderConfig` variants mirror the exact options shape each
  * provider consumes today (explore §1 options mapping) so provider internals
@@ -69,6 +69,14 @@ export interface SkydropxResolvedConfig {
   consignmentNote?: string
   /** MX package_type default (design D2). */
   packageType?: string
+  /**
+   * Origin contact fallbacks for the PRO shipment `address_from` (design §4.1).
+   * `stock_location_address` has no email column and its company/phone are often
+   * blank; these are used only when the stock location value is empty.
+   */
+  originEmail?: string
+  originCompany?: string
+  originPhone?: string
 }
 
 /**

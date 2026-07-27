@@ -48,6 +48,12 @@ export const skydropxUpsertSchema = baseSchema
     taxInclusive: z.boolean().optional(),
     consignmentNote: z.string().optional(),
     packageType: z.string().optional(),
+    // Origin contact fallbacks for the PRO shipment `address_from` (design
+    // §4.1): stock_location_address has no email column and its company/phone
+    // are often blank. Non-secret, optional, never served to the storefront.
+    originEmail: z.string().email().optional(),
+    originCompany: z.string().optional(),
+    originPhone: z.string().optional(),
     clientId: z.string().min(1).optional(),
     clientSecret: z.string().min(1).optional(),
   })
@@ -83,7 +89,16 @@ export const PROVIDER_SECRET_FIELDS: Record<string, readonly string[]> = {
   mercadopago: ["accessToken", "webhookSecret"],
 }
 
-/** Non-secret fields per provider — stored in `public_config`. */
+/**
+ * Non-secret fields per provider — stored in `public_config`.
+ *
+ * "Non-secret" means "not encrypted at rest", NOT "publicly servable". This list
+ * only decides secrets-vs-public_config storage; what the storefront may read is
+ * decided independently by the store projection
+ * (`api/store/provider-config/public-config.ts`), which serves an explicit
+ * allowlist. Operator contact details (`originEmail`/`originCompany`/
+ * `originPhone`) live here yet must never leave the admin surface.
+ */
 export const PROVIDER_PUBLIC_FIELDS: Record<string, readonly string[]> = {
   openpay: ["merchantId", "publicKey"],
   skydropx: [
@@ -92,6 +107,9 @@ export const PROVIDER_PUBLIC_FIELDS: Record<string, readonly string[]> = {
     "taxInclusive",
     "consignmentNote",
     "packageType",
+    "originEmail",
+    "originCompany",
+    "originPhone",
   ],
   mercadopago: ["publicKey"],
 }

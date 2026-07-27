@@ -33,6 +33,15 @@ export interface SkydropxCredentials {
   consignmentNote?: string
   /** MX package_type default for label creation (design D2). */
   packageType?: string
+  /**
+   * Origin contact fallbacks for `address_from` (design §4.1). PRO marks
+   * name/company/phone/email as required on the shipment origin, but
+   * `stock_location_address` has NO email column and its company/phone are
+   * frequently blank — these fill only what the stock location cannot.
+   */
+  originEmail?: string
+  originCompany?: string
+  originPhone?: string
 }
 
 /**

@@ -34,6 +34,10 @@ export async function runProviderProbe(
           originZip: String(creds.originZip),
           baseUrl:
             typeof creds.baseUrl === "string" ? creds.baseUrl : undefined,
+          // WARNING 4: forwarded so a live-but-unlabelable configuration is
+          // reported at test-connection time, not at the first label attempt.
+          originEmail:
+            typeof creds.originEmail === "string" ? creds.originEmail : undefined,
         },
         options
       )

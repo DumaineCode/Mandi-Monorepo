@@ -155,6 +155,9 @@ describe("validateProviderPayload", () => {
       "taxInclusive",
       "consignmentNote",
       "packageType",
+      "originEmail",
+      "originCompany",
+      "originPhone",
     ])
     // Legacy single-secret apiKey is no longer a skydropx field anywhere.
     expect(PROVIDER_SECRET_FIELDS.skydropx).not.toContain("apiKey")
@@ -248,6 +251,54 @@ describe("validateProviderPayload", () => {
         null
       )
     ).toThrow(/skydropx\.com|base url/i)
+  })
+
+  /**
+   * `stock_location_address` has no email column and its company/phone are often
+   * blank, but Skydropx PRO marks name/company/phone/email as required on
+   * `address_from` — so these are public-config fallbacks (design §4.1).
+   */
+  it("stores the skydropx origin contact fallbacks in public_config", () => {
+    const result = validateProviderPayload(
+      "skydropx",
+      {
+        mode: "sandbox",
+        originZip: "57100",
+        clientId: "sd_client_1234",
+        clientSecret: "sd_secret_12345678",
+        originEmail: "ops@mandi.mx",
+        originCompany: "Mandi",
+        originPhone: "5555555555",
+      },
+      null
+    )
+
+    expect(result.publicConfig).toMatchObject({
+      originEmail: "ops@mandi.mx",
+      originCompany: "Mandi",
+      originPhone: "5555555555",
+    })
+    // Contact fallbacks are NOT secrets.
+    expect(result.secrets).toEqual({
+      clientId: "sd_client_1234",
+      clientSecret: "sd_secret_12345678",
+    })
+  })
+
+  it("rejects a malformed skydropx originEmail", () => {
+    expect(() =>
+      validateProviderPayload(
+        "skydropx",
+        {
+          mode: "sandbox",
+          originZip: "57100",
+          clientId: "sd_client_1234",
+          clientSecret: "sd_secret_12345678",
+          originEmail: "not-an-email",
+        },
+        null
+      )
+    ).toThrow(/originEmail/)
   })
 
   it("accepts an allowlisted PRO baseUrl on save", () => {

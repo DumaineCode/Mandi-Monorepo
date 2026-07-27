@@ -9,7 +9,7 @@
 import { runProviderProbe } from ".."
 import { probeMercadopago } from "../mercadopago"
 import { probeOpenpay } from "../openpay"
-import { probeSkydropx } from "../skydropx"
+import { MISSING_ORIGIN_EMAIL_DETAIL, probeSkydropx } from "../skydropx"
 
 const jsonResponse = (body: unknown, status = 200): Response =>
   ({
@@ -151,6 +151,53 @@ describe("probeSkydropx", () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
+  /**
+   * WARNING 4: `originEmail` is optional at every admin layer but MANDATORY at
+   * the label layer, so a freshly configured provider could pass every check the
+   * admin UI offers and still hard-fail on the first label. The probe is the last
+   * place the operator can learn that at CONFIGURATION time.
+   */
+  it("warns about a missing origin contact email on an OTHERWISE successful probe", async () => {
+    const fetchImpl = fetchReturning(
+      jsonResponse({ access_token: "tok_1", expires_in: 7200 }, 200)
+    )
+
+    const result = await probeSkydropx(creds, { fetchImpl })
+
+    // Still ok: the credentials ARE valid. The configuration is not finished.
+    expect(result.ok).toBe(true)
+    expect(result.detail).toContain("OAuth token issued")
+    expect(result.detail).toContain(MISSING_ORIGIN_EMAIL_DETAIL.trim())
+    expect(result.detail).toMatch(/Origin contact email/)
+  })
+
+  it("drops the warning once an origin contact email is set", async () => {
+    const fetchImpl = fetchReturning(
+      jsonResponse({ access_token: "tok_1", expires_in: 7200 }, 200)
+    )
+
+    const result = await probeSkydropx(
+      { ...creds, originEmail: "ops@mandi.mx" },
+      { fetchImpl }
+    )
+
+    expect(result.ok).toBe(true)
+    expect(result.detail).not.toMatch(/Warning/)
+  })
+
+  it("treats a whitespace-only origin contact email as missing", async () => {
+    const fetchImpl = fetchReturning(
+      jsonResponse({ access_token: "tok_1", expires_in: 7200 }, 200)
+    )
+
+    const result = await probeSkydropx(
+      { ...creds, originEmail: "   " },
+      { fetchImpl }
+    )
+
+    expect(result.detail).toMatch(/Origin contact email/)
+  })
+
   it("fails on HTTP 401 blaming rejected credentials", async () => {
     const result = await probeSkydropx(creds, {
       fetchImpl: fetchReturning(jsonResponse({}, 401)),
@@ -257,5 +304,36 @@ describe("runProviderProbe dispatcher — skydropx credential mapping", () => {
     const body = JSON.parse(String(init?.body))
     expect(body.client_id).toBe("sd_client_1234")
     expect(body.client_secret).toBe("sd_secret_12345678")
+  })
+
+  // WARNING 4: the warning is worthless if the dispatcher drops the field on the
+  // way to the probe, so pin the forwarding in BOTH directions.
+  it("forwards originEmail so the missing-origin-email warning can be raised", async () => {
+    const fetchImpl = fetchReturning(
+      jsonResponse({ access_token: "tok_1", expires_in: 7200 }, 200)
+    )
+
+    const withEmail = await runProviderProbe(
+      "skydropx",
+      {
+        clientId: "sd_client_1234",
+        clientSecret: "sd_secret_12345678",
+        originZip: "64000",
+        originEmail: "ops@mandi.mx",
+      },
+      { fetchImpl }
+    )
+    const withoutEmail = await runProviderProbe(
+      "skydropx",
+      {
+        clientId: "sd_client_1234",
+        clientSecret: "sd_secret_12345678",
+        originZip: "64000",
+      },
+      { fetchImpl }
+    )
+
+    expect(withEmail.detail).not.toMatch(/Origin contact email/)
+    expect(withoutEmail.detail).toMatch(/Origin contact email/)
   })
 })

@@ -113,6 +113,37 @@ export const PROVIDER_FORMS: Record<string, ProviderFormDef> = {
         optional: true,
         placeholder: "Skydropx package_type for MX labels",
       },
+      // Origin contact fallbacks for the label `address_from` (design §4.1): the
+      // stock location has no email column and often no company/phone.
+      {
+        name: "originEmail",
+        label: "Origin contact email",
+        type: "text",
+        secret: false,
+        // WARNING 4: marked REQUIRED (no `optional`) because the label layer
+        // hard-fails without it (`missingOriginFields`) and a stock location
+        // has no email column, so nothing else can supply it. Presentation
+        // only: the stored schema and both HTTP schemas keep it `.optional()`,
+        // so rows saved before this stay valid. `origin-contract.unit.spec.ts`
+        // pins the form and the guard against each other in both directions.
+        placeholder: "Required by Skydropx on the origin address",
+      },
+      {
+        name: "originCompany",
+        label: "Origin company",
+        type: "text",
+        secret: false,
+        optional: true,
+        placeholder: "Used when the stock location has no company",
+      },
+      {
+        name: "originPhone",
+        label: "Origin phone",
+        type: "text",
+        secret: false,
+        optional: true,
+        placeholder: "Used when the stock location has no phone",
+      },
       { name: "clientId", label: "Client ID", type: "password", secret: true },
       {
         name: "clientSecret",

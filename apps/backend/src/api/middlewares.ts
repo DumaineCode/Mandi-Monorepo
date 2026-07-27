@@ -43,6 +43,14 @@ export const UpsertProviderSettingsBody = z.object({
   taxInclusive: z.boolean().optional(),
   consignmentNote: z.string().optional(),
   packageType: z.string().optional(),
+  // Origin contact fallbacks for the label `address_from` (design §4.1). The
+  // admin form emits EVERY non-empty rendered field, so omitting them here makes
+  // the whole save fail with "Unrecognized fields" under the forced .strict().
+  // `originEmail` is `.email()` here to match `skydropxUpsertSchema` exactly —
+  // an asymmetric format rule would accept at one layer and reject at the next.
+  originEmail: z.string().email().optional(),
+  originCompany: z.string().optional(),
+  originPhone: z.string().optional(),
   // mercadopago
   accessToken: z.string().optional(),
   webhookSecret: z.string().optional(),
@@ -81,6 +89,12 @@ export const TestProviderConnectionBody = z
     taxInclusive: z.boolean().optional(),
     consignmentNote: z.string().optional(),
     packageType: z.string().optional(),
+    // Origin contact fallbacks (design §4.1) — the admin form sends every
+    // non-empty field it renders. Same `.email()` rule as the save schema so
+    // test-connection can never accept a value the save would reject.
+    originEmail: z.string().email().optional(),
+    originCompany: z.string().optional(),
+    originPhone: z.string().optional(),
     // mercadopago
     accessToken: z.string().optional(),
     webhookSecret: z.string().optional(),

@@ -74,6 +74,29 @@ describe("PROVIDER_FORMS field split", () => {
     expect(packageType?.secret).toBe(false)
   })
 
+  /**
+   * WARNING 4: `originEmail` is NOT a fallback like the other two — a stock
+   * location has no email column, so it is the only possible source for the
+   * `address_from.email` PRO requires, and the label layer hard-fails without it.
+   * It is therefore marked required in the form while company/phone stay optional.
+   * `origin-contract.unit.spec.ts` pins that split against the label guard itself.
+   */
+  it("exposes the skydropx origin contact settings as public text fields", () => {
+    const def = PROVIDER_FORMS.skydropx
+    for (const name of ["originEmail", "originCompany", "originPhone"]) {
+      const field = def.fields.find((f) => f.name === name)
+      expect(field?.type).toBe("text")
+      expect(field?.secret).toBe(false)
+    }
+    expect(
+      def.fields.find((f) => f.name === "originEmail")?.optional
+    ).toBeFalsy()
+    expect(def.fields.find((f) => f.name === "originCompany")?.optional).toBe(
+      true
+    )
+    expect(def.fields.find((f) => f.name === "originPhone")?.optional).toBe(true)
+  })
+
   it("marks mercadopago accessToken/webhookSecret secret and publicKey public", () => {
     const def = PROVIDER_FORMS.mercadopago
     expect(def.fields.filter((f) => f.secret).map((f) => f.name).sort()).toEqual(
