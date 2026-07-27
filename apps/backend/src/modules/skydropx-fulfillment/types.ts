@@ -8,6 +8,7 @@
  */
 
 import type { CredentialSource } from "../../lib/provider-credentials"
+import type { StockLocationSource } from "../../lib/stock-location-address"
 
 /**
  * Resolved Skydropx settings (admin-provider-settings). Matches the
@@ -50,6 +51,8 @@ export interface SkydropxCredentials {
  */
 export interface SkydropxOptions {
   credentialSource?: CredentialSource<SkydropxCredentials>
+  /** Origin-address seam (test injectable); defaults to the lazy container read. */
+  stockLocationSource?: StockLocationSource
 }
 
 /** OAuth2 client-credentials token response (`POST /oauth/token`). */

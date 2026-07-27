@@ -25,6 +25,14 @@ import {
   type CredentialSource,
 } from "../../lib/provider-credentials"
 import {
+  makeStockLocationSource,
+  STOCK_LOCATION_NOT_FOUND,
+  STOCK_LOCATION_RESOLUTION_TIMEOUT_MS,
+  type StockLocationNotFound,
+  type StockLocationOrigin,
+  type StockLocationSource,
+} from "../../lib/stock-location-address"
+import {
   SkydropxClient,
   SKYDROPX_QUOTATION_TIMEOUT_MS,
   SKYDROPX_REQUEST_TIMEOUT_MS,
@@ -48,6 +56,29 @@ type Logger = {
 
 type InjectedDependencies = {
   logger: Logger
+}
+
+/** Origin (`address_from`) resolved for a fulfillment (design §4.1). */
+type ResolvedOrigin = {
+  address: ShipAddressLike | null
+  /** Stock location name → origin contact name. */
+  name?: string
+  locationId?: string
+  /**
+   * `true` when the stock location could not be READ at all (module
+   * unregistered, container failure, rejected read, timeout). This is NOT the
+   * same as a location that was read fine but has no address row
+   * (`address === null`): the first is an infrastructure failure, the second a
+   * data-entry gap. Collapsing them sends an operator to "fix" a perfectly
+   * healthy address row during a DB incident.
+   */
+  readFailed: boolean
+  /**
+   * `true` when the read SUCCEEDED and the location does not exist (deleted or
+   * stale `location_id`). Distinct from {@link ResolvedOrigin.readFailed}: this
+   * is a DATA condition, so it must NOT be reported as a retryable incident.
+   */
+  notFound: boolean
 }
 
 /** The single fulfillment option this provider exposes (SD-1). */
@@ -143,6 +174,74 @@ export const normalizeState = (province?: string | null): string | undefined => 
   return MX_STATE_NAMES[key] ?? province.trim()
 }
 
+/**
+ * Trim seam (WARNING 3): a whitespace-only value is the SAME gap as a blank one.
+ * Every pre-flight guard and every wire builder below reads its fields through
+ * this so a `"   "` company/phone/city can never pass a guard and then go out as
+ * `{"company":"   "}` — precisely the `"no puede estar en blanco"` class the
+ * pre-flight exists to prevent.
+ */
+const text = (value?: string | null): string | undefined => {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : undefined
+}
+
+/**
+ * Legacy MX national dialing prefixes people still type: "01" (long distance)
+ * and "044"/"045" (mobile). They are NOT part of the subscriber number, so they
+ * are dropped once the remainder is a full 10-digit national number. Ordered
+ * longest-first; each entry pins the TOTAL digit length it applies to, so a
+ * country-prefixed number can never be mistaken for a trunk-prefixed one.
+ */
+const MX_LEGACY_TRUNK_PREFIXES: ReadonlyArray<readonly [string, number]> = [
+  ["044", 13],
+  ["045", 13],
+  ["01", 12],
+]
+
+/**
+ * Phone seam (CRITICAL 1): reduce a human-typed phone to the digits PRO expects,
+ * right before it goes on the wire, for BOTH `address_from` and `address_to`.
+ *
+ * The storefront `pattern` accepts spaces, dashes and parentheses (blocking the
+ * formats real customers type was a lost sale, not a saved label), and non-
+ * storefront paths — saved addresses, the store API, admin edits — are not
+ * validated at all. So `(55) 1234-5678` used to reach `address_to.phone`
+ * verbatim: the pre-flight's promise ("no more opaque 422") only held for BLANK
+ * phones, not malformed ones.
+ *
+ * Rules:
+ * - separators (spaces, dashes, parentheses, dots, a leading `+`) are dropped;
+ * - a `52` / `521` country prefix is PRESERVED — `5215555555555` is the form
+ *   Skydropx's own docs use, so it must survive untouched;
+ * - a legacy `01` / `044` / `045` trunk prefix is stripped;
+ * - a non-blank value with NO digits is returned unchanged. Emitting `""` here
+ *   would silently blank a field the pre-flight already accepted and hand back
+ *   the exact 422 this seam exists to avoid — better to let PRO name it.
+ *
+ * Deliberately NOT a validator and NOT a library (no runtime dependency): it
+ * never rejects, so it can never block a label the pre-flight already cleared.
+ */
+export const normalizePhone = (value?: string | null): string | undefined => {
+  const raw = text(value)
+  if (!raw) {
+    return undefined
+  }
+
+  const digits = raw.replace(/\D/g, "")
+  if (!digits) {
+    return raw
+  }
+
+  for (const [prefix, totalLength] of MX_LEGACY_TRUNK_PREFIXES) {
+    if (digits.length === totalLength && digits.startsWith(prefix)) {
+      return digits.slice(prefix.length)
+    }
+  }
+
+  return digits
+}
+
 type AddressLike = {
   country_code?: string | null
   postal_code?: string | null
@@ -165,14 +264,13 @@ const toAddress = (
   if (!address) {
     return undefined
   }
-  const country_code = address.country_code?.toUpperCase() || undefined
-  const postal_code = address.postal_code || undefined
+  const country_code = text(address.country_code)?.toUpperCase()
+  const postal_code = text(address.postal_code)
   const area_level1 = normalizeState(address.province)
-  const area_level2 = address.city || undefined
+  const area_level2 = text(address.city)
   const colonia =
-    address.address_2 ||
-    (address.metadata?.colonia as string | undefined) ||
-    undefined
+    text(address.address_2) ??
+    text(address.metadata?.colonia as string | undefined)
 
   if (!country_code || !postal_code || !area_level1 || !area_level2) {
     return undefined
@@ -201,18 +299,172 @@ type ShipAddressLike = AddressLike & {
  */
 const toShipAddress = (
   address: ShipAddressLike,
-  extra: { name?: string; email?: string } = {}
+  extra: {
+    name?: string
+    email?: string
+    /** Fallbacks used ONLY when the address itself has no value (design §4.1). */
+    company?: string
+    phone?: string
+  } = {}
 ): SkydropxShipAddress => ({
-  street1: address.address_1 || "",
+  street1: text(address.address_1) ?? "",
   name:
-    extra.name ||
-    [address.first_name, address.last_name].filter(Boolean).join(" ") ||
-    undefined,
-  company: address.company || undefined,
-  phone: address.phone || undefined,
-  email: extra.email || undefined,
-  reference: address.address_2 || undefined,
+    text(extra.name) ??
+    text([address.first_name, address.last_name].filter(Boolean).join(" ")),
+  company: text(address.company) ?? text(extra.company),
+  // CRITICAL 1: the ONLY place a phone reaches the wire, for both ends.
+  phone: normalizePhone(address.phone) ?? normalizePhone(extra.phone),
+  email: text(extra.email),
+  reference: text(address.address_2),
 })
+
+/**
+ * Which components `toAddress` found missing, named with their stock-location
+ * column names so the admin can fix them directly (design §4.1 pre-flight).
+ */
+const missingAddressComponents = (
+  address: AddressLike | undefined | null
+): string[] => {
+  const missing: string[] = []
+  if (!text(address?.country_code)) {
+    missing.push("country_code")
+  }
+  if (!text(address?.postal_code)) {
+    missing.push("postal_code")
+  }
+  if (!normalizeState(address?.province)) {
+    missing.push("province")
+  }
+  if (!text(address?.city)) {
+    missing.push("city")
+  }
+  return missing
+}
+
+/** Contact values that can fill an origin field the stock location cannot. */
+type OriginContact = {
+  name?: string
+  company?: string
+  phone?: string
+  email?: string
+}
+
+/**
+ * Every origin field `POST /shipments` needs on `address_from`
+ * (pro-api-reference §4a), checked BEFORE the quotation is issued so a gap costs
+ * an actionable message instead of a full quote+poll cycle and an opaque PRO 422.
+ *
+ * `reference` (colonia) and `tax_id_number` are deliberately NOT enforced: the
+ * quote path already treats the colonia as best-effort (`toAddress` omits
+ * `area_level3` when absent) and we never send a tax id, so hard-failing on them
+ * would block origins PRO accepts today.
+ *
+ * Exported ONLY so `provider-settings/__tests__/origin-contract.unit.spec.ts`
+ * can pin it against `PROVIDER_FORMS.skydropx` in both directions (WARNING 4):
+ * a field this guard hard-requires must be marked required in the admin form,
+ * and a field it tolerates must stay optional there.
+ */
+export const missingOriginFields = (
+  address: ShipAddressLike | undefined | null,
+  contact: OriginContact
+): string[] => {
+  const missing = missingAddressComponents(address)
+  if (!text(address?.address_1)) {
+    missing.push("address_1")
+  }
+  if (!text(contact.name)) {
+    missing.push("name")
+  }
+  if (!text(address?.company) && !text(contact.company)) {
+    missing.push("company")
+  }
+  if (!text(address?.phone) && !text(contact.phone)) {
+    missing.push("phone")
+  }
+  if (!text(contact.email)) {
+    missing.push("email")
+  }
+  return missing
+}
+
+/**
+ * Every destination field `POST /shipments` needs on `address_to`
+ * (pro-api-reference §4a), checked BEFORE the quotation for the same reason as
+ * {@link missingOriginFields}: without it a blank phone/email costs a full
+ * quote+poll cycle and surfaces PRO's raw Spanish 422 body
+ * (`{"address_to":{"phone":["no puede estar en blanco"]}}`) instead of an
+ * actionable message.
+ *
+ * `company` and `reference` are deliberately NOT enforced even though the PRO
+ * reference marks them Required: consumer orders legitimately have neither, and
+ * PRO accepts the shipment without them today (the observed 422 named only
+ * `phone` and `email`). Enforcing them would block every B2C label.
+ */
+const missingDestinationFields = (
+  address: ShipAddressLike | undefined | null,
+  contact: { name?: string; phone?: string; email?: string }
+): string[] => {
+  const missing = missingAddressComponents(address)
+  if (!text(address?.address_1)) {
+    missing.push("address_1")
+  }
+  if (!text(contact.name)) {
+    missing.push("name")
+  }
+  if (!text(contact.phone)) {
+    missing.push("phone")
+  }
+  if (!text(contact.email)) {
+    missing.push("email")
+  }
+  return missing
+}
+
+/** Where the operator fixes each origin field named by {@link missingOriginFields}. */
+const ORIGIN_FIX_HINTS: Record<string, string> = {
+  country_code: "set the country on the stock location address",
+  postal_code:
+    'set the postal code on the stock location address, or set "Origin ZIP" in the Skydropx provider settings',
+  province: "set the state on the stock location address",
+  city: "set the city on the stock location address",
+  address_1: "set address line 1 on the stock location address",
+  name: "set a name on the stock location",
+  company:
+    'set the company on the stock location address, or set "Origin company" in the Skydropx provider settings',
+  phone:
+    'set the phone on the stock location address, or set "Origin phone" in the Skydropx provider settings',
+  email:
+    'set "Origin contact email" in the Skydropx provider settings — stock locations have no email column',
+}
+
+/**
+ * Where the operator fixes each destination field named by
+ * {@link missingDestinationFields}. Same shape as {@link ORIGIN_FIX_HINTS}, but
+ * pointing at the order/customer rather than the stock location — the two are
+ * the only places these values can come from.
+ */
+const DESTINATION_FIX_HINTS: Record<string, string> = {
+  country_code: "set the country on the order shipping address",
+  postal_code: "set the postal code on the order shipping address",
+  province: "set the state on the order shipping address",
+  city: "set the city on the order shipping address",
+  address_1: "set address line 1 on the order shipping address",
+  name: "set a first/last name on the order shipping address",
+  phone:
+    "set a phone on the order shipping address, or on the customer record for this order",
+  email: "set an email on the customer record for this order",
+}
+
+/**
+ * Render a missing-field list as `field (how to fix it)` pairs. Shared by the
+ * origin and destination pre-flights so both failures read the same way.
+ */
+const describeMissingFields = (
+  missing: string[],
+  hints: Record<string, string>,
+  fallback: string
+): string =>
+  missing.map((field) => `${field} (${hints[field] ?? fallback})`).join("; ")
 
 /** A rate is usable only when priced and successful (spec Capability 3). */
 const isUsableRate = (rate: SkydropxRate): boolean =>
@@ -258,6 +510,7 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
 
   protected readonly logger_: Logger
   private readonly credentialSource_: CredentialSource<SkydropxCredentials>
+  private readonly stockLocationSource_: StockLocationSource
   private clientCache_?: { fingerprint: string; client: SkydropxClient }
 
   constructor(
@@ -267,10 +520,13 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
     super()
     this.logger_ = logger
     // Lazy per-operation resolution (design F1/F2): the container is NEVER
-    // touched here — module load order at boot is not guaranteed.
+    // touched here — module load order at boot is not guaranteed. Same rule for
+    // the stock-location (origin address) seam.
     this.credentialSource_ =
       options.credentialSource ??
       makeDbCredentialSource<SkydropxCredentials>(SKYDROPX_IDENTIFIER)
+    this.stockLocationSource_ =
+      options.stockLocationSource ?? makeStockLocationSource()
   }
 
   /**
@@ -301,7 +557,15 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
     return config
   }
 
-  /** Immutable client cache keyed by credential fingerprint (design §3.2). */
+  /**
+   * Immutable client cache keyed by credential fingerprint (design §3.2).
+   *
+   * Tradeoff (accepted): the fingerprint covers the whole resolved config, so
+   * editing a cosmetic field (e.g. the origin contact fallbacks) also drops the
+   * cached client and its OAuth token. Narrowing it to the auth fields would
+   * risk keeping a client built with stale credentials — an occasional extra
+   * token fetch after an admin save is the cheaper side of that trade.
+   */
   private getClient_(config: SkydropxCredentials): SkydropxClient {
     const fingerprint = credentialFingerprint(config)
     if (this.clientCache_?.fingerprint !== fingerprint) {
@@ -431,22 +695,48 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
     }
 
     const shippingAddress = order?.shipping_address ?? {}
-    const locationAddress = fulfillment?.location?.address ?? {}
+    // The Fulfillment entity carries only `location_id` (no `location`
+    // relation), so the origin comes from the lazy stock-location seam.
+    // `resolveOrigin_` is TOTAL by construction (see `readStockLocation_`): an
+    // injected `stockLocationSource` that rejects or never settles degrades to
+    // `readFailed`, so no raw non-MedusaError can escape ahead of the SD-4 wrap.
+    const origin = await this.resolveOrigin_(fulfillment)
+    // Post-fallback origin: exactly what goes on the wire (originZip applied).
+    const originAddress = this.withOriginZip_(origin.address, config) ?? {}
+    // Tracked so the failure message never implies the stock location has a
+    // postal code it does not actually have.
+    const zipFromSettings =
+      !text(origin.address?.postal_code) && Boolean(config.originZip)
 
-    const addressTo = toAddress(shippingAddress)
-    if (!addressTo) {
-      throw new MedusaError(
-        MedusaError.Types.INVALID_DATA,
-        "Skydropx label requires a destination country, postal code, state, and city."
-      )
+    /**
+     * Single source for the `address_to` contact fields: the pre-flight below and
+     * the shipment payload MUST read the same values, or the guard could pass on
+     * something the wire never sends.
+     *
+     * PRO marks email/phone Required on `address_to`. Medusa's create-fulfillment
+     * order projection does NOT select `email` — it selects `customer.*` and
+     * `shipping_address.*` (@medusajs/core-flows create-fulfillment) — so the
+     * CUSTOMER record is the real source here and `order.email` is only a
+     * best-effort first choice for direct callers that DO project it. Phone falls
+     * back to the customer when the shipping address has none (design §4.1).
+     */
+    const destinationContact = {
+      name: [shippingAddress.first_name, shippingAddress.last_name]
+        .filter(Boolean)
+        .join(" "),
+      email: order?.email || order?.customer?.email,
+      phone: shippingAddress.phone || order?.customer?.phone,
     }
-    const addressFrom = toAddress(this.withOriginZip_(locationAddress, config))
-    if (!addressFrom) {
-      throw new MedusaError(
-        MedusaError.Types.INVALID_DATA,
-        "Skydropx label requires an origin country, postal code, state, and city."
-      )
-    }
+
+    // Full pre-flight against the SHIPMENT shape on BOTH ends, before any API
+    // call: a gap must cost an actionable message, not a quotation + a PRO 422.
+    const addressTo = this.requireDestination_(shippingAddress, destinationContact)
+    const addressFrom = this.requireOrigin_(
+      origin,
+      originAddress,
+      config,
+      zipFromSettings
+    )
 
     let shipmentId: string | undefined
     try {
@@ -491,15 +781,18 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
       const shipment = await client.createShipment({
         shipment: {
           rate_id: rate.id,
-          address_from: toShipAddress(locationAddress, {
-            name: fulfillment?.location?.name,
+          address_from: toShipAddress(originAddress, {
+            name: origin.name,
+            // stock_location_address has no email column and its company/phone
+            // are often blank, but PRO marks all three as required on
+            // address_from — public-config fallbacks (design §4.1).
+            company: config.originCompany,
+            phone: config.originPhone,
+            email: config.originEmail,
           }),
-          address_to: toShipAddress(shippingAddress, {
-            name: [shippingAddress.first_name, shippingAddress.last_name]
-              .filter(Boolean)
-              .join(" "),
-            email: order?.email,
-          }),
+          // Exactly the values the pre-flight validated (see
+          // `destinationContact`) — guard and payload must never drift.
+          address_to: toShipAddress(shippingAddress, destinationContact),
           packages: [
             {
               package_number: "1",
@@ -629,15 +922,250 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
     return {}
   }
 
-  /** Inject the fallback origin zip when the stock location has none. */
+  /**
+   * Origin (`address_from`) resolution for the label path (design §4.1).
+   *
+   * The Medusa `Fulfillment` entity has NO `location` relation — only
+   * `location_id` — and the fulfillment module passes the raw entity here, so
+   * the stock location must be looked up through the lazy seam.
+   *
+   * The `fulfillment.location.address` branch is DEFENSIVE ONLY: no Medusa
+   * version hydrates that relation for a fulfillment provider today. It is kept
+   * so a future Medusa (or a direct caller) that DOES hydrate it skips a
+   * redundant DB read — it is not a live production path, and exactly one test
+   * covers it.
+   *
+   * Total by construction: it never throws, so `createFulfillment` can call it
+   * before the SD-4 try/catch without leaking a raw error.
+   */
+  private async resolveOrigin_(
+    fulfillment: Record<string, any> | undefined
+  ): Promise<ResolvedOrigin> {
+    const locationId = fulfillment?.location_id as string | undefined
+
+    const inline = fulfillment?.location
+    if (inline?.address) {
+      return {
+        address: inline.address as ShipAddressLike,
+        name: inline.name,
+        locationId: locationId ?? (inline.id as string | undefined),
+        readFailed: false,
+        notFound: false,
+      }
+    }
+
+    if (!locationId) {
+      return { address: null, readFailed: false, notFound: false }
+    }
+
+    const read = await this.readStockLocation_(locationId)
+    if (!read.ok) {
+      return { address: null, locationId, readFailed: true, notFound: false }
+    }
+
+    if (read.value === STOCK_LOCATION_NOT_FOUND) {
+      // The read SUCCEEDED and the row is gone: a data condition, not an
+      // incident. Kept separate so the caller can say so (and NOT ask for a retry).
+      return { address: null, locationId, readFailed: false, notFound: true }
+    }
+
+    return {
+      // `read.value === null` also means the read failed (the default seam is
+      // fail-safe and returns null on module/DB/timeout failure).
+      address: (read.value?.address as ShipAddressLike | undefined) ?? null,
+      name: read.value?.name,
+      locationId,
+      readFailed: read.value === null,
+      notFound: false,
+    }
+  }
+
+  /**
+   * Bounded, fail-safe read of the stock-location seam.
+   *
+   * `stockLocationSource` is a PUBLIC injection point (`SkydropxOptions`), so
+   * the service must not assume it is bounded or that it settles at all. A
+   * rejecting or hanging source degrades to `{ ok: false }` here instead of
+   * escaping `createFulfillment` as a raw non-MedusaError (SD-4).
+   */
+  private async readStockLocation_(
+    locationId: string
+  ): Promise<
+    | { ok: true; value: StockLocationOrigin | StockLocationNotFound | null }
+    | { ok: false }
+  > {
+    let settled: Promise<
+      | { ok: true; value: StockLocationOrigin | StockLocationNotFound | null }
+      | { ok: false }
+    >
+    try {
+      settled = this.stockLocationSource_(locationId).then(
+        (value) => ({ ok: true as const, value }),
+        () => ({ ok: false as const })
+      )
+    } catch {
+      // A source that throws synchronously never produced a promise.
+      return { ok: false }
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<{ ok: false }>((resolve) => {
+      timer = setTimeout(
+        () => resolve({ ok: false as const }),
+        STOCK_LOCATION_RESOLUTION_TIMEOUT_MS
+      )
+    })
+
+    try {
+      return await Promise.race([settled, timeout])
+    } finally {
+      // Never leak the timer when the read wins the race.
+      if (timer) {
+        clearTimeout(timer)
+      }
+    }
+  }
+
+  /**
+   * Origin pre-flight (design §4.1, SD-4): validate the origin against the
+   * SHIPMENT shape before any API call and return the quotation-shaped origin.
+   *
+   * Every failure names what is empty AND where to fix it, and keeps the three
+   * causes distinct: the location could not be read (infrastructure), the
+   * location has no address row, or specific fields are empty.
+   */
+  private requireOrigin_(
+    origin: ResolvedOrigin,
+    originAddress: ShipAddressLike,
+    config: SkydropxCredentials,
+    zipFromSettings: boolean
+  ): SkydropxQuoteAddress {
+    if (origin.notFound) {
+      // DATA condition, not an incident: the read worked and the row is gone.
+      // INVALID_DATA (400) on purpose — retrying can never succeed, so this must
+      // not page ops the way the UNEXPECTED_STATE below does.
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        `Skydropx label origin could not be resolved: stock location ${origin.locationId} no longer exists. ` +
+          "This fulfillment points at a deleted or stale stock location, so retrying the label cannot succeed. " +
+          "Reassign it to an existing stock location in Admin → Settings → Locations."
+      )
+    }
+
+    if (origin.readFailed) {
+      // Infrastructure failure — the address may be perfectly fine, so this
+      // message must NOT send the operator to edit the location.
+      throw new MedusaError(
+        MedusaError.Types.UNEXPECTED_STATE,
+        `Skydropx label origin could not be resolved: stock location ${origin.locationId} could not be READ ` +
+          `(the stock location module was unavailable, the read failed, or it exceeded ` +
+          `${STOCK_LOCATION_RESOLUTION_TIMEOUT_MS}ms). This is an infrastructure failure, not a bad address — ` +
+          "retry the label and check the backend logs if it persists."
+      )
+    }
+
+    if (!origin.address) {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        origin.locationId
+          ? `Skydropx label requires an origin address, but stock location ${origin.locationId} has no address configured. ` +
+            "Add one in Admin → Settings → Locations."
+          : "Skydropx label requires an origin address, but this fulfillment has no stock location. " +
+            "Assign a stock location to the fulfillment before purchasing a label."
+      )
+    }
+
+    const where = origin.locationId
+      ? ` (stock location ${origin.locationId})`
+      : ""
+    const missing = missingOriginFields(originAddress, {
+      name: origin.name,
+      company: config.originCompany,
+      phone: config.originPhone,
+      email: config.originEmail,
+    })
+
+    if (missing.length) {
+      const details = describeMissingFields(
+        missing,
+        ORIGIN_FIX_HINTS,
+        "set it on the stock location"
+      )
+      const zipNote = zipFromSettings
+        ? ` Note: the origin postal code came from the Skydropx "Origin ZIP" setting, not from the stock location.`
+        : ""
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        `Skydropx label requires a complete origin address${where}. Missing: ${details}.${zipNote}`
+      )
+    }
+
+    const quoteAddress = toAddress(originAddress)
+    if (!quoteAddress) {
+      // Defensive: `missingOriginFields` covers every component `toAddress`
+      // requires, so this is only reachable if one of the two drifts.
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        `Skydropx label origin address is incomplete${where}.`
+      )
+    }
+    return quoteAddress
+  }
+
+  /**
+   * Destination pre-flight (design §4.1, SD-4) — the `address_to` mirror of
+   * {@link SkydropxFulfillmentProviderService.requireOrigin_}.
+   *
+   * Runs BEFORE the quotation for the same reason: without it a blank phone or
+   * email burns a full quote+poll cycle and then surfaces PRO's raw Spanish 422
+   * body instead of naming the field and where it comes from.
+   */
+  private requireDestination_(
+    shippingAddress: ShipAddressLike,
+    contact: { name?: string; phone?: string; email?: string }
+  ): SkydropxQuoteAddress {
+    const missing = missingDestinationFields(shippingAddress, contact)
+    if (missing.length) {
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        `Skydropx label requires a complete destination address. Missing: ${describeMissingFields(
+          missing,
+          DESTINATION_FIX_HINTS,
+          "set it on the order shipping address"
+        )}.`
+      )
+    }
+
+    const quoteAddress = toAddress(shippingAddress)
+    if (!quoteAddress) {
+      // Defensive: `missingDestinationFields` covers every component `toAddress`
+      // requires, so this is only reachable if one of the two drifts.
+      throw new MedusaError(
+        MedusaError.Types.INVALID_DATA,
+        "Skydropx label destination address is incomplete."
+      )
+    }
+    return quoteAddress
+  }
+
+  /**
+   * Inject the fallback origin zip when the stock location has none.
+   *
+   * Typed `ShipAddressLike` (not `AddressLike`): the result feeds
+   * `toShipAddress`, which reads `address_1`/`company`/`phone` at runtime via
+   * spread. The wider type let those fields drop out of the shipment origin
+   * without a compile error.
+   */
   private withOriginZip_(
-    address: AddressLike | undefined | null,
+    address: ShipAddressLike | undefined | null,
     config: SkydropxCredentials
-  ): AddressLike | undefined {
+  ): ShipAddressLike | undefined {
     if (!address) {
       return config.originZip ? { postal_code: config.originZip } : undefined
     }
-    if (!address.postal_code && config.originZip) {
+    // Trimmed (WARNING 3): a whitespace-only postal code must not defeat the
+    // fallback and then be reported as "missing" while "Origin ZIP" IS set.
+    if (!text(address.postal_code) && config.originZip) {
       return { ...address, postal_code: config.originZip }
     }
     return address
