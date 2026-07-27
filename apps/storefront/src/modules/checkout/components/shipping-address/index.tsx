@@ -6,6 +6,7 @@ import Checkbox from "@modules/common/components/checkbox"
 import Input from "@modules/common/components/input"
 import NativeSelect from "@modules/common/components/native-select"
 import { getPostalCode } from "@lib/data/postal-code"
+import { MX_PHONE_PATTERN, MX_PHONE_TITLE } from "@lib/util/phone"
 import { mapKeys } from "lodash"
 import React, { useEffect, useMemo, useRef, useState } from "react"
 import AddressSelect from "../address-select"
@@ -530,12 +531,26 @@ const ShippingAddress = ({
           required
           data-testid="shipping-email-input"
         />
+        {/*
+         * Required: Skydropx PRO marks `phone` as Required on `address_to` for
+         * POST /shipments, so an order placed without one can never be labelled
+         * (a real order with phone "" failed with
+         * {"address_to":{"phone":["no puede estar en blanco"]}}).
+         * The pattern/title live in `@lib/util/phone` — see that file for why an
+         * exactly-10-digit rule was a revenue stopper, not a safety net. The
+         * backend normalizes the value before it reaches the wire, so this is the
+         * friendly front door, not the guarantee.
+         */}
         <Input
           label="Teléfono"
           name="shipping_address.phone"
+          type="tel"
+          title={MX_PHONE_TITLE}
+          pattern={MX_PHONE_PATTERN}
           autoComplete="tel"
           value={formData["shipping_address.phone"]}
           onChange={handleChange}
+          required
           data-testid="shipping-phone-input"
         />
       </div>
