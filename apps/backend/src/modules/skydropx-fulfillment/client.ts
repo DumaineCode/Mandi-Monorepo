@@ -75,7 +75,7 @@ export const normalizeShipment = (
       `${where}: Skydropx returned a shipment with no id, so it cannot be polled ` +
         `or cancelled. The shipment MAY have been created and charged — reconcile ` +
         `manually in the Skydropx dashboard. Raw response: ` +
-        `${JSON.stringify(response).slice(0, MAX_RAW_ERROR_CHARS)}`
+        `${truncate(JSON.stringify(response))}`
     )
   }
 
@@ -92,13 +92,17 @@ export const normalizeShipment = (
     labelUrl: packageAttributes?.label_url ?? attributes?.label_url ?? response?.label_url,
     trackingNumber: packageAttributes?.tracking_number,
     errorDetail: attributes?.error_detail ?? response?.error_detail,
-    raw: response,
   }
 }
 
-/** Cap on raw error bodies echoed into a message, so a 200KB HTML error page
- * from a proxy cannot flood the logs. */
+/** Cap on error bodies echoed into a message, so a 200KB HTML error page from a
+ * proxy — or a large JSON validation payload — cannot flood the logs. */
 const MAX_RAW_ERROR_CHARS = 500
+
+const truncate = (value: string): string =>
+  value.length > MAX_RAW_ERROR_CHARS
+    ? `${value.slice(0, MAX_RAW_ERROR_CHARS)}… (${value.length} chars total)`
+    : value
 
 /**
  * Build an error description that is NEVER empty.
@@ -128,11 +132,14 @@ const describeErrorBody = (
     // Anything else the body happens to carry, rather than discarding it.
     (parsed as { message?: string } | undefined)?.message ||
     parsed?.error ||
-    raw.trim().slice(0, MAX_RAW_ERROR_CHARS) ||
+    raw.trim() ||
     response.statusText ||
     "no error body returned by Skydropx"
 
-  return `${where}: ${detail}`
+  // Truncate the RESULT, not just the raw fallback: a JSON body with a large
+  // `errors` array is both the commonest case and the one that used to bypass
+  // the cap entirely, which made this control protect the least likely branch.
+  return `${where}: ${truncate(detail)}`
 }
 
 /**

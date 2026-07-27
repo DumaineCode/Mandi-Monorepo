@@ -263,6 +263,101 @@ describe("SkydropxFulfillmentProviderService (PRO)", () => {
   })
 
   describe("calculatePrice (Capability 3 / SD-3)", () => {
+    /**
+     * `calculatePrice` is reached from the PUBLIC, unauthenticated
+     * `POST /store/shipping-options/:id/calculate`, and Medusa's error handler
+     * returns an `UNEXPECTED_STATE` message to the caller VERBATIM.
+     *
+     * The diagnostic detail added for operators — upstream endpoint, HTTP status
+     * and raw response body — must therefore never reach that response, or any
+     * anonymous visitor could enumerate our integration internals and read
+     * third-party error payloads on demand. It still goes to the server log.
+     */
+    it("never leaks upstream detail to the public storefront route", async () => {
+      mockApi(fetchMock, {
+        "POST /quotations": () =>
+          jsonResponse(
+            {
+              error: "invalid_client",
+              error_description: "client 'sky_live_abc123' is not authorised",
+            },
+            401
+          ),
+      })
+      const { service, logger } = makeService()
+
+      const error = await service
+        .calculatePrice(OPTION_DATA, {}, cartContext())
+        .then(
+          () => {
+            throw new Error("expected calculatePrice to reject")
+          },
+          (e) => e as Error
+        )
+
+      // Nothing about the upstream call may appear in the public message.
+      expect(error.message).not.toMatch(/oauth|quotations|HTTP \d{3}/i)
+      expect(error.message).not.toMatch(/invalid_client|sky_live_abc123/)
+      expect(error.message).toBe("Skydropx could not quote this shipment.")
+      // ...but the operator still gets the whole story in the server log,
+      // including the upstream endpoint, status and body.
+      const logged = (logger.error as jest.Mock).mock.calls
+        .map(([m]) => String(m))
+        .join("\n")
+      expect(logged).toContain("sky_live_abc123")
+      expect(logged).toContain("POST /quotations")
+      expect(logged).toContain("401")
+      expect(logged).toContain("storefront")
+    })
+
+    it("keeps the upstream detail on the admin label path", async () => {
+      mockApi(fetchMock, {
+        "POST /quotations": () =>
+          jsonResponse(
+            { error: "unprocessable_entity", error_description: "zip invalid" },
+            422
+          ),
+      })
+      const { service } = makeService()
+
+      const error = await service
+        .createFulfillment(
+          { id: "skydropx-standard" },
+          [{ quantity: 1, line_item_id: "li_1" }],
+          {
+            id: "order_1",
+            display_id: 17,
+            email: "cliente@example.com",
+            shipping_address: {
+              country_code: "mx",
+              postal_code: "64000",
+              province: "NL",
+              city: "Monterrey",
+              address_1: "Calle 1",
+              first_name: "Ana",
+              last_name: "López",
+              phone: "8112345678",
+            },
+            items: [
+              {
+                id: "li_1",
+                variant: { weight: 500, length: 10, width: 8, height: 4 },
+              },
+            ],
+          } as any,
+          { location_id: "sloc_1" } as any
+        )
+        .then(
+          () => {
+            throw new Error("expected createFulfillment to reject")
+          },
+          (e) => e as Error
+        )
+
+      // The operator is authenticated and needs the carrier's own words.
+      expect(error.message).toMatch(/zip invalid/)
+    })
+
     it("builds the quotation from the destination address hierarchy and returns rate.total as-is", async () => {
       mockApi(fetchMock, {
         "POST /quotations": completedQuotation([

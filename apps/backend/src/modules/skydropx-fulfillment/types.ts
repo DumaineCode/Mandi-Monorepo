@@ -216,8 +216,6 @@ export interface SkydropxShipment {
   labelUrl?: string
   trackingNumber?: string
   errorDetail?: SkydropxShipmentErrorDetail
-  /** Untouched payload, for diagnostics when normalisation finds nothing. */
-  raw: SkydropxShipmentResponse
 }
 
 export interface SkydropxCancellation {

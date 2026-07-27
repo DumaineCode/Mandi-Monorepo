@@ -86,7 +86,6 @@ type ResolvedOrigin = {
 /** The single fulfillment option this provider exposes (SD-1). */
 const OPTION_ID = "skydropx-standard"
 
-/** Normalizes unknown errors into a log/message-safe description string. */
 /**
  * Never returns an empty string.
  *
@@ -94,6 +93,15 @@ const OPTION_ID = "skydropx-standard"
  * an error with no status, no body and no failing endpoint. Whatever the shape of
  * the failure, the operator gets SOMETHING to act on.
  */
+/**
+ * Who is going to read the message being built.
+ *
+ * `storefront` messages are returned by a PUBLIC, unauthenticated route, so they
+ * carry no upstream detail; `admin` messages are for an authenticated operator
+ * who needs the carrier's own words to act.
+ */
+type RateAudience = "storefront" | "admin"
+
 const describeError = (error: unknown): string => {
   const described =
     error instanceof SkydropxApiError
@@ -805,17 +813,19 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
 
     const client = this.getClient_(config)
     const deadline = Date.now() + SKYDROPX_QUOTATION_TIMEOUT_MS
-    const rates = await this.fetchUsableRates_(() =>
-      client.quoteAndPoll_(
-        {
-          quotation: {
-            address_from: addressFrom,
-            address_to: addressTo,
-            parcels: [parcel],
+    const rates = await this.fetchUsableRates_(
+      () =>
+        client.quoteAndPoll_(
+          {
+            quotation: {
+              address_from: addressFrom,
+              address_to: addressTo,
+              parcels: [parcel],
+            },
           },
-        },
-        deadline
-      )
+          deadline
+        ),
+      "storefront"
     )
 
     const rate = selectCheapestRate(rates)
@@ -912,17 +922,19 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
         Date.now() + LABEL_QUOTE_BUDGET_MS,
         fulfillmentDeadline
       )
-      const rates = await this.fetchUsableRates_(() =>
-        client.quoteAndPoll_(
-          {
-            quotation: {
-              address_from: addressFrom,
-              address_to: addressTo,
-              parcels: [parcel],
+      const rates = await this.fetchUsableRates_(
+        () =>
+          client.quoteAndPoll_(
+            {
+              quotation: {
+                address_from: addressFrom,
+                address_to: addressTo,
+                parcels: [parcel],
+              },
             },
-          },
-          quoteDeadline
-        )
+            quoteDeadline
+          ),
+        "admin"
       )
       const rate = selectCheapestRate(rates)
 
@@ -1440,15 +1452,27 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
    * usable rates, and fail gracefully when none remain (never emits NaN).
    */
   private async fetchUsableRates_(
-    quote: () => Promise<SkydropxRate[]>
+    quote: () => Promise<SkydropxRate[]>,
+    audience: RateAudience
   ): Promise<SkydropxRate[]> {
     let rates: SkydropxRate[]
     try {
       rates = await quote()
     } catch (error) {
+      const detail = describeError(error)
+      // The detail ALWAYS reaches the server log, whoever asked.
+      this.logger_.error(`Skydropx quotation failed (${audience}): ${detail}`)
       throw new MedusaError(
         MedusaError.Types.UNEXPECTED_STATE,
-        `Skydropx quotation failed: ${describeError(error)}`
+        // ...but it must never reach the storefront. `calculatePrice` is reached
+        // from the PUBLIC `POST /store/shipping-options/:id/calculate`, and
+        // Medusa's error handler passes UNEXPECTED_STATE messages through to the
+        // response verbatim. Echoing an upstream body there would hand any
+        // anonymous visitor our internal endpoints, upstream status codes and
+        // third-party error payloads.
+        audience === "storefront"
+          ? "Skydropx could not quote this shipment."
+          : `Skydropx quotation failed: ${detail}`
       )
     }
 
