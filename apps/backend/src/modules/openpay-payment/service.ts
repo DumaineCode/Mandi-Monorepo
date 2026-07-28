@@ -71,6 +71,15 @@ const WEBHOOK_EVENT_ACTIONS: Record<string, "captured" | "failed"> = {
 const NOT_SUPPORTED = { action: "not_supported" as const }
 
 /**
+ * TEMPORARY TEST ESCAPE HATCH: set OPENPAY_DISABLE_3DS=true to create charges
+ * without 3D Secure (no redirect step — sandbox charges settle immediately).
+ * MUST stay unset/false in production: without 3DS there is no liability shift
+ * on Mexican cards.
+ */
+const is3dsDisabled = (): boolean =>
+  process.env.OPENPAY_DISABLE_3DS === "true"
+
+/**
  * Correlation by PREFIX (fix 4): charges carry `{session_id}-{n}` in order_id,
  * so the trailing attempt-nonce is stripped to recover the session id.
  *
@@ -350,7 +359,7 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
         // charge_id is persisted on the session (mapChargeToAuthorizeOutput) so
         // the post-3DS return re-fetches instead of recreating (OP-4). Required
         // for the liability shift on Mexican cards in production.
-        use_3d_secure: true,
+        use_3d_secure: !is3dsDisabled(),
         capture: true,
         redirect_url: data.return_url,
         customer,
