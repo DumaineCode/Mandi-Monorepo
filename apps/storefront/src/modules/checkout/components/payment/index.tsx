@@ -346,7 +346,7 @@ const Payment = ({
                   className="flex gap-2 txt-medium text-ink-muted items-center"
                   data-testid="payment-details-summary"
                 >
-                  <Container className="flex items-center h-7 w-fit p-2 bg-cream">
+                  <Container className="flex items-center h-fit w-fit px-2 py-1 bg-cream">
                     {paymentInfoMap[selectedPaymentMethod]?.icon || (
                       <CreditCard />
                     )}

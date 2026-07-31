@@ -1,14 +1,26 @@
 import { CreditCard } from "@medusajs/icons"
+import {
+  CardBrandLogos,
+  MercadoPagoLogo,
+} from "@modules/checkout/components/payment-logos"
 import Bancontact from "@modules/common/icons/bancontact"
 import Ideal from "@modules/common/icons/ideal"
 import PayPal from "@modules/common/icons/paypal"
 import React from "react"
 
+export type PaymentInfo = {
+  title: string
+  icon: React.JSX.Element
+  /**
+   * Optional trust line rendered under the row title. Use it to name the
+   * processor behind a method (e.g. who actually handles the card data), never
+   * to claim certifications that aren't ours.
+   */
+  caption?: string
+}
+
 /* Map of payment provider_id to their title and icon. Add in any payment providers you want to use. */
-export const paymentInfoMap: Record<
-  string,
-  { title: string; icon: React.JSX.Element }
-> = {
+export const paymentInfoMap: Record<string, PaymentInfo> = {
   pp_stripe_stripe: {
     title: "Credit card",
     icon: <CreditCard />,
@@ -38,11 +50,12 @@ export const paymentInfoMap: Record<
   // Keep both files in sync — the backend contract test asserts the composed ids.
   pp_openpay_openpay: {
     title: "Tarjeta de crédito/débito",
-    icon: <CreditCard />,
+    icon: <CardBrandLogos />,
+    caption: "Procesado por Openpay · BBVA",
   },
   pp_mercadopago_mercadopago: {
     title: "Mercado Pago",
-    icon: <CreditCard />,
+    icon: <MercadoPagoLogo />,
   },
   // Add more payment providers here
 }

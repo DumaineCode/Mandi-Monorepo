@@ -36,7 +36,7 @@ const PaymentDetails = ({ order }: PaymentDetailsProps) => {
                 Payment details
               </Text>
               <div className="flex gap-2 txt-medium text-ui-fg-subtle items-center">
-                <Container className="flex items-center h-7 w-fit p-2 bg-ui-button-neutral-hover">
+                <Container className="flex items-center h-fit w-fit px-2 py-1 bg-ui-button-neutral-hover">
                   {paymentInfoMap[payment.provider_id].icon}
                 </Container>
                 <Text data-testid="payment-amount">
