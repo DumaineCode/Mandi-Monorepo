@@ -1,0 +1,38 @@
+# Local development database.
+#
+# Why this exists: the project's DATABASE_URL points at a Neon instance in
+# us-east-1. From a developer machine that is ~68ms of round-trip latency per
+# query, and Medusa's cart workflows issue tens of sequential queries per
+# request — a single add-to-cart was measured at 2.5s, degrading past 10s once
+# the remote compute was under any load. None of that is application slowness;
+# it is distance. Running Postgres next to the backend removes it.
+#
+# Pinned to 16 to match the Neon server major version (16.14), so dumps restore
+# cleanly in both directions.
+#
+# Usage:
+#   docker compose up -d db
+#   docker compose down          # keeps data (named volume)
+#   docker compose down -v       # destroys data
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: mandi-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: medusa
+      POSTGRES_PASSWORD: medusa
+      POSTGRES_DB: medusa
+    ports:
+      - "5432:5432"
+    volumes:
+      - mandi-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medusa -d medusa"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  mandi-pgdata:
