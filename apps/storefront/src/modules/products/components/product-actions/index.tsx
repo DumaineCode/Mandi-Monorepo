@@ -37,6 +37,12 @@ export default function ProductActions({
   const searchParams = useSearchParams()
 
   const [options, setOptions] = useState<Record<string, string | undefined>>({})
+  // Deliberately NOT `useTransition`: a transition keeps `isPending` true until
+  // React commits the update the action produced, and `addToCart` revalidates
+  // the `carts` tag, so that commit waits on a full RSC refresh of this route.
+  // The button would stay locked long after the item was already in the cart.
+  // This flag tracks the mutation only, and is released the moment the server
+  // confirms it; the refreshed tree lands on its own schedule.
   const [isAdding, setIsAdding] = useState(false)
   const [quantity, setQuantity] = useState(1)
   const countryCode = useParams().countryCode as string
@@ -122,18 +128,27 @@ export default function ProductActions({
   const inView = useIntersection(actionsRef, "0px")
 
   // add the selected variant to the cart
-  const handleAddToCart = async () => {
-    if (!selectedVariant?.id) return null
+  const handleAddToCart = () => {
+    const variantId = selectedVariant?.id
+
+    if (!variantId) return
 
     setIsAdding(true)
 
-    await addToCart({
-      variantId: selectedVariant.id,
+    addToCart({
+      variantId,
       quantity,
       countryCode,
     })
-
-    setIsAdding(false)
+      .catch((error) => {
+        // The previous code awaited without catching, so a failed add left the
+        // button stuck on "Agregando…" forever. Containing the rejection keeps
+        // the button usable and lets the shopper retry.
+        console.error("Failed to add product to cart", error)
+      })
+      .finally(() => {
+        setIsAdding(false)
+      })
   }
 
   const decrement = () => setQuantity((q) => Math.max(1, q - 1))
@@ -184,6 +199,9 @@ export default function ProductActions({
                 <button
                   type="button"
                   onClick={decrement}
+                  // Kept locked while the add is in flight: the request already
+                  // captured the quantity shown at click time, so a live stepper
+                  // would display a number the cart never received.
                   disabled={quantity <= 1 || isAdding}
                   aria-label="Disminuir cantidad"
                   className="flex h-12 w-12 items-center justify-center rounded-l-[10px] text-xl transition-colors hover:bg-cream focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink disabled:opacity-40 motion-reduce:transition-none"

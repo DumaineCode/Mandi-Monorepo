@@ -118,7 +118,10 @@ const MobileActions: React.FC<MobileActionsProps> = ({
               </Button>}
               <Button
                 onClick={handleAddToCart}
-                disabled={!inStock || !variant}
+                // `isAdding` drove the spinner but not the disabled state, so
+                // the sticky bar accepted repeat taps mid-flight and posted one
+                // line item per tap. The desktop button was already gated.
+                disabled={!inStock || !variant || isAdding}
                 className="w-full"
                 isLoading={isAdding}
                 data-testid="mobile-cart-button"
