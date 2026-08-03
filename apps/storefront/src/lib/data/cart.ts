@@ -574,6 +574,14 @@ export async function updateRegion(countryCode: string, currentPath: string) {
   redirect(`/${countryCode}${currentPath}`)
 }
 
+/**
+ * Resilience: `/store/shipping-options` resolves calculated prices through the
+ * fulfillment providers, which means it waits on a live carrier quote (Skydropx).
+ * Without an explicit bound, a hung carrier keeps the caller's render open
+ * indefinitely. Mirrors the timeout contract already used by `provider-config`.
+ */
+const CART_OPTIONS_TIMEOUT_MS = 5_000
+
 export async function listCartOptions() {
   const cartId = await getCartId()
   const headers = {
@@ -590,5 +598,6 @@ export async function listCartOptions() {
     next,
     headers,
     cache: "force-cache",
+    signal: AbortSignal.timeout(CART_OPTIONS_TIMEOUT_MS),
   })
 }
