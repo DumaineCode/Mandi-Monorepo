@@ -39,7 +39,12 @@ export default function RootLayout(props: { children: React.ReactNode }) {
       data-mode="light"
       className={`${bricolage.variable} ${hanken.variable} ${spaceMono.variable}`}
     >
-      <body className="font-hanken">
+      {/*
+          The cream surface and its brand watermark live on <body> so every route
+          inherits them; surfaces that must stay clean (checkout) just paint their
+          own background on top.
+        */}
+        <body className="brand-watermark bg-cream font-hanken text-ink">
         <main className="relative">{props.children}</main>
       </body>
     </html>

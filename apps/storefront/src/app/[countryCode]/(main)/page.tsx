@@ -28,7 +28,9 @@ export default async function Home(props: {
   const { countryCode } = await props.params
 
   return (
-    <div className="min-h-screen bg-cream font-hanken text-ink">
+    // Surface colour comes from <body>; repainting bg-cream here would cover the
+    // brand watermark rendered behind the page content.
+    <div className="min-h-screen font-hanken text-ink">
       <AnnouncementTicker />
       <Hero />
       <FlavorMarquee />

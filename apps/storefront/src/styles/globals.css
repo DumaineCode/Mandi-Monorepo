@@ -54,6 +54,52 @@
     @apply max-w-[1440px] w-full mx-auto px-6;
   }
 
+  /*
+    Brand watermark for the cream surface.
+
+    The mark is painted by a single fixed pseudo-element, not by DOM nodes: it
+    costs zero elements, never intercepts pointer events and stays out of the
+    accessibility tree. The logo is used as a MASK (alpha only) and the colour
+    comes from `background-color`, so the tint is exactly `ink` at every size —
+    dropping the raw PNG in at low opacity would drag in its blue dot and the
+    white-matted antialiasing, which reads as a dirty grey halo on cream.
+
+    `/brand-watermark-tile.svg` bakes the spacing and the half-drop offset into
+    the tile itself; `mask-repeat` cannot add gaps on its own. The whole plane is
+    rotated so the grid never aligns with headings or card edges.
+
+    Tunables (override on any ancestor, e.g. `style={{ "--watermark-opacity": .07 }}`):
+      --watermark-opacity  visibility
+      --watermark-tile     tile width in px (logo renders at ~42% of it)
+      --watermark-angle    rotation of the field
+      --watermark-color    ink of the mark
+  */
+  .brand-watermark::before {
+    content: "";
+    position: fixed;
+    inset: -50%;
+    z-index: -1;
+    pointer-events: none;
+    opacity: var(--watermark-opacity, 0.04);
+    background-color: var(--watermark-color, theme(colors.ink));
+    transform: rotate(var(--watermark-angle, -18deg));
+    transform-origin: center;
+    -webkit-mask-image: url("/brand-watermark-tile.svg");
+    mask-image: url("/brand-watermark-tile.svg");
+    -webkit-mask-repeat: repeat;
+    mask-repeat: repeat;
+    -webkit-mask-size: var(--watermark-tile, 264px) auto;
+    mask-size: var(--watermark-tile, 264px) auto;
+    -webkit-mask-position: center;
+    mask-position: center;
+  }
+
+  @media print {
+    .brand-watermark::before {
+      display: none;
+    }
+  }
+
   .contrast-btn {
     @apply px-4 py-2 border border-black rounded-full hover:bg-black hover:text-white transition-colors duration-200 ease-in;
   }
