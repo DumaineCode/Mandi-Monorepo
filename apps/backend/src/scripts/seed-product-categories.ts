@@ -1,32 +1,23 @@
 /**
  * Idempotent seed for the storefront's top-level product categories.
  *
- * Run with:
- *
  *   NODE_ENV=development npx medusa exec ./src/scripts/seed-product-categories.ts
  *
  * NOTE the NODE_ENV prefix. `medusa exec` does not set NODE_ENV, and
  * `medusa-config.ts` enables Postgres SSL for every value other than
- * 'development'/'test'. Without the prefix this script fails against the local
- * Docker Postgres with a misleading `KnexTimeoutError: pool is probably full`,
- * which is really an SSL handshake timeout.
+ * 'development'/'test'. Without it this fails against the local Docker Postgres
+ * with a misleading `KnexTimeoutError: pool is probably full`, which is really
+ * an SSL handshake timeout.
  *
- * Two idempotent phases:
- *   1. create categories whose `handle` is absent
- *   2. backfill `metadata.image_url` on categories that have none
+ * This file is a thin shell on purpose: all identity and idempotency decisions
+ * live in `seed-product-categories.core.ts`, which is unit-tested without a
+ * database. Everything here is container wiring plus the two things that can
+ * only be done against live data — re-reading metadata immediately before a
+ * write, and reporting partial failure honestly.
  *
- * Phase 2 merges into existing metadata and never overwrites a non-empty
- * `image_url`, so covers reassigned from the Admin UI survive a re-run.
- *
- * Creation goes through `createProductCategoriesWorkflow` rather than raw SQL
- * because Medusa derives the `mpath` materialised-path column from the parent
- * chain; writing rows directly corrupts category tree traversal.
- *
- * `metadata.image_url` points at the static covers in
- * `apps/storefront/public/categories/`. Those are storefront-root relative paths,
- * so they resolve as `<storefront>/categories/<slug>.webp`. A `-sombra` variant
- * exists for every cover and can be swapped from the Admin UI (Category →
- * Metadata → image_url) without a deploy.
+ * Creation goes through `createProductCategoriesWorkflow` rather than raw SQL:
+ * Medusa derives the `mpath` materialised-path column from the parent chain, and
+ * writing rows directly corrupts category tree traversal.
  */
 import { MedusaContainer } from "@medusajs/framework"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
@@ -35,63 +26,20 @@ import {
   updateProductCategoriesWorkflow,
 } from "@medusajs/medusa/core-flows"
 
-type SeedCategory = {
-  name: string
-  handle: string
-  image_url: string
-}
+import {
+  CATEGORY_SEEDS,
+  SEED_KEY,
+  type ExistingCategory,
+  planCategorySeed,
+} from "./seed-product-categories.core"
 
-/**
- * Top-level categories, in the order they should appear in the storefront.
- * `rank` is not hardcoded — it continues from the highest existing root rank so
- * re-running after a manual reorder in Admin does not fight the user's ordering.
- */
-const CATEGORIES: SeedCategory[] = [
-  {
-    name: "Frappuccinis",
-    handle: "frappuccinis",
-    image_url: "/categories/frappuccinis.webp",
-  },
-  {
-    name: "Sodas Italianas",
-    handle: "sodas-italianas",
-    image_url: "/categories/sodas-italianas.webp",
-  },
-  {
-    name: "Envases",
-    handle: "envases",
-    image_url: "/categories/envases.webp",
-  },
-  {
-    name: "Ice Frutal",
-    handle: "ice-frutal",
-    image_url: "/categories/ice-frutal.webp",
-  },
-  {
-    name: "Bases Gourmet",
-    handle: "bases-gourmet",
-    image_url: "/categories/bases-gourmet.webp",
-  },
-  {
-    name: "Cappuccinis",
-    handle: "cappuccinis",
-    image_url: "/categories/cappuccinis.webp",
-  },
-  {
-    name: "Master Latte",
-    handle: "master-latte",
-    image_url: "/categories/master-latte.webp",
-  },
-  {
-    name: "Presentación 1.5 KG",
-    handle: "presentacion-1-5-kg",
-    image_url: "/categories/presentacion-1-5-kg.webp",
-  },
-  {
-    name: "Tisanas Frutales",
-    handle: "tisanas-frutales",
-    image_url: "/categories/tisanas-frutales.webp",
-  },
+const CATEGORY_FIELDS = [
+  "id",
+  "name",
+  "handle",
+  "parent_category_id",
+  "is_active",
+  "metadata",
 ]
 
 export default async function seedProductCategories({
@@ -104,76 +52,97 @@ export default async function seedProductCategories({
 
   const { data: existing } = await query.graph({
     entity: "product_category",
-    fields: ["id", "handle", "rank", "parent_category_id", "metadata"],
+    fields: CATEGORY_FIELDS,
   })
 
-  // --- Phase 1: create missing categories -----------------------------------
-  const existingHandles = new Set(existing.map((c) => c.handle))
-  const missing = CATEGORIES.filter((c) => !existingHandles.has(c.handle))
+  const plan = planCategorySeed(existing as ExistingCategory[], CATEGORY_SEEDS)
 
-  if (missing.length) {
-    // Continue ranking after the current last root category.
-    const maxRootRank = existing
-      .filter((c) => !c.parent_category_id)
-      .reduce((max, c) => Math.max(max, c.rank ?? 0), -1)
+  // A conflict means identity is ambiguous. Writing anything at that point is
+  // how the duplicate category happened, so nothing is written at all.
+  if (plan.conflicts.length > 0) {
+    plan.conflicts.forEach((conflict) => logger.error(`[seed] ${conflict}`))
+    throw new Error(
+      `[seed] ${plan.conflicts.length} unresolved category conflict(s); no changes were made.`
+    )
+  }
 
+  plan.warnings.forEach((warning) => logger.warn(`[seed] ${warning}`))
+
+  if (plan.toCreate.length > 0) {
     logger.info(
-      `[seed-product-categories] Creating ${missing.length}: ${missing
-        .map((c) => c.handle)
+      `[seed] Creating ${plan.toCreate.length}: ${plan.toCreate
+        .map((seed) => seed.handle)
         .join(", ")}`
     )
 
     await createProductCategoriesWorkflow(container).run({
       input: {
-        product_categories: missing.map((category, index) => ({
-          name: category.name,
-          handle: category.handle,
+        product_categories: plan.toCreate.map((seed) => ({
+          name: seed.name,
+          handle: seed.handle,
           is_active: true,
           is_internal: false,
-          rank: maxRootRank + 1 + index,
-          metadata: { image_url: category.image_url },
+          // No `rank`: Medusa assigns one, and a lower value would rerank every
+          // existing sibling, silently reordering a merchant's arrangement.
+          metadata: { [SEED_KEY]: seed.key, image_url: seed.image_url },
         })),
       },
     })
   }
 
-  // --- Phase 2: backfill covers on pre-existing categories -------------------
-  const seedByHandle = new Map(CATEGORIES.map((c) => [c.handle, c]))
-  const needsCover = existing.filter((category) => {
-    const seed = seedByHandle.get(category.handle)
-    if (!seed) {
-      return false
-    }
-    const current = (category.metadata as Record<string, unknown> | null)?.
-      image_url
-    // Treat null/undefined/"" alike: Admin's metadata editor writes empty strings.
-    return typeof current !== "string" || current.trim() === ""
-  })
+  const failures: string[] = []
 
-  for (const category of needsCover) {
-    const seed = seedByHandle.get(category.handle)!
-    await updateProductCategoriesWorkflow(container).run({
-      input: {
-        selector: { id: category.id },
-        // Spread the existing metadata: the update replaces the whole jsonb
-        // column, so omitting this would silently drop unrelated keys.
-        update: {
-          metadata: {
-            ...((category.metadata as Record<string, unknown> | null) ?? {}),
-            image_url: seed.image_url,
-          },
+  for (const update of plan.toUpdate) {
+    try {
+      /**
+       * Re-read immediately before writing. `updateProductCategoriesWorkflow`
+       * REPLACES the metadata jsonb column rather than merging it — unlike most
+       * entities, `ProductCategoryRepository` overrides the base `update` and
+       * calls `manager.assign` without `mergeObjectProperties`. Spreading a
+       * snapshot taken at the top of this script would therefore delete any key
+       * an admin saved while it was running.
+       */
+      const { data: fresh } = await query.graph({
+        entity: "product_category",
+        fields: ["id", "metadata"],
+        filters: { id: update.id },
+      })
+
+      const current = (fresh[0]?.metadata ?? {}) as Record<string, unknown>
+
+      await updateProductCategoriesWorkflow(container).run({
+        input: {
+          selector: { id: update.id },
+          update: { metadata: { ...current, ...update.metadataPatch } },
         },
-      },
-    })
-    logger.info(
-      `[seed-product-categories] Cover set on ${category.handle} -> ${seed.image_url}`
+      })
+
+      logger.info(
+        `[seed] Updated ${update.handle}: ${Object.keys(update.metadataPatch).join(", ")}`
+      )
+    } catch (error) {
+      // Each workflow is its own transaction, so an early throw would leave the
+      // remaining categories untouched with no summary. Collect and continue;
+      // a re-run resumes cleanly because the plan is derived from live state.
+      failures.push(
+        `${update.handle}: ${error instanceof Error ? error.message : String(error)}`
+      )
+    }
+  }
+
+  if (failures.length > 0) {
+    failures.forEach((failure) => logger.error(`[seed] FAILED ${failure}`))
+    throw new Error(
+      `[seed] ${plan.toUpdate.length - failures.length}/${plan.toUpdate.length} updates applied, ${failures.length} failed.`
     )
   }
 
-  if (!missing.length && !needsCover.length) {
-    logger.info("[seed-product-categories] Nothing to do.")
+  if (plan.toCreate.length === 0 && plan.toUpdate.length === 0) {
+    logger.info("[seed] Nothing to do.")
     return
   }
 
-  logger.info("[seed-product-categories] Done.")
+  logger.info(
+    `[seed] Done — created ${plan.toCreate.length}, updated ${plan.toUpdate.length}.`
+  )
 }
