@@ -38,6 +38,18 @@ type Props = {
 const TRACK_ID = "home-categories-track"
 
 /**
+ * Card width is derived from the track, not fixed, so a whole number of cards
+ * always fills the row — the same 1 / 2 / 4 progression the grid used before,
+ * minus the `gap-4` (1rem) between them. Fixed widths left a sliced card hanging
+ * off the edge at most viewports.
+ *
+ * The 4-up step is at `small` (1024px) rather than the grid's old `large`
+ * (1440px) so laptops get four across instead of two.
+ */
+const CARD_WIDTH =
+  "w-full xsmall:w-[calc((100%-1rem)/2)] small:w-[calc((100%-3rem)/4)]"
+
+/**
  * Slack for sub-pixel rounding: at fractional zoom levels `scrollLeft` never
  * quite reaches `scrollWidth - clientWidth`, which would leave the next arrow
  * permanently enabled at the end of the track.
@@ -71,11 +83,15 @@ const CategoriesCarousel = ({ categories }: Props) => {
 
     const cards = Array.from(track.children) as HTMLElement[]
     const origin = cards[0]?.offsetLeft ?? 0
+    const offsets = cards.map((card) => card.offsetLeft - origin)
     const maxScroll = track.scrollWidth - track.clientWidth
-    const nextPages = computeCarouselPages(
-      cards.map((card) => card.offsetLeft - origin),
-      maxScroll
-    )
+
+    // Measured rather than hardcoded per breakpoint: one source of truth (the
+    // CSS above) instead of a JS copy that silently drifts when it changes.
+    const stride = offsets[1] ?? 0
+    const perPage = stride > 0 ? Math.round(track.clientWidth / stride) : 1
+
+    const nextPages = computeCarouselPages(offsets, maxScroll, perPage)
 
     setPages(nextPages)
     setActive(activePageIndex(nextPages, track.scrollLeft))
@@ -171,7 +187,9 @@ const CategoriesCarousel = ({ categories }: Props) => {
         id={TRACK_ID}
         role="region"
         aria-label="Categorías"
-        className="flex snap-x snap-mandatory gap-4 overflow-x-auto pb-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        // `items-stretch` keeps every card the same height regardless of how
+        // many lines its name wraps to.
+        className="flex snap-x snap-mandatory items-stretch gap-4 overflow-x-auto pb-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {categories.map((category, index) => {
           const image = getCategoryImage(category)
@@ -181,20 +199,24 @@ const CategoriesCarousel = ({ categories }: Props) => {
             <LocalizedClientLink
               key={category.id}
               href={`/categories/${category.handle}`}
-              className="group block w-[240px] shrink-0 snap-start overflow-hidden rounded-[18px] border border-line bg-paper transition-all duration-200 hover:-translate-y-[3px] hover:border-ink small:w-[268px]"
+              className={`group flex ${CARD_WIDTH} shrink-0 snap-start flex-col overflow-hidden rounded-[18px] border border-line bg-paper transition-all duration-200 hover:-translate-y-[3px] hover:border-ink`}
             >
-              <div className="relative h-[140px] overflow-hidden">
+              {/*
+                Covers are authored 2:1, so an aspect ratio keeps them uncropped
+                at every card width — a fixed pixel height only matched one.
+              */}
+              <div className="relative aspect-[2/1] overflow-hidden">
                 {image ? (
                   <Image
                     src={image}
                     alt={category.name}
                     fill
                     className="object-cover object-center"
-                    // Matches the card widths below. Inert while
-                    // `images.unoptimized` is set in next.config.js — Next drops
-                    // `sizes` entirely in that mode — but kept truthful so it
-                    // does not start lying if optimization is switched on.
-                    sizes="(max-width: 1024px) 240px, 268px"
+                    // Mirrors CARD_WIDTH. Inert while `images.unoptimized` is
+                    // set in next.config.js — Next drops `sizes` in that mode —
+                    // but kept truthful so it does not start lying if
+                    // optimization is switched on.
+                    sizes="(min-width: 1024px) 25vw, (min-width: 512px) 50vw, 100vw"
                   />
                 ) : (
                   <div

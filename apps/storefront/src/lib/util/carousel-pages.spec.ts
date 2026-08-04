@@ -15,45 +15,91 @@ import { activePageIndex, computeCarouselPages } from "./carousel-pages"
  */
 const step = (index: number) => index * 284
 
-describe("computeCarouselPages", () => {
-  it("collapses targets that clamp onto the same final scroll position", () => {
-    const offsets = Array.from({ length: 9 }, (_, i) => step(i))
-    const pages = computeCarouselPages(offsets, 1408)
+/**
+ * Nine cards, four visible — the desktop home layout. Cards are sized off the
+ * container so exactly `perPage` fill the track, which is why paging advances a
+ * screenful at a time instead of a single card.
+ */
+const NINE = Array.from({ length: 9 }, (_, i) => step(i))
 
-    // 0,284,568,852,1136 are reachable; 1420/1704/1988/2272 all clamp to 1408.
-    expect(pages.map((p) => p.scrollLeft)).toEqual([
-      0, 284, 568, 852, 1136, 1408,
+describe("computeCarouselPages", () => {
+  it("advances a full screenful at a time", () => {
+    // Cards 0, 4 and 8 start a page; 8 clamps back onto the track's end.
+    const pages = computeCarouselPages(NINE, 1408, 4)
+
+    expect(pages).toEqual([
+      { scrollLeft: 0, cardIndex: 0 },
+      { scrollLeft: 1136, cardIndex: 4 },
+      { scrollLeft: 1408, cardIndex: 8 },
     ])
   })
 
-  it("keeps every page addressable — no two pages share a scroll position", () => {
-    const offsets = Array.from({ length: 9 }, (_, i) => step(i))
-    const positions = computeCarouselPages(offsets, 1408).map((p) => p.scrollLeft)
+  it("collapses page starts that clamp onto the same final position", () => {
+    // With 8 per page, cards 0 and 8 are page starts, but 8 clamps to 1408 and
+    // would otherwise duplicate a reachable position.
+    const pages = computeCarouselPages(NINE, 1136, 8)
+
+    expect(pages.map((p) => p.scrollLeft)).toEqual([0, 1136])
+  })
+
+  it("keeps every page addressable — no two share a scroll position", () => {
+    const positions = computeCarouselPages(NINE, 1408, 4).map(
+      (p) => p.scrollLeft
+    )
 
     expect(new Set(positions).size).toBe(positions.length)
   })
 
-  it("reports the first card that lands on each page, for labelling", () => {
-    const offsets = Array.from({ length: 9 }, (_, i) => step(i))
-    const pages = computeCarouselPages(offsets, 1408)
+  it("reports the first card of each page, for labelling", () => {
+    expect(computeCarouselPages(NINE, 1408, 4).map((p) => p.cardIndex)).toEqual([
+      0, 4, 8,
+    ])
+  })
 
-    expect(pages.map((p) => p.cardIndex)).toEqual([0, 1, 2, 3, 4, 5])
+  it("pages per card when only one fits at a time", () => {
+    expect(computeCarouselPages([0, 284, 568], 568, 1).map((p) => p.cardIndex)).toEqual(
+      [0, 1, 2]
+    )
   })
 
   it("returns one page when everything fits and nothing can scroll", () => {
-    const pages = computeCarouselPages([0, 284, 568], 0)
-
-    expect(pages).toEqual([{ scrollLeft: 0, cardIndex: 0 }])
+    expect(computeCarouselPages([0, 284, 568], 0, 4)).toEqual([
+      { scrollLeft: 0, cardIndex: 0 },
+    ])
   })
 
-  it("returns one page per card when the track can reach the last card", () => {
-    const pages = computeCarouselPages([0, 284, 568], 568)
+  /**
+   * Five cards shown four at a time: the only page start is card 0, but the
+   * track still scrolls. Without a trailing page the fifth card would be
+   * visible by dragging yet unreachable through the controls.
+   */
+  it("adds a trailing page when the last screenful is partial", () => {
+    const pages = computeCarouselPages([0, 284, 568, 852, 1136], 300, 4)
 
-    expect(pages.map((p) => p.scrollLeft)).toEqual([0, 284, 568])
+    expect(pages).toEqual([
+      { scrollLeft: 0, cardIndex: 0 },
+      { scrollLeft: 300, cardIndex: 4 },
+    ])
+  })
+
+  it("does not add a trailing page when a page start already reaches the end", () => {
+    const pages = computeCarouselPages([0, 284, 568, 852, 1136], 1136, 4)
+
+    expect(pages.filter((p) => p.scrollLeft === 1136)).toHaveLength(1)
   })
 
   it("handles an empty track without throwing", () => {
-    expect(computeCarouselPages([], 0)).toEqual([])
+    expect(computeCarouselPages([], 0, 4)).toEqual([])
+  })
+
+  /**
+   * `perPage` is derived from live measurements, so a mid-layout 0 or a negative
+   * must not divide by zero or produce an empty control strip.
+   */
+  it.each([0, -3])("treats a nonsensical perPage of %s as 1", (perPage) => {
+    expect(computeCarouselPages([0, 284], 284, perPage).map((p) => p.cardIndex)).toEqual(
+      [0, 1]
+    )
   })
 
   /**
@@ -62,9 +108,9 @@ describe("computeCarouselPages", () => {
    * produce a negative scroll target.
    */
   it("never emits a negative scroll position", () => {
-    const pages = computeCarouselPages([0, 284], -20)
-
-    expect(pages).toEqual([{ scrollLeft: 0, cardIndex: 0 }])
+    expect(computeCarouselPages([0, 284], -20, 4)).toEqual([
+      { scrollLeft: 0, cardIndex: 0 },
+    ])
   })
 })
 
