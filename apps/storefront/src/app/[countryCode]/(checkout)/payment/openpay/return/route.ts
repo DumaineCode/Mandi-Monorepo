@@ -16,12 +16,19 @@ import { NextRequest, NextResponse } from "next/server"
  * redirect cannot complete an order (OP-4).
  */
 
+/**
+ * `step=review` is gone with the four-step checkout; `error=payment_failed`
+ * STAYS.
+ *
+ * Surfacing that parameter to the customer is an explicit non-goal, so it is
+ * still produced and still read by nothing. Dropping it would destroy signal for
+ * free — it is the only marker distinguishing "came back from a failed 3DS
+ * challenge" from "navigated to checkout" in an access log, and the follow-up
+ * that surfaces it needs the parameter to already be there.
+ */
 const failureRedirect = (request: NextRequest, countryCode: string) =>
   NextResponse.redirect(
-    new URL(
-      `/${countryCode}/checkout?step=review&error=payment_failed`,
-      request.url
-    )
+    new URL(`/${countryCode}/checkout?error=payment_failed`, request.url)
   )
 
 const isNextRedirectError = (err: unknown): boolean => {
@@ -61,8 +68,8 @@ export async function GET(
     )
 
     // Charge not captured (declined, abandoned, or verification failed) —
-    // send the customer back to the review step; the cart is intact and the
-    // payment is retryable.
+    // send the customer back to the single-page checkout; the cart is intact
+    // and the payment is retryable from the CTA.
     return failureRedirect(request, countryCode)
   }
 

@@ -1,19 +1,16 @@
 import { Radio as RadioGroupOption } from "@headlessui/react"
 import { Text, clx } from "@modules/common/components/ui"
-import React, { useContext, useEffect, useMemo, useState } from "react"
+import React, { useContext, useEffect, useState } from "react"
 
 import Radio from "@modules/common/components/radio"
 
 import { isManual, type PaymentInfo } from "@lib/constants"
 import SkeletonCardDetails from "@modules/skeletons/components/skeleton-card-details"
-import { CardElement } from "@stripe/react-stripe-js"
-import { StripeCardElementOptions } from "@stripe/stripe-js"
 import PaymentTest from "../payment-test"
 import {
   OpenpayContext,
   type OpenpayCardFields,
 } from "../payment-wrapper/openpay-wrapper"
-import { StripeContext } from "../payment-wrapper/stripe-wrapper"
 
 type PaymentContainerProps = {
   paymentProviderId: string
@@ -76,69 +73,21 @@ const PaymentContainer: React.FC<PaymentContainerProps> = ({
 
 export default PaymentContainer
 
-export const StripeCardContainer = ({
-  paymentProviderId,
-  selectedPaymentOptionId,
-  paymentInfoMap,
-  disabled = false,
-  setCardBrand,
-  setError,
-  setCardComplete,
-}: Omit<PaymentContainerProps, "children"> & {
-  setCardBrand: (brand: string) => void
-  setError: (error: string | null) => void
-  setCardComplete: (complete: boolean) => void
-}) => {
-  const stripeReady = useContext(StripeContext)
-
-  const useOptions: StripeCardElementOptions = useMemo(() => {
-    return {
-      style: {
-        base: {
-          fontFamily: "Inter, sans-serif",
-          color: "#424270",
-          "::placeholder": {
-            color: "rgb(107 114 128)",
-          },
-        },
-      },
-      classes: {
-        base: "pt-3 pb-1 block w-full h-11 px-4 mt-0 bg-ui-bg-field border rounded-md appearance-none focus:outline-none focus:ring-0 focus:shadow-borders-interactive-with-active border-ui-border-base hover:bg-ui-bg-field-hover transition-all duration-300 ease-in-out",
-      },
-    }
-  }, [])
-
-  return (
-    <PaymentContainer
-      paymentProviderId={paymentProviderId}
-      selectedPaymentOptionId={selectedPaymentOptionId}
-      paymentInfoMap={paymentInfoMap}
-      disabled={disabled}
-    >
-      {selectedPaymentOptionId === paymentProviderId &&
-        (stripeReady ? (
-          <div className="my-4 transition-all duration-150 ease-in-out">
-            <Text className="txt-medium-plus text-ui-fg-base mb-1">
-              Enter your card details:
-            </Text>
-            <CardElement
-              options={useOptions as StripeCardElementOptions}
-              onChange={(e) => {
-                setCardBrand(
-                  e.brand && e.brand.charAt(0).toUpperCase() + e.brand.slice(1)
-                )
-                setError(e.error?.message || null)
-                setCardComplete(e.complete)
-              }}
-            />
-          </div>
-        ) : (
-          <SkeletonCardDetails />
-        ))}
-    </PaymentContainer>
-  )
-}
-
+/**
+ * `StripeCardContainer` was deleted here alongside
+ * `payment-wrapper/stripe-wrapper.tsx` (PR1b, task 1b.18).
+ *
+ * It had to go in the SAME commit as the wrapper: it was the only consumer of
+ * `StripeContext`, so deleting the wrapper on its own would have left the branch
+ * with a dangling import and a broken build. Per `design.md` §0 CONFLICT-1
+ * RESOLUTION the component was unreachable — `apps/backend/medusa-config.ts`
+ * registers only `openpay` and `mercadopago`, and `listCartPaymentMethods` is
+ * backend-driven, so `isStripeLike` could never match a real provider id.
+ *
+ * `@stripe/react-stripe-js` and `@stripe/stripe-js` have since been dropped from
+ * `package.json` (task 2c.13, pulled forward into PR1b) — the last source import
+ * of either package left with `StripePaymentButton` in `payment-button/`.
+ */
 const cardInputClasses =
   "block w-full h-11 px-4 mt-0 bg-ui-bg-field border rounded-md appearance-none focus:outline-none focus:ring-0 focus:shadow-borders-interactive-with-active border-ui-border-base hover:bg-ui-bg-field-hover transition-all duration-300 ease-in-out"
 

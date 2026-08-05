@@ -862,6 +862,24 @@ The storefront has **no jsdom, no @testing-library, no Playwright** (`explore §
 
 ---
 
+## 12b. Settled decision — Openpay fingerprinting scope (added after PR1b review)
+
+`review-risk` on the PR1b diff surfaced a consequence the C1 inversion carried silently: mounting the Openpay wrapper from provider configuration means `openpay-data.v1.min.js` — Openpay's **device-fingerprinting collector** — runs for every visitor who opens `/checkout`, including those who will pay with Mercado Pago and those who abandon. Previously it ran only after a pending Openpay session existed, i.e. only for customers who had chosen Openpay.
+
+Two mitigations, one applied and one pending:
+
+1. **Applied in PR1b.** The mount is additionally gated on Openpay being among the cart's available payment methods (`isOpenpayOffered`). Holding merchant keys is not the same as offering the method; a processor must not fingerprint visitors it is not serving. Fails closed when the lookup fails.
+
+2. **Settled, to be implemented in PR2c.** The user's decision: **the Openpay scripts must load when the customer selects Openpay as their payment method, not on checkout mount.** Only customers who actually choose to pay by card through Openpay get fingerprinted.
+
+Rationale: LFPDPPP jurisdiction, and the scope expansion was decided inside a refactor rather than deliberately. The design goal of C1 is preserved in full — the wrapper still does NOT depend on a payment session existing, which is what made R5 possible. The trigger simply moves from "checkout mount" to "method selected", both of which happen before the final CTA.
+
+Rejected alternative: keeping the mount-time load for better antifraud signal quality. Openpay recommends the earliest possible collection, but fingerprinting customers who never use the processor is not a trade the product is willing to make.
+
+**PR2c constraint:** the payment section owns this trigger. Expect a small latency cost when the customer selects Openpay while `openpay.js` loads; surface it as a pending state on the card fields rather than blocking the section.
+
+---
+
 ## 13. Open items for `sdd-tasks` — RESOLVED
 
 All four decisions were put to the user and answered. `sdd-tasks` must treat these as settled.
