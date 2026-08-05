@@ -1,83 +1,126 @@
-import { listCartShippingMethods } from "@lib/data/fulfillment"
-import { HttpTypes } from "@medusajs/types"
-import AddressShippingGroup from "@modules/checkout/components/address-shipping-group"
-import CheckoutUnavailable from "@modules/checkout/components/checkout-unavailable"
-import Payment from "@modules/checkout/components/payment"
-import Review from "@modules/checkout/components/review"
+"use client"
 
-export default async function CheckoutForm({
-  cart,
-  customer,
-  availablePaymentMethods: paymentMethods,
+import { HttpTypes } from "@medusajs/types"
+import CheckoutUnavailable from "@modules/checkout/components/checkout-unavailable"
+import ContactAddressSection from "@modules/checkout/components/contact-address-section"
+import Payment from "@modules/checkout/components/payment"
+import QuoteRetryNotice from "@modules/checkout/components/quote-retry-notice"
+import Review from "@modules/checkout/components/review"
+import Shipping from "@modules/checkout/components/shipping"
+import { useCheckoutCart } from "@modules/checkout/state/checkout-context"
+import { Text } from "@modules/common/components/ui"
+
+/**
+ * A degraded section, for a dependency the checkout could not load.
+ *
+ * Replaces what used to be a `return null` for the WHOLE form. A checkout that
+ * renders nothing because one endpoint hiccuped is worse than one that renders
+ * with an error in the section that actually failed: the customer can still
+ * enter their details, the autosave still keeps them, and a reload recovers the
+ * rest. Blanking the page loses all of it.
+ */
+const SectionUnavailable = ({
+  title,
+  reason,
 }: {
-  cart: HttpTypes.StoreCart | null
+  title: string
+  reason: string
+}) => (
+  <section className="rounded-large border border-line bg-paper p-6 small:p-8">
+    <h2 className="mb-2 font-bricolage text-2xl text-ink">{title}</h2>
+    <Text className="txt-medium text-ink-muted">{reason}</Text>
+  </section>
+)
+
+/**
+ * The checkout form column. LAYOUT ONLY — no data fetching, no state.
+ *
+ * `listCartShippingMethods` and `listCartPaymentMethods` moved up to
+ * `checkout/page.tsx` (D7): this template is now a client component under
+ * `CheckoutProvider`, so it cannot `await` anything, and the page is the one
+ * place both lists have more than one consumer anyway.
+ *
+ * ## Chain state, stated plainly
+ *
+ * *Datos* is the new single-page section. *Envío*, *Pago* and *Revisión* are
+ * still the four-step components, and they are still driven by `?step=` — PR2b
+ * and PR2c replace them with `ShippingSection` and `PaymentSection` reading
+ * this same context. Until then they open through their own "Editar" buttons
+ * rather than through a step the address form pushes, because the address form
+ * no longer pushes one. That is an intermediate state on a chained branch; it
+ * never reaches `main`, which is the reason the chain targets a tracker branch.
+ */
+export default function CheckoutForm({
+  customer,
+  shippingOptionsFailed,
+  availablePaymentMethods,
+}: {
   customer: HttpTypes.StoreCustomer | null
-  /**
-   * Fetched by the checkout page rather than here, because `PaymentWrapper`
-   * needs the same list to decide whether Openpay's browser SDK is loaded at
-   * all. `null` means the request failed, and is rendered as such below — the
-   * failure handling did not move, only the fetch.
-   */
+  /** The options request failed. `[]` is a real answer and is not a failure. */
+  shippingOptionsFailed: boolean
   availablePaymentMethods: HttpTypes.StorePaymentProvider[] | null
 }) {
-  // The caller currently guarantees a cart, so this branch is unreachable
-  // today. It renders the failure state anyway rather than `return null`: a
-  // bare null is precisely the blank-page failure the rest of this component
-  // was just changed to remove, and leaving one behind means the day this
-  // template is rendered from somewhere with a weaker guarantee, the bug comes
-  // back silently and in the worst possible place.
+  /**
+   * The CART slice, not the whole state (W6 / C3).
+   *
+   * Subscribing to the full state re-rendered this template on every keystroke,
+   * and through it `Shipping`, `Payment` and `Review`. `Shipping` re-rendering is
+   * not merely wasteful: its price effect keys on the options array IDENTITY, so
+   * the churn cost live Skydropx quotes. This context changes only when the cart
+   * or the option SET actually changes.
+   */
+  const { cart, shippingOptions } = useCheckoutCart()
+
   if (!cart) {
     return <CheckoutUnavailable reason="No pudimos cargar tu carrito." />
   }
 
-  const shippingMethods = await listCartShippingMethods(cart.id)
-
-  // Neither list is optional: without shipping options there is nothing to
-  // choose and without payment providers there is nothing to pay with, so the
-  // form genuinely cannot be rendered. What changed is what "cannot render"
-  // looks like.
-  //
-  // This used to `return null`, which turned one timeout or one 5xx into a
-  // silently BLANK checkout page — no message, no retry, no signal. That was
-  // masked while `listCartShippingMethods` was `force-cache` and a stale entry
-  // could absorb a transient blip; removing the cache (correctly — the response
-  // is address-filtered, so stale means WRONG) removed the mask and raised the
-  // failure rate at the same time. An unrenderable checkout must at least say
-  // so and offer a way back.
-  //
-  // Scope note: this is the smallest honest fix, not the start of a UI
-  // restructure.
-  //
-  // Note what this does NOT cover, because an earlier version of this comment
-  // implied otherwise: a SUCCESSFUL empty list. `listCartShippingMethods`
-  // returns `null` only when the call failed, and `[]` is truthy, so a cart with
-  // genuinely zero shipping options still falls through and renders the address
-  // form with an empty list — unchanged behaviour. That is deliberate: an empty
-  // list from a backend that answered is evidence, while a failed call is not,
-  // and only the second one justifies refusing to render.
-  if (!shippingMethods || !paymentMethods) {
-    return (
-      <CheckoutUnavailable
-        reason={
-          !shippingMethods
-            ? "No pudimos obtener las opciones de envío."
-            : "No pudimos obtener los métodos de pago."
-        }
-      />
-    )
-  }
-
   return (
-    <div className="w-full grid grid-cols-1 gap-y-8">
-      <AddressShippingGroup
-        cart={cart}
-        customer={customer}
-        availableShippingMethods={shippingMethods}
-      />
+    <div
+      className={[
+        "grid w-full grid-cols-1 gap-y-8",
+        /**
+         * Scroll clearance for PR2c's sticky mobile CTA bar. Landed here, ahead
+         * of the bar itself, so the chain never has a commit where the bar
+         * covers the last field — the single most common bug in sticky checkout
+         * bars, and one that only shows up on a real phone.
+         */
+        "pb-[calc(6rem+env(safe-area-inset-bottom))] small:pb-12",
+      ].join(" ")}
+    >
+      <ContactAddressSection customer={customer} />
 
-      <Payment cart={cart} availablePaymentMethods={paymentMethods} />
+      {shippingOptionsFailed ? (
+        <SectionUnavailable
+          title="Envío"
+          reason="No pudimos obtener las opciones de envío. Recarga la página para intentarlo de nuevo."
+        />
+      ) : (
+        <>
+          {/**
+           * C4: the way out of a failed quote. Renders nothing unless the quote
+           * actually failed, and sits ABOVE the section whose prices are missing
+           * so the explanation precedes the gap it explains.
+           */}
+          <QuoteRetryNotice />
+          <Shipping cart={cart} availableShippingMethods={shippingOptions} />
+        </>
+      )}
 
-      <Review cart={cart} />
+      {availablePaymentMethods ? (
+        <>
+          <Payment
+            cart={cart}
+            availablePaymentMethods={availablePaymentMethods}
+          />
+          <Review cart={cart} />
+        </>
+      ) : (
+        <SectionUnavailable
+          title="Pago"
+          reason="No pudimos obtener los métodos de pago. Recarga la página para intentarlo de nuevo."
+        />
+      )}
     </div>
   )
 }

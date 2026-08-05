@@ -1,124 +1,66 @@
-import { persistCheckoutDraft } from "@lib/data/cart"
-import { calculatePriceForShippingOption } from "@lib/data/fulfillment"
+"use client"
+
 import { HttpTypes } from "@medusajs/types"
-import { Container } from "@modules/common/components/ui"
 import Checkbox from "@modules/common/components/checkbox"
 import Input from "@modules/common/components/input"
 import NativeSelect from "@modules/common/components/native-select"
-import { getPostalCode } from "@lib/data/postal-code"
+import { Container } from "@modules/common/components/ui"
 import { MX_PHONE_PATTERN, MX_PHONE_TITLE } from "@lib/util/phone"
-import { mapKeys } from "lodash"
-import React, { useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCheckoutActions,
+  useCheckoutState,
+} from "@modules/checkout/state/checkout-context"
+import type { AddressField } from "@modules/checkout/state/checkout-reducer"
+import React, { useMemo } from "react"
 import AddressSelect from "../address-select"
 import CountrySelect from "../country-select"
 
 /** Sentinel option value that switches the colonia dropdown to free text. */
 const COLONIA_OTHER = "__other__"
 
-/** Debounce window before a background shipping prefetch is fired (ms). */
-const PREFETCH_DEBOUNCE_MS = 600
-
 /**
- * Deterministic signature of the shipping fields that affect calculated
- * prices. Used to dedupe identical prefetches and to invalidate seeded prices
- * once the address changes.
+ * The contact + shipping-address form. PURELY PRESENTATIONAL.
+ *
+ * ## What left this file, and why that is the change
+ *
+ * Everything that decided anything moved to `checkout-reducer.ts`:
+ *
+ * | Gone from here | Now |
+ * |---|---|
+ * | `buildShippingSignature` (`:33-45`) | `buildQuoteSignature`, four fields not six |
+ * | `hydratedRef` (`:83`) | the reducer never overwrites the draft from a cart |
+ * | `lastPrefetchedSignature` (`:90`) | `evaluateQuoteReadiness` |
+ * | `AbortController` + `cancelled` + timer triad (`:307-370`) | one signature comparison in `QUOTE_READY` |
+ * | the `address_1 && address_2` prefetch gate (`:296-305`) | **deleted outright** |
+ *
+ * That last row is R4, and it is the single change a customer will actually
+ * feel: the old gate refused to quote until the customer had typed a street and
+ * a colonia, neither of which Skydropx reads on the quote path. A postal code
+ * alone is now enough.
+ *
+ * The reason this file is a husk is not tidiness. This repo has no jsdom, no
+ * `@testing-library` and no Playwright, and adding them is an explicit non-goal
+ * — so a rule left in a `.tsx` is a rule nothing verifies. Everything above is
+ * now covered by `checkout-reducer.spec.ts`.
+ *
+ * Fields are UNCHANGED (R7). No field was added, removed, reordered or
+ * restructured; only their wiring moved.
  */
-const buildShippingSignature = (parts: {
-  postal_code: string
-  province: string
-  city: string
-  address_1: string
-  address_2: string
-  country_code: string
-}) =>
-  [
-    parts.postal_code,
-    parts.province,
-    parts.city,
-    parts.address_1,
-    parts.address_2,
-    parts.country_code,
-  ]
-    .map((p) => (p || "").trim())
-    .join("|")
-
-export type PrefetchedShipping = {
-  signature: string
-  prices: Record<string, number>
-}
-
 const ShippingAddress = ({
   customer,
-  cart,
-  availableShippingMethods,
-  checked,
-  onChange,
-  onPrefetch,
 }: {
   customer: HttpTypes.StoreCustomer | null
-  cart: HttpTypes.StoreCart | null
-  availableShippingMethods?: HttpTypes.StoreCartShippingOption[] | null
-  checked: boolean
-  onChange: () => void
-  onPrefetch?: (result: PrefetchedShipping) => void
 }) => {
-  const [formData, setFormData] = useState<Record<string, string>>({
-    "shipping_address.first_name": cart?.shipping_address?.first_name || "",
-    "shipping_address.last_name": cart?.shipping_address?.last_name || "",
-    "shipping_address.address_1": cart?.shipping_address?.address_1 || "",
-    "shipping_address.address_2": cart?.shipping_address?.address_2 || "",
-    "shipping_address.company": cart?.shipping_address?.company || "",
-    "shipping_address.postal_code": cart?.shipping_address?.postal_code || "",
-    "shipping_address.city": cart?.shipping_address?.city || "",
-    "shipping_address.country_code": cart?.shipping_address?.country_code || "",
-    "shipping_address.province": cart?.shipping_address?.province || "",
-    "shipping_address.phone": cart?.shipping_address?.phone || "",
-    email: cart?.email || "",
-  })
-
-  // --- Postal-code (SEPOMEX) autocomplete state ---
-  const [colonias, setColonias] = useState<string[]>([])
-  const [cpStatus, setCpStatus] = useState<
-    "idle" | "loading" | "found" | "not_found"
-  >("idle")
-  // "Otra (especificar)" escape hatch: render the free-text colonia input even
-  // when a colonia list is available (e.g. a saved colonia not in the list).
-  const [coloniaManual, setColoniaManual] = useState(false)
-
-  // Latest colonia value, read inside the async lookup without a stale closure.
-  const currentColoniaRef = useRef(formData["shipping_address.address_2"] || "")
-  useEffect(() => {
-    currentColoniaRef.current = formData["shipping_address.address_2"] || ""
-  }, [formData])
-
-  // Guards against re-fetching the same CP on every keystroke/re-render.
-  const lastLookedUpCp = useRef<string>("")
-
-  // Guards against re-running the background price prefetch for a signature we
-  // already prefetched (mirrors the `lastLookedUpCp` dedupe pattern).
-  const lastPrefetchedSignature = useRef<string>("")
-  // Stable ref to the latest `onPrefetch` so the effect doesn't re-run just
-  // because the parent passed a new callback identity.
-  const onPrefetchRef = useRef(onPrefetch)
-  useEffect(() => {
-    onPrefetchRef.current = onPrefetch
-  }, [onPrefetch])
-  // Stable ref to the calculated shipping options so the effect depends on
-  // their ids, not the array identity.
-  const calculatedOptionIds = useMemo(
-    () =>
-      (availableShippingMethods || [])
-        .filter((sm) => sm.price_type === "calculated")
-        .map((sm) => sm.id),
-    [availableShippingMethods]
-  )
+  const state = useCheckoutState()
+  const { dispatch } = useCheckoutActions()
+  const { draft, email, cpStatus, colonias, coloniaManual, sameAsBilling } =
+    state
 
   const countriesInRegion = useMemo(
-    () => cart?.region?.countries?.map((c) => c.iso_2),
-    [cart?.region]
+    () => state.cart?.region?.countries?.map((c) => c.iso_2),
+    [state.cart?.region]
   )
 
-  // check if customer has saved addresses that are in the current region
   const addressesInRegion = useMemo(
     () =>
       customer?.addresses.filter(
@@ -127,257 +69,32 @@ const ShippingAddress = ({
     [customer?.addresses, countriesInRegion]
   )
 
-  const setFormAddress = (
-    address?: HttpTypes.StoreCartAddress,
-    email?: string
-  ) => {
-    if (address) {
-      setFormData((prevState: Record<string, string>) => ({
-        ...prevState,
-        "shipping_address.first_name": address?.first_name || "",
-        "shipping_address.last_name": address?.last_name || "",
-        "shipping_address.address_1": address?.address_1 || "",
-        "shipping_address.address_2": address?.address_2 || "",
-        "shipping_address.company": address?.company || "",
-        "shipping_address.postal_code": address?.postal_code || "",
-        "shipping_address.city": address?.city || "",
-        "shipping_address.country_code": address?.country_code || "",
-        "shipping_address.province": address?.province || "",
-        "shipping_address.phone": address?.phone || "",
-      }))
-    }
-
-    if (email) {
-      setFormData((prevState: Record<string, string>) => ({
-        ...prevState,
-        email: email,
-      }))
-    }
-  }
-
-  // Hydrate the form from the cart/customer EXACTLY ONCE on mount. The parent
-  // `CheckoutForm` is an async server component, so any background cart
-  // persistence (e.g. the shipping-price prefetch below) re-runs it and streams
-  // down a NEW `cart` reference. Depending on `[cart]` here made that fresh
-  // object overwrite whatever the user was typing — deleting their email or
-  // fields mid-entry. This effect must NOT react to later cart updates; once the
-  // form is mounted, user input is the source of truth. Explicit saved-address
-  // selection still flows through `setFormAddress` via AddressSelect.
-  const hydratedRef = useRef(false)
-  useEffect(() => {
-    if (hydratedRef.current) {
-      return
-    }
-    if (cart && cart.shipping_address) {
-      setFormAddress(cart.shipping_address, cart.email ?? undefined)
-      hydratedRef.current = true
-    }
-
-    if (cart && !cart.email && customer?.email) {
-      setFormAddress(undefined, customer.email)
-      hydratedRef.current = true
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cart, customer])
-
-  const postalCode = formData["shipping_address.postal_code"]
-
-  // Look up the CP whenever it becomes a valid 5-digit code and autofill
-  // State/Province + City, and populate the colonia dropdown. Degrades to
-  // manual entry on any failure (see getPostalCode) — never blocks the form.
-  useEffect(() => {
-    const cp = (postalCode || "").trim()
-
-    if (!/^\d{5}$/.test(cp)) {
-      setCpStatus("idle")
-      setColonias([])
-      return
-    }
-
-    if (cp === lastLookedUpCp.current) {
-      return
-    }
-    lastLookedUpCp.current = cp
-
-    let cancelled = false
-    setCpStatus("loading")
-
-    getPostalCode(cp)
-      .then((res) => {
-        if (cancelled) {
-          return
-        }
-
-        if (!res || !res.found) {
-          setColonias([])
-          setCpStatus("not_found")
-          return
-        }
-
-        const previousColonia = currentColoniaRef.current
-        const coloniaInList = res.colonias.includes(previousColonia)
-
-        setColonias(res.colonias)
-        // Keep a previously entered colonia that isn't in the list (e.g. from a
-        // saved address) as free text instead of silently wiping it.
-        setColoniaManual(previousColonia !== "" && !coloniaInList)
-        setCpStatus("found")
-
-        // The CP is authoritative for state + city, so overwrite them — this is
-        // also what fixes the missing-state cause of a "-" shipping price.
-        setFormData((prev) => ({
-          ...prev,
-          "shipping_address.province":
-            res.state || prev["shipping_address.province"],
-          "shipping_address.city": res.city || prev["shipping_address.city"],
-        }))
-      })
-      .catch(() => {
-        if (cancelled) {
-          return
-        }
-        setColonias([])
-        setCpStatus("not_found")
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [postalCode])
-
-  // --- Background shipping-price prefetch ---
-  // When the address is complete and the CP resolved, persist the shipping
-  // subset and calculate option prices in the background so the delivery step
-  // shows prices instantly. Non-blocking enhancement: any failure is swallowed
-  // and the delivery step falls back to its own mount-time recalc.
-  const province = formData["shipping_address.province"]
-  const city = formData["shipping_address.city"]
-  const address1 = formData["shipping_address.address_1"]
-  const address2 = formData["shipping_address.address_2"]
-  const countryCode = formData["shipping_address.country_code"]
-
-  useEffect(() => {
-    // Gate: only run once the CP lookup succeeded and every required field is
-    // present. Anything missing means we do nothing (no persist, no calc).
-    if (
-      cpStatus !== "found" ||
-      !postalCode ||
-      !province ||
-      !city ||
-      !address1 ||
-      !address2 ||
-      !countryCode
-    ) {
-      return
-    }
-
-    if (!calculatedOptionIds.length || !cart?.id) {
-      return
-    }
-
-    const signature = buildShippingSignature({
-      postal_code: postalCode,
-      province,
-      city,
-      address_1: address1,
-      address_2: address2,
-      country_code: countryCode,
-    })
-
-    // Dedupe: identical data must not re-trigger backend work.
-    if (signature === lastPrefetchedSignature.current) {
-      return
-    }
-
-    const controller = new AbortController()
-    let cancelled = false
-
-    const timer = setTimeout(async () => {
-      const persisted = await persistCheckoutDraft(
-        {
-          address_1: address1,
-          address_2: address2,
-          postal_code: postalCode,
-          city,
-          province,
-          country_code: countryCode,
-        },
-        // No email from this call site: the address step does not own it, and
-        // `null` keeps `persistCheckoutDraft` from touching the field at all.
-        null
-      )
-
-      // Bail if the address changed (superseded) or the effect was cleaned up
-      // while the persist was in flight — never surface stale/mixed prices.
-      //
-      // `!persisted.ok` now ALSO covers the case where the server could not
-      // establish the cart's shipping-address id and refused to write rather than
-      // risk destroying the address row. Verified degradation: this is a bare
-      // `return` out of a `setTimeout` callback, so nothing is dispatched,
-      // `lastPrefetchedSignature` is left untouched, and no `onPrefetch` fires.
-      // The form keeps every value the customer typed and stays fully editable;
-      // the only loss is the prefetched quote, which the next edit recomputes and
-      // retries. A skipped quote, never a broken form.
-      if (cancelled || controller.signal.aborted || !persisted.ok) {
-        return
-      }
-
-      const cartId = cart.id
-      const results = await Promise.allSettled(
-        calculatedOptionIds.map((optionId) =>
-          calculatePriceForShippingOption(optionId, cartId)
-        )
-      )
-
-      if (cancelled || controller.signal.aborted) {
-        return
-      }
-
-      const prices: Record<string, number> = {}
-      results.forEach((r) => {
-        if (r.status === "fulfilled" && r.value?.id) {
-          prices[r.value.id] = r.value.amount ?? 0
-        }
-      })
-
-      // Accept the result only if this signature is still the current one.
-      lastPrefetchedSignature.current = signature
-      onPrefetchRef.current?.({ signature, prices })
-    }, PREFETCH_DEBOUNCE_MS)
-
-    // Invalidate-on-edit: clearing the timer / aborting on any dependency
-    // change collapses rapid edits into a single trailing call and drops any
-    // in-flight run for a now-stale signature.
-    return () => {
-      cancelled = true
-      controller.abort()
-      clearTimeout(timer)
-    }
-  }, [
-    cpStatus,
-    postalCode,
-    province,
-    city,
-    address1,
-    address2,
-    countryCode,
-    calculatedOptionIds,
-    cart?.id,
-  ])
+  /** `shipping_address.first_name` -> `first_name`. */
+  const fieldOf = (name: string) =>
+    name.replace("shipping_address.", "") as AddressField | "email"
 
   const handleChange = (
-    e: React.ChangeEvent<
-      HTMLInputElement | HTMLInputElement | HTMLSelectElement
-    >
-  ) => {
-    // Once the user starts typing, lock out the mount-time hydration effect so a
-    // late/background cart update can never overwrite in-progress input.
-    hydratedRef.current = true
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value,
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
+  ) =>
+    dispatch({
+      type: "FIELD_CHANGE",
+      field: fieldOf(e.target.name),
+      value: e.target.value,
     })
-  }
+
+  /**
+   * Blur is the autosave boundary (R6). It coalesces a tab-through sequence
+   * into one write instead of one per keystroke, and it is the natural "I am
+   * done with this field" signal.
+   */
+  const handleBlur = (
+    e: React.FocusEvent<HTMLInputElement | HTMLSelectElement>
+  ) =>
+    dispatch({
+      type: "FIELD_BLUR",
+      field: fieldOf(e.target.name),
+      value: e.target.value,
+    })
 
   const showColoniaSelect = colonias.length > 0 && !coloniaManual
 
@@ -390,12 +107,16 @@ const ShippingAddress = ({
           </p>
           <AddressSelect
             addresses={customer.addresses}
-            addressInput={
-              mapKeys(formData, (_, key) =>
-                key.replace("shipping_address.", "")
-              ) as unknown as HttpTypes.StoreCartAddress
+            addressInput={draft as unknown as HttpTypes.StoreCartAddress}
+            onSelect={(address, selectedEmail) =>
+              dispatch({
+                type: "ADDRESS_PREFILL",
+                address: (address ?? {}) as Partial<
+                  Record<AddressField, string | null>
+                >,
+                email: selectedEmail ?? email,
+              })
             }
-            onSelect={setFormAddress}
           />
         </Container>
       )}
@@ -404,8 +125,9 @@ const ShippingAddress = ({
           label="Nombre"
           name="shipping_address.first_name"
           autoComplete="given-name"
-          value={formData["shipping_address.first_name"]}
+          value={draft.first_name}
           onChange={handleChange}
+          onBlur={handleBlur}
           required
           data-testid="shipping-first-name-input"
         />
@@ -413,8 +135,9 @@ const ShippingAddress = ({
           label="Apellido"
           name="shipping_address.last_name"
           autoComplete="family-name"
-          value={formData["shipping_address.last_name"]}
+          value={draft.last_name}
           onChange={handleChange}
+          onBlur={handleBlur}
           required
           data-testid="shipping-last-name-input"
         />
@@ -422,16 +145,18 @@ const ShippingAddress = ({
           label="Dirección"
           name="shipping_address.address_1"
           autoComplete="address-line1"
-          value={formData["shipping_address.address_1"]}
+          value={draft.address_1}
           onChange={handleChange}
+          onBlur={handleBlur}
           required
           data-testid="shipping-address-input"
         />
         <Input
           label="Empresa"
           name="shipping_address.company"
-          value={formData["shipping_address.company"]}
+          value={draft.company}
           onChange={handleChange}
+          onBlur={handleBlur}
           autoComplete="organization"
           data-testid="shipping-company-input"
         />
@@ -442,8 +167,9 @@ const ShippingAddress = ({
           autoComplete="postal-code"
           inputMode="numeric"
           maxLength={5}
-          value={formData["shipping_address.postal_code"]}
+          value={draft.postal_code}
           onChange={handleChange}
+          onBlur={handleBlur}
           required
           data-testid="shipping-postal-code-input"
         />
@@ -452,17 +178,14 @@ const ShippingAddress = ({
             <NativeSelect
               name="shipping_address.address_2"
               placeholder="Selecciona tu colonia"
-              value={formData["shipping_address.address_2"]}
+              value={draft.address_2}
               onChange={(e) => {
                 if (e.target.value === COLONIA_OTHER) {
-                  setColoniaManual(true)
-                  setFormData((prev) => ({
-                    ...prev,
-                    "shipping_address.address_2": "",
-                  }))
+                  dispatch({ type: "COLONIA_MANUAL_REQUESTED" })
                   return
                 }
                 handleChange(e)
+                handleBlur(e as unknown as React.FocusEvent<HTMLSelectElement>)
               }}
               required
               data-testid="shipping-address-2-select"
@@ -479,8 +202,9 @@ const ShippingAddress = ({
               label="Colonia"
               name="shipping_address.address_2"
               autoComplete="address-line2"
-              value={formData["shipping_address.address_2"]}
+              value={draft.address_2}
               onChange={handleChange}
+              onBlur={handleBlur}
               required
               data-testid="shipping-address-2-input"
             />
@@ -500,8 +224,9 @@ const ShippingAddress = ({
           label="Ciudad"
           name="shipping_address.city"
           autoComplete="address-level2"
-          value={formData["shipping_address.city"]}
+          value={draft.city}
           onChange={handleChange}
+          onBlur={handleBlur}
           required
           data-testid="shipping-city-input"
         />
@@ -509,17 +234,21 @@ const ShippingAddress = ({
           label="Estado / Provincia"
           name="shipping_address.province"
           autoComplete="address-level1"
-          value={formData["shipping_address.province"]}
+          value={draft.province}
           onChange={handleChange}
+          onBlur={handleBlur}
           required
           data-testid="shipping-province-input"
         />
         <CountrySelect
           name="shipping_address.country_code"
           autoComplete="country"
-          region={cart?.region}
-          value={formData["shipping_address.country_code"]}
-          onChange={handleChange}
+          region={state.cart?.region}
+          value={draft.country_code}
+          onChange={(e) => {
+            handleChange(e)
+            handleBlur(e as unknown as React.FocusEvent<HTMLSelectElement>)
+          }}
           required
           data-testid="shipping-country-select"
         />
@@ -528,8 +257,8 @@ const ShippingAddress = ({
         <Checkbox
           label="La dirección de facturación es la misma que la de envío"
           name="same_as_billing"
-          checked={checked}
-          onChange={onChange}
+          checked={sameAsBilling}
+          onChange={() => dispatch({ type: "TOGGLE_SAME_AS_BILLING" })}
           data-testid="billing-address-checkbox"
         />
       </div>
@@ -540,8 +269,9 @@ const ShippingAddress = ({
           type="email"
           title="Ingresa un email válido."
           autoComplete="email"
-          value={formData.email}
+          value={email}
           onChange={handleChange}
+          onBlur={handleBlur}
           required
           data-testid="shipping-email-input"
         />
@@ -562,8 +292,9 @@ const ShippingAddress = ({
           title={MX_PHONE_TITLE}
           pattern={MX_PHONE_PATTERN}
           autoComplete="tel"
-          value={formData["shipping_address.phone"]}
+          value={draft.phone}
           onChange={handleChange}
+          onBlur={handleBlur}
           required
           data-testid="shipping-phone-input"
         />

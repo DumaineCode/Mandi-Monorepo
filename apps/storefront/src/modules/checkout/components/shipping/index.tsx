@@ -11,7 +11,6 @@ import { Button, clx, Heading, Text } from "@modules/common/components/ui"
 import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { useEffect, useState } from "react"
 import { CORAL_CTA } from "../submit-button"
-import type { PrefetchedShipping } from "../shipping-address"
 
 const PICKUP_OPTION_ON = "__PICKUP_ON"
 const PICKUP_OPTION_OFF = "__PICKUP_OFF"
@@ -19,27 +18,6 @@ const PICKUP_OPTION_OFF = "__PICKUP_OFF"
 type ShippingProps = {
   cart: HttpTypes.StoreCart
   availableShippingMethods: HttpTypes.StoreCartShippingOption[] | null
-  prefetchedShipping?: PrefetchedShipping | null
-}
-
-/**
- * Signature of the persisted cart shipping address, matching the one produced
- * by the prefetch trigger. Used to confirm the prefetched prices belong to the
- * address currently on the cart before consuming them.
- */
-function buildCartShippingSignature(
-  address?: HttpTypes.StoreCartAddress | null
-): string {
-  return [
-    address?.postal_code,
-    address?.province,
-    address?.city,
-    address?.address_1,
-    address?.address_2,
-    address?.country_code,
-  ]
-    .map((p) => (p || "").trim())
-    .join("|")
 }
 
 function formatAddress(address: HttpTypes.StoreCartAddress) {
@@ -71,30 +49,24 @@ function formatAddress(address: HttpTypes.StoreCartAddress) {
 const Shipping: React.FC<ShippingProps> = ({
   cart,
   availableShippingMethods,
-  prefetchedShipping,
 }) => {
   const [isLoading, setIsLoading] = useState(false)
 
-  // Zero-regression consume path: seed the calculated prices from the prefetch
-  // ONLY when its signature matches the address currently persisted on the
-  // cart. On any mismatch / absence / failure we fall back to today's mount
-  // recalc (initial isLoadingPrices=true, empty map).
-  const cartShippingSignature = buildCartShippingSignature(
-    cart.shipping_address
-  )
-  const hasValidPrefetch =
-    !!prefetchedShipping &&
-    prefetchedShipping.signature === cartShippingSignature &&
-    cartShippingSignature !== "" &&
-    Object.keys(prefetchedShipping.prices).length > 0
-
-  const [isLoadingPrices, setIsLoadingPrices] = useState(!hasValidPrefetch)
+  // The prefetch prop-thread is gone: `address-shipping-group` was deleted with
+  // the address step, and the quote it used to carry — along with the duplicate
+  // `buildCartShippingSignature` / `hasValidPrefetch` pair that had to agree
+  // EXACTLY with the one in `shipping-address` or the result was silently
+  // discarded — is now owned by `checkout-reducer` (PR2a). This component keeps
+  // its own mount recalc until PR2b replaces it with `shipping-section`, which
+  // reads the reducer's prices directly. Deliberately NOT wired to the context
+  // here: that would be rewriting the component PR2b deletes.
+  const [isLoadingPrices, setIsLoadingPrices] = useState(true)
 
   const [showPickupOptions, setShowPickupOptions] =
     useState<string>(PICKUP_OPTION_OFF)
   const [calculatedPricesMap, setCalculatedPricesMap] = useState<
     Record<string, number>
-  >(hasValidPrefetch ? prefetchedShipping!.prices : {})
+  >({})
   const [error, setError] = useState<string | null>(null)
   const [shippingMethodId, setShippingMethodId] = useState<string | null>(
     cart.shipping_methods?.at(-1)?.shipping_option_id || null
@@ -107,29 +79,36 @@ const Shipping: React.FC<ShippingProps> = ({
   const isOpen = searchParams.get("step") === "delivery"
 
   const _shippingMethods = availableShippingMethods?.filter(
-    (sm) => (sm as unknown as { service_zone?: { fulfillment_set?: { type?: string; location?: { address: HttpTypes.StoreCartAddress } } } }).service_zone?.fulfillment_set?.type !== "pickup"
+    (sm) =>
+      (
+        sm as unknown as {
+          service_zone?: {
+            fulfillment_set?: {
+              type?: string
+              location?: { address: HttpTypes.StoreCartAddress }
+            }
+          }
+        }
+      ).service_zone?.fulfillment_set?.type !== "pickup"
   )
 
   const _pickupMethods = availableShippingMethods?.filter(
-    (sm) => (sm as unknown as { service_zone?: { fulfillment_set?: { type?: string; location?: { address: HttpTypes.StoreCartAddress } } } }).service_zone?.fulfillment_set?.type === "pickup"
+    (sm) =>
+      (
+        sm as unknown as {
+          service_zone?: {
+            fulfillment_set?: {
+              type?: string
+              location?: { address: HttpTypes.StoreCartAddress }
+            }
+          }
+        }
+      ).service_zone?.fulfillment_set?.type === "pickup"
   )
 
   const hasPickupOptions = !!_pickupMethods?.length
 
   useEffect(() => {
-    // Consume path: valid prefetch matching the persisted cart address means
-    // prices are already seeded — skip the mount recalc entirely.
-    if (hasValidPrefetch) {
-      setCalculatedPricesMap(prefetchedShipping!.prices)
-      setIsLoadingPrices(false)
-
-      if (_pickupMethods?.find((m) => m.id === shippingMethodId)) {
-        setShowPickupOptions(PICKUP_OPTION_ON)
-      }
-      return
-    }
-
-    // Fallback path (legacy): no usable prefetch, calculate on mount as before.
     setIsLoadingPrices(true)
 
     if (_shippingMethods?.length) {
@@ -158,7 +137,7 @@ const Shipping: React.FC<ShippingProps> = ({
       setShowPickupOptions(PICKUP_OPTION_ON)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [availableShippingMethods, hasValidPrefetch])
+  }, [availableShippingMethods])
 
   const handleEdit = () => {
     router.push(pathname + "?step=delivery", { scroll: false })
@@ -355,9 +334,7 @@ const Shipping: React.FC<ShippingProps> = ({
           {showPickupOptions === PICKUP_OPTION_ON && (
             <div className="grid">
               <div className="flex flex-col">
-                <span className="font-medium txt-medium text-ink">
-                  Tienda
-                </span>
+                <span className="font-medium txt-medium text-ink">Tienda</span>
                 <span className="mb-4 text-ink-muted txt-medium">
                   Elige una tienda cercana
                 </span>
@@ -399,7 +376,17 @@ const Shipping: React.FC<ShippingProps> = ({
                               </span>
                               <span className="text-base-regular text-ui-fg-muted">
                                 {formatAddress(
-                                  (option as unknown as { service_zone?: { fulfillment_set?: { location?: { address: HttpTypes.StoreCartAddress } } } }).service_zone?.fulfillment_set?.location
+                                  (
+                                    option as unknown as {
+                                      service_zone?: {
+                                        fulfillment_set?: {
+                                          location?: {
+                                            address: HttpTypes.StoreCartAddress
+                                          }
+                                        }
+                                      }
+                                    }
+                                  ).service_zone?.fulfillment_set?.location
                                     ?.address as HttpTypes.StoreCartAddress
                                 )}
                               </span>
@@ -442,9 +429,7 @@ const Shipping: React.FC<ShippingProps> = ({
           <div className="text-small-regular">
             {cart && (cart.shipping_methods?.length ?? 0) > 0 && (
               <div className="flex flex-col w-1/3">
-                <Text className="txt-medium-plus text-ink mb-1">
-                  Método
-                </Text>
+                <Text className="txt-medium-plus text-ink mb-1">Método</Text>
                 <Text className="txt-medium text-ink-muted">
                   {cart.shipping_methods!.at(-1)!.name}{" "}
                   {convertToLocale({
