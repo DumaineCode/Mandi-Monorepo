@@ -1,4 +1,4 @@
-import { persistShippingForCalc } from "@lib/data/cart"
+import { persistCheckoutDraft } from "@lib/data/cart"
 import { calculatePriceForShippingOption } from "@lib/data/fulfillment"
 import { HttpTypes } from "@medusajs/types"
 import { Container } from "@modules/common/components/ui"
@@ -293,17 +293,31 @@ const ShippingAddress = ({
     let cancelled = false
 
     const timer = setTimeout(async () => {
-      const persisted = await persistShippingForCalc({
-        address_1: address1,
-        address_2: address2,
-        postal_code: postalCode,
-        city,
-        province,
-        country_code: countryCode,
-      })
+      const persisted = await persistCheckoutDraft(
+        {
+          address_1: address1,
+          address_2: address2,
+          postal_code: postalCode,
+          city,
+          province,
+          country_code: countryCode,
+        },
+        // No email from this call site: the address step does not own it, and
+        // `null` keeps `persistCheckoutDraft` from touching the field at all.
+        null
+      )
 
       // Bail if the address changed (superseded) or the effect was cleaned up
       // while the persist was in flight — never surface stale/mixed prices.
+      //
+      // `!persisted.ok` now ALSO covers the case where the server could not
+      // establish the cart's shipping-address id and refused to write rather than
+      // risk destroying the address row. Verified degradation: this is a bare
+      // `return` out of a `setTimeout` callback, so nothing is dispatched,
+      // `lastPrefetchedSignature` is left untouched, and no `onPrefetch` fires.
+      // The form keeps every value the customer typed and stays fully editable;
+      // the only loss is the prefetched quote, which the next edit recomputes and
+      // retries. A skipped quote, never a broken form.
       if (cancelled || controller.signal.aborted || !persisted.ok) {
         return
       }

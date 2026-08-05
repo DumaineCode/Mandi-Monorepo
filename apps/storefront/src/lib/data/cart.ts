@@ -2,6 +2,13 @@
 
 import { sdk } from "@lib/config"
 import { isOpenpay } from "@lib/constants"
+import {
+  buildPartialShippingAddressPayload,
+  resolveShippingAddressId,
+  type CheckoutDraftAddress,
+  type FreshCartRead,
+} from "@lib/util/cart-address-payload"
+import { describeError, redactIds, toLogReference } from "@lib/util/log-safe"
 import medusaError from "@lib/util/medusa-error"
 import { HttpTypes } from "@medusajs/types"
 import { revalidateTag } from "next/cache"
@@ -54,6 +61,107 @@ export async function retrieveCart(cartId?: string, fields?: string) {
     .catch(() => null)
 }
 
+/**
+ * Resilience bound on the uncached cart READ. Same magnitude as
+ * `SHIPPING_OPTIONS_TIMEOUT_MS` in `lib/data/fulfillment.ts`.
+ *
+ * ## What this does NOT buy — corrected claim
+ *
+ * An earlier version of this comment said the timeout stops "a hung upstream
+ * turning into a hung autosave". That overstates it. This bounds ONE of the two
+ * sequential calls the autosave makes. `sdk.store.cart.update` in
+ * `persistCheckoutDraft` has no timeout, so a backend that hangs on the WRITE
+ * still hangs the autosave for as long as the platform's own socket timeout
+ * allows.
+ *
+ * The write is deliberately left unbounded for now. `sdk.store.cart.update` is
+ * typed `(id, body, query?, headers?)`
+ * (`@medusajs/js-sdk/dist/esm/store/index.d.ts:424`) and takes no request init,
+ * so adding a signal means abandoning the typed SDK method and hand-rolling
+ * `sdk.client.fetch` on the single most consequential line in this change — the
+ * destructive write itself. That is a bad trade inside a pass whose whole
+ * purpose is de-risking that line, and it is recorded as a follow-up instead.
+ *
+ * What the read timeout DOES buy is real and worth keeping: this read runs
+ * SEQUENTIALLY IN FRONT OF every write, so without a bound a hung read blocks
+ * the write from ever being attempted, and it is the call whose failure mode
+ * (`unresolved` -> abort) is already handled. Bounding the half that has a
+ * defined failure path is the cheap half of the job, not the whole job.
+ */
+const CART_READ_TIMEOUT_MS = 5_000
+
+/**
+ * Uncached sibling of `retrieveCart`, for the reads whose whole point is that
+ * they observe a write that just happened.
+ *
+ * ## Why `no-store` and not the tagged `force-cache` of `retrieveCart`
+ *
+ * The honest version of this argument, narrower than an earlier revision of
+ * this comment claimed. `getCacheTag` returns `""` only when the
+ * `_medusa_cache_id` cookie is absent (`lib/data/cookies.ts:22-34`), and
+ * `middleware.ts:120-124` sets that cookie with `maxAge: 86400` on the first
+ * non-asset navigation, with `config.matcher` (`middleware.ts:140-142`)
+ * covering every page route. So a user who has a cart almost always has the
+ * cookie and the cache entry IS tagged and IS reachable by `revalidateTag`.
+ * The untagged window is real but narrow: the very first request of a session,
+ * before the cookie round-trips, and the gap after the 24 h cache cookie
+ * expires while the 7-day cart cookie is still alive.
+ *
+ * The load-bearing reason is the other one: `revalidateTag` followed by a read
+ * IN THE SAME REQUEST is not a documented ordering guarantee in Next 15. This
+ * function exists precisely to observe a write that just happened, so betting
+ * its correctness on undocumented ordering — with a narrow untagged window
+ * underneath it — buys a cache hit and pays for it with a silent stale read.
+ * `no-store` is deterministic, and the callers that need this are on debounced
+ * or one-shot paths where one uncached GET is the cheap half of the trade.
+ *
+ * Deliberately takes NO `next` options: passing tags alongside `no-store` would
+ * only suggest a revalidation relationship that does not exist.
+ *
+ * ## Why it returns a result and not a cart-or-null
+ *
+ * This used to end in `.catch(() => null)`. `null` then meant two opposite
+ * things — "the cart has no shipping address" (safe to write id-less) and "the
+ * read failed" (writing id-less DESTROYS the address row). See
+ * `FreshCartRead` and `resolveShippingAddressId` for the full argument. The
+ * discriminated result is what lets the caller abort instead of guessing.
+ */
+export async function retrieveCartFresh(
+  cartId?: string,
+  fields?: string
+): Promise<FreshCartRead> {
+  const id = cartId || (await getCartId())
+  fields ??=
+    "*items, *region, *items.product, *items.variant, *items.thumbnail, *items.metadata, +items.total, *promotions, +shipping_methods.name"
+
+  if (!id) {
+    return { ok: false, error: "No existing cart found" }
+  }
+
+  const headers = {
+    ...(await getAuthHeaders()),
+  }
+
+  return await sdk.client
+    .fetch<HttpTypes.StoreCartResponse>(`/store/carts/${id}`, {
+      method: "GET",
+      query: {
+        fields,
+      },
+      headers,
+      cache: "no-store",
+      signal: AbortSignal.timeout(CART_READ_TIMEOUT_MS),
+    })
+    .then(({ cart }: { cart: HttpTypes.StoreCart }) => ({
+      ok: true as const,
+      cart,
+    }))
+    .catch((error: unknown) => ({
+      ok: false as const,
+      error: describeError(error).message,
+    }))
+}
+
 export async function getOrSetCart(countryCode: string) {
   const region = await getRegion(countryCode)
 
@@ -91,36 +199,90 @@ export async function getOrSetCart(countryCode: string) {
   return cart
 }
 
+export type PersistDraftResult =
+  | { ok: true; cart: HttpTypes.StoreCart }
+  | { ok: false; error: string }
+
 /**
- * Persists ONLY the shipping address subset used to calculate shipping prices,
- * WITHOUT touching billing_address, email or same_as_billing, and WITHOUT
- * redirecting. Used by the background prefetch during the address step so the
- * delivery step can show calculated prices instantly.
+ * The only failure text `persistCheckoutDraft` lets cross back to the browser.
  *
- * Cache: revalidates the `fulfillment` tag ONLY (so shipping-option prices are
- * fresh) and deliberately NEVER the `carts` tag — revalidating carts mid-typing
- * would remount the checkout tree and flicker the form.
+ * `cart.ts` is `"use server"`, so every value this module returns is shipped to
+ * the client. An earlier revision returned `resolution.error` and the caught
+ * `error.message` verbatim — the backend's own response body
+ * (`@medusajs/js-sdk/dist/esm/client.js:90`) — while the same change argued at
+ * length that this exact text echoes cart ids and address content and must be
+ * kept out of the LOG stream. Withholding it from the log and shipping it to the
+ * browser is not a threat model, it is a contradiction.
  *
- * A partial shipping_address update is safe: Medusa's update-cart flow only
- * touches billing_address when it is present in the payload (verified against
- * @medusajs/core-flows update-carts step — falsy addresses are filtered out),
- * so the existing billing_address is preserved.
+ * The detail is not lost, it is RELOCATED: the sanitised description goes to the
+ * server-side log, where the team can read it and the customer cannot. And the
+ * caller does not display this string anyway — `!persisted.ok` is a bare return
+ * from the debounced autosave (`shipping-address/index.tsx`), so there is no
+ * user-facing message to degrade.
  */
-export async function persistShippingForCalc(
-  addr: Pick<
-    HttpTypes.StoreCartAddress,
-    | "address_1"
-    | "address_2"
-    | "postal_code"
-    | "city"
-    | "province"
-    | "country_code"
-  >
-): Promise<{ ok: boolean }> {
+const PERSIST_DRAFT_GENERIC_ERROR = "Could not persist the checkout draft"
+
+/**
+ * Autosave writer for the checkout address draft (R6) and the sole trigger for
+ * shipping re-quotation (R4). Replaces `persistShippingForCalc`.
+ *
+ * ## The bug this function exists to close
+ *
+ * `persistShippingForCalc` sent a partial `shipping_address` with NO `id`. Per
+ * `explore §3`, MikroORM's `EntityAssigner` then takes `assignReference` ->
+ * `em.create(...)` and writes a BRAND-NEW `cart_address` row with the cart FK
+ * repointed at it, destroying `first_name`, `last_name`, `company`, `phone`,
+ * `address_1` and `address_2`. Its old docstring claimed "a partial
+ * shipping_address update is safe" — that was true only of `billing_address`,
+ * and flatly wrong about the shipping address itself.
+ *
+ * Today the damage is masked by the `address_1 && address_2` prefetch gate and
+ * by `setAddresses` re-sending the full payload on submit. R4 + R6 remove both
+ * masks, so without this fix autosave becomes a PII shredder that fires on
+ * every blur. See `buildPartialShippingAddressPayload` for the full mechanism.
+ *
+ * ## One write path, not two
+ *
+ * The R6 autosave (full customer data) and the R4 quote persist (four fields)
+ * are deliberately collapsed into this single writer. Two partial writers
+ * against the same nested entity is exactly the shape that produced the bug;
+ * one writer with one id-resolution rule is auditable. The four quote fields
+ * are a strict subset of the autosave payload, so the second write buys nothing.
+ *
+ * NEVER writes `billing_address`, promo codes or region. Billing is written at
+ * CTA time (D5) by a function that DOES NOT EXIST YET — it is planned for PR2c.
+ * The reference is kept because the exclusion needs a reason, not because the
+ * callee is there to be found.
+ *
+ * ## No id may come from the caller
+ *
+ * This module is `"use server"`, so this function is a publicly reachable POST
+ * endpoint whose arguments are entirely client-controlled. An earlier revision
+ * took an `addressIdHint` and injected it verbatim as a `cart_address` primary
+ * key with no check that the row belonged to `cartId`. That defeated this
+ * module's own invariant ("the cart is the only id authority") by entering
+ * through a different door, and it was self-staling as well: `setAddresses`
+ * sends `shipping_address` WITHOUT an id, so every form submit churns the
+ * address row id and any hint the client had captured went stale — and a stale
+ * id is as destructive as no id, taking the same `assignReference` path, while
+ * a colliding one risks a primary-key 500. The id is always resolved
+ * server-side from a fresh read. A hint that has to be verified server-side is
+ * not an optimisation.
+ *
+ * Cache: revalidates the `fulfillment` tag ONLY (options are address-filtered)
+ * and deliberately NOT the `carts` tag — client state is authoritative after
+ * mount (D1), and revalidating carts mid-typing would remount the checkout tree
+ * and flicker the form.
+ */
+export async function persistCheckoutDraft(
+  addr: Partial<CheckoutDraftAddress>,
+  email: string | null
+): Promise<PersistDraftResult> {
+  // Step 1 — no cart, nothing to persist.
   const cartId = await getCartId()
 
   if (!cartId) {
-    return { ok: false }
+    return { ok: false, error: "No existing cart found" }
   }
 
   const headers = {
@@ -128,28 +290,147 @@ export async function persistShippingForCalc(
   }
 
   try {
-    await sdk.store.cart.update(
+    // Step 2 — resolve the id from a fresh read. This is the ONLY id source;
+    // see the docstring for why no caller-supplied hint is accepted.
+    //
+    // THE PROJECTION IS THE SINGLE POINT OF FAILURE IN THIS FIX, so it is
+    // Medusa's own default field list and nothing more clever.
+    //
+    // An earlier revision used `"id,*shipping_address"` for consistency with the
+    // rest of this data layer (`categories.ts:66`, `orders.ts:52`). That was the
+    // wrong thing to optimise for. A star field must match an `allowed` entry in
+    // FULL, while a dotted field passes by PREFIX — so the star form is the one
+    // that breaks if `GET /store/carts/:id` ever gains an `allowed` list
+    // (`query-config.js:137-140` sets only `defaults` today). Style consistency
+    // is not worth failing on the one read the whole PII fix depends on.
+    //
+    // Both fields below are lifted verbatim from `defaultStoreCartFields`
+    // (`@medusajs/medusa/dist/api/store/carts/query-config.js:102-103`), which
+    // makes this the most-exercised projection in the product:
+    //
+    // - `shipping_address_id` is the FK SCALAR. A selected scalar always
+    //   materialises its key, so its value is positive evidence in BOTH
+    //   directions — `null` means there is genuinely no address row, a value
+    //   means one exists. That is what lets the resolver tell "the cart has no
+    //   address" apart from "our projection did not deliver the relation"
+    //   without betting on how the serialiser treats an empty to-one.
+    // - `shipping_address.id` is the id actually written into the payload.
+    //
+    // Two independent signals on purpose. `resolveShippingAddressId` aborts
+    // unless one of them positively answers the question, so this can no longer
+    // fail silently in the destructive direction. See its guards for the full
+    // argument.
+    const read = await retrieveCartFresh(
+      cartId,
+      "id,shipping_address_id,shipping_address.id"
+    )
+    const resolution = resolveShippingAddressId(read)
+
+    // Step 3 — ABORT rather than write blind. `unresolved` means absence was
+    // NOT positively established: the read failed, timed out, or returned
+    // something that was not a cart. Writing a partial address with no id in
+    // that state is exactly the bug this function exists to close — it takes
+    // `assignReference` -> `em.create` and shreds the customer's `first_name`,
+    // `last_name`, `company`, `phone`, `address_1` and `address_2`.
+    //
+    // The step-6 tripwire below CANNOT cover this: it only fires when an id was
+    // sent, so the id-less path is silent by construction. Aborting is the only
+    // safe default. A skipped shipping quote is recoverable by typing one more
+    // character; destroyed PII is not, so the two do not get equal treatment.
+    if (resolution.status === "unresolved") {
+      // The reason goes to the LOG, not across the wire. See
+      // `PERSIST_DRAFT_GENERIC_ERROR`. Without this line the abort would be
+      // completely silent server-side, which is how a broken projection would go
+      // unnoticed for a week.
+      console.error("persistCheckoutDraft aborted: no id could be resolved", {
+        cart: toLogReference(cartId),
+        reason: redactIds(resolution.error),
+      })
+
+      return { ok: false, error: PERSIST_DRAFT_GENERIC_ERROR }
+    }
+
+    // `absent` is the one legitimate id-less write: the read SUCCEEDED and the
+    // cart has no address row, so `em.create` is correct and there is nothing
+    // to destroy. It is self-limiting — the next write picks the id up.
+    const addressId = resolution.status === "resolved" ? resolution.id : null
+
+    // Step 4 — the id-carrying payload. `buildPartialShippingAddressPayload`
+    // owns the merge-vs-replace decision and is the AUTO-verified half of this
+    // function (`cart-address-payload.spec.ts`).
+    //
+    // The `: null` branch is unreachable — a read that was not `ok` resolves to
+    // `unresolved` and has already returned above. It is written out because
+    // TypeScript narrows `resolution`, not `read`, and because the builder
+    // reaches the same conclusion from `null` anyway (no id, key omitted).
+    const payload = buildPartialShippingAddressPayload(
+      read.ok ? read.cart : null,
+      addr
+    )
+
+    // Step 5 — the write. `email` is sent only when the caller supplied one, so
+    // an address-only autosave never clears a previously persisted email.
+    const { cart } = await sdk.store.cart.update(
       cartId,
       {
-        shipping_address: {
-          address_1: addr.address_1,
-          address_2: addr.address_2,
-          postal_code: addr.postal_code,
-          city: addr.city,
-          province: addr.province,
-          country_code: addr.country_code,
-        },
-      },
+        ...(email !== null ? { email } : {}),
+        ...payload,
+      } as HttpTypes.StoreUpdateCart,
       {},
       headers
     )
 
+    // Step 6 — the S7 tripwire. If an id went out and a different one came back,
+    // the row was REPLACED, not merged, and customer PII has just been
+    // destroyed. There is no automated safety net for this invariant (it needs a
+    // live backend), so a log line that fires the moment it breaks is worth more
+    // than the same claim in a spec that cannot run.
+    //
+    // Deliberately does NOT throw: the write already happened, and turning a
+    // silent data-loss event into a broken autosave helps nobody. This is an
+    // observation point, not a guard.
+    //
+    // Logged through `toLogReference`: a cart id is a bearer credential on these
+    // routes, and a log stream is not an authorised audience. See
+    // `lib/util/log-safe.ts` for the full argument. The masked reference is
+    // enough to correlate two lines about one cart, which is all this needs.
+    if (addressId && cart?.shipping_address?.id !== addressId) {
+      console.error("cart_address row was REPLACED, not merged", {
+        cart: toLogReference(cartId),
+        sent: toLogReference(addressId),
+        got: toLogReference(cart?.shipping_address?.id),
+      })
+    }
+
+    // Step 7 — shipping options are filtered on the address, so they must go.
+    //
+    // HONEST STATUS: this call is currently INERT. After this change the only
+    // remaining `getCacheOptions("fulfillment")` producer is
+    // `calculatePriceForShippingOption` (`fulfillment.ts:80`), which is a POST
+    // and therefore never cached by Next, and `listCartShippingMethods` is now
+    // `no-store`. So no cache entry carries the `fulfillment` tag for this to
+    // reach. It stays because it is the invalidation CONTRACT for that tag —
+    // "this cart's shipping options are now stale" is still true, and deleting
+    // the only expression of it means the day a cached fulfillment read comes
+    // back, it comes back silently wrong.
     const fulfillmentCacheTag = await getCacheTag("fulfillment")
     revalidateTag(fulfillmentCacheTag)
 
-    return { ok: true }
-  } catch {
-    return { ok: false }
+    // Step 8 — hand the cart back. Callers use it to reflect the persisted
+    // state; it is NOT an id channel for the next write, which always resolves
+    // its own id server-side.
+    return { ok: true, cart }
+  } catch (error) {
+    // Same split as the abort above: the backend's text is sanitised and logged
+    // server-side, and the browser gets a generic string. `describeError` also
+    // keeps the raw error object — `cause`, request context, response body — out
+    // of the log entirely.
+    console.error("persistCheckoutDraft failed", {
+      cart: toLogReference(cartId),
+      ...describeError(error),
+    })
+
+    return { ok: false, error: PERSIST_DRAFT_GENERIC_ERROR }
   }
 }
 
@@ -281,22 +562,37 @@ export async function deleteLineItem(lineId: string) {
     .catch(medusaError)
 }
 
+/**
+ * Selects a shipping method and RETURNS the updated cart.
+ *
+ * The SDK already resolves `{ cart }` here; the previous implementation awaited
+ * it and threw it away, forcing the client to go back to the server (or to an
+ * RSC re-render) for data it had just been handed. Under D1 client state is
+ * authoritative after mount, so every mutating action returns the cart.
+ *
+ * Note (F1): `POST /store/carts/:id/shipping-methods` is REPLACE-ALL —
+ * `addShippingMethodToCartWorkflow` parallelizes `removeShippingMethodFromCart`
+ * over the current methods with the add. There is no orphan to clean up and no
+ * separate delete call to make (nor is one exposed).
+ */
 export async function setShippingMethod({
   cartId,
   shippingMethodId,
 }: {
   cartId: string
   shippingMethodId: string
-}) {
+}): Promise<HttpTypes.StoreCart> {
   const headers = {
     ...(await getAuthHeaders()),
   }
 
   return sdk.store.cart
     .addShippingMethod(cartId, { option_id: shippingMethodId }, {}, headers)
-    .then(async () => {
+    .then(async ({ cart }: { cart: HttpTypes.StoreCart }) => {
       const cartCacheTag = await getCacheTag("carts")
       revalidateTag(cartCacheTag)
+
+      return cart
     })
     .catch(medusaError)
 }
@@ -352,7 +648,14 @@ export async function initiatePaymentSession(
     .catch(medusaError)
 }
 
-export async function applyPromotions(codes: string[]) {
+/**
+ * Applies promotion codes and RETURNS the updated cart, for the same D1 reason
+ * as `setShippingMethod`: the tag revalidation below only helps a consumer that
+ * re-renders on the server, and after this change the checkout client does not.
+ */
+export async function applyPromotions(
+  codes: string[]
+): Promise<HttpTypes.StoreCart> {
   const cartId = await getCartId()
 
   if (!cartId) {
@@ -365,12 +668,14 @@ export async function applyPromotions(codes: string[]) {
 
   return sdk.store.cart
     .update(cartId, { promo_codes: codes }, {}, headers)
-    .then(async () => {
+    .then(async ({ cart }: { cart: HttpTypes.StoreCart }) => {
       const cartCacheTag = await getCacheTag("carts")
       revalidateTag(cartCacheTag)
 
       const fulfillmentCacheTag = await getCacheTag("fulfillment")
       revalidateTag(fulfillmentCacheTag)
+
+      return cart
     })
     .catch(medusaError)
 }
