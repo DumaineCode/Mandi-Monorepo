@@ -187,7 +187,7 @@ RSC checkout/page.tsx
                                               │
    effects in CheckoutProvider (debounced, signature-guarded):
         │
-        ├─ autosave       persistCheckoutDraft(draft, addressIdHint) → cart  → dispatch(CART_UPDATED)
+        ├─ autosave       persistCheckoutDraft(draft, email)         → cart  → dispatch(CART_UPDATED)
         └─ requote        listCartShippingMethods(cartId)            → options
                           calculatePriceForShippingOption(...) x N   → prices
                                                                      → dispatch(QUOTE_READY{signature,...})
@@ -376,8 +376,7 @@ export type PersistDraftResult =
  */
 export async function persistCheckoutDraft(
   addr: Partial<CheckoutDraftAddress>,
-  email: string | null,
-  addressIdHint?: string | null
+  email: string | null
 ): Promise<PersistDraftResult>
 ```
 
@@ -385,10 +384,10 @@ export async function persistCheckoutDraft(
 
 ```
 1. cartId = await getCartId()            → no cart ⇒ { ok:false }
-2. id = addressIdHint ?? null
-3. if (!id):
-       fresh = await retrieveCartFresh(cartId, "id,shipping_address.id")
-       id = fresh?.shipping_address?.id ?? null
+2. read = await retrieveCartFresh(cartId, "id,*shipping_address")  // discriminated, 5 s abort
+   resolution = resolveShippingAddressId(read)                     // resolved | absent | unresolved
+3. if (resolution.status === "unresolved") ⇒ return { ok:false }   // ABORT, never write blind
+   id = resolution.status === "resolved" ? resolution.id : null     // "absent" = the safe id-less write
 4. payload.shipping_address = id ? { id, ...fields } : { ...fields }
 5. { cart } = await sdk.store.cart.update(cartId, payload, {}, headers)
 6. POST-CONDITION GUARD:
@@ -400,7 +399,16 @@ export async function persistCheckoutDraft(
 8. return { ok: true, cart }
 ```
 
-**Step 3 — why a fallback read and not id-from-client-only.** The hint is cheap and correct in the steady state, because every mutating action now returns the cart and the reducer refreshes `shippingAddressId` from it (D1). But a *wrong* id is worse than no id: `EntityAssigner.js:81-92` checks `sameTarget`, and a mismatched pk falls through to `assignReference` — the same destructive path, now with a misleading id in the payload. The fallback read is one `GET` with `fields=id,shipping_address.id` on a debounced path. Correctness beats one sub-100 ms round trip when the failure mode is silent PII loss.
+**Step 2/3 — the id is resolved server-side, ALWAYS. `addressIdHint` is REJECTED.**
+
+This design originally passed an `addressIdHint` from PR2a React state, with the fallback read only when the hint was absent. **That parameter was removed during PR1a remediation and must NOT be reintroduced.** Two independent fresh-context reviews converged on it as a blocker:
+
+- **Security.** `lib/data/cart.ts` is `"use server"`, so `persistCheckoutDraft` is a publicly reachable POST endpoint whose arguments are entirely client-controlled. The hint was injected verbatim as a `cart_address` primary key with no check that the row belongs to `cartId`. That defeats this design's own invariant — "the cart is the only id authority" — by entering through a different door.
+- **Correctness.** It is self-staling. `setAddresses` sends `shipping_address` WITHOUT an id, so every form submit churns the address row id and any hint the client captured goes stale. A stale id is as destructive as no id (`sameTarget` fails → same `assignReference` → `em.create` path), and a colliding one risks a primary-key 500.
+
+A hint that has to be verified server-side is not an optimisation — verifying it costs the same read it was meant to save. **PR2a must not add an id parameter to any cart-writing server action.** The reducer may still hold `shippingAddressId` for rendering, but it is not an input to a write.
+
+**Step 3 — failure is not absence.** `retrieveCartFresh` returns a discriminated `FreshCartRead`, and `resolveShippingAddressId` maps it to `resolved | absent | unresolved`. A `.catch(() => null)` here would collapse "the cart has no address" (safe — `em.create` is correct) into "the read failed" (destructive — recreates the bug). Since the fresh read is the ONLY id source, `unresolved` **aborts the write** and returns `{ ok:false }`. A skipped quote is recoverable by typing one more character; destroyed PII is not. The read carries a 5 s `AbortSignal.timeout` because it now sits sequentially in front of every autosave write.
 
 **Step 4 — the very first write.** A cart with no `shipping_address` has no id to send. Sending the payload **without** `id` is then correct: `assignReference` → `em.create` creates the row, and there is nothing to destroy. The next write picks up the id from the returned cart (or the fallback read) and merges from then on. This is the only moment the id-less path is legitimate, and it is self-limiting.
 
@@ -869,3 +877,21 @@ Still open, unchanged:
 
 - `retrieveCart`'s own `force-cache`-with-possibly-empty-tag issue is **out of scope** here and recorded as a follow-up.
 - `error=payment_failed` remains read by nothing — unchanged non-goal.
+
+---
+
+## 14. Open items raised by the PR1a review, deferred with an owner
+
+Two independent fresh-context reviews of the PR1a diff converged on the findings below. The blockers were fixed in the PR1a remediation pass; these are the items deliberately NOT fixed there, each with the phase that owns it. They are recorded so they cannot be lost, not so they can be ignored.
+
+| # | Item | Owner | Why deferred |
+| --- | --- | --- | --- |
+| 1 | **No supersession / sequence control on the debounced writer, AND the reorder window is now WIDER than when this item was written.** Two problems, one owner. (a) *Same-writer reordering*: two edits 700 ms apart can land out of order, so an older draft overwrites a newer one. (b) *The read-write interleave introduced by the PR1a remediation*: `persistCheckoutDraft` now performs a sequential `retrieveCartFresh` **in front of** every write, so each autosave is two round trips instead of one and the window in which a second autosave can overtake the first is wider by the full duration of that read (up to `CART_READ_TIMEOUT_MS` = 5 s). Worse, the `AbortController` created at `shipping-address/index.tsx:292` is **never passed into the server action** (`:352-353`), so aborting the effect cancels nothing — the write always lands, even for a signature the component has already discarded. Two autosaves can therefore interleave as read-A, read-B, write-B, write-A. | **PR2a** | The fix belongs in the reducer that PR2a introduces — a monotonically increasing write sequence, with a response dropped when a newer write has already been issued — and it must also thread a real cancellation signal through to the server action, or accept that server actions cannot be cancelled and rely on sequencing alone. Bolting a second ad-hoc guard onto the current effect would be the third overlapping cancellation mechanism in one component. **Explicitly widened by PR1a and accepted:** the id-resolving read is what makes the write non-destructive, so removing it is not an option, and reordering costs a stale-but-complete address whereas the bug it fixes costs the address entirely. |
+| 1b | **The `absent` TOCTOU window.** `resolveShippingAddressId` returns `absent`, and before the write lands a concurrent `setAddresses` (form submit) creates the `cart_address` row. The now-stale `absent` verdict sends an id-less partial write against a cart that has acquired a row, which takes `assignReference` -> `em.create` and shreds the fields `setAddresses` just persisted. The read cannot close this: any check-then-act across two HTTP calls has a window. | **PR2a** | Same owner as #1 and the same mechanism closes it: a write sequence that lets the later writer win, plus PR2a's rule that the submit path and the autosave path are not both allowed to write the shipping address concurrently. Narrow today — it needs a submit to land inside one autosave's read-write gap — but it is the one remaining path to the original data-loss bug, and it must not be lost. |
+| 2 | **`persistCheckoutDraft` unit tests — RESOLVED in the second remediation pass.** `apps/storefront/src/lib/data/cart.spec.ts` and `fulfillment.spec.ts` now exist, built on `vi.mock` + `vi.hoisted` infrastructure this repo did not previously have. They assert against the actual `sdk.store.cart.update` call arguments: the abort guarantee (7 ways a read can fail to establish an answer, each ending in zero writes), the exact id on the wire, key-absence on the legitimate id-less write, the projection field string, tripwire firing and silence, and what crosses the `"use server"` boundary back to the client. Deleting the `unresolved` guard now fails 7 tests; it previously left 150/150 green. | **DONE (PR1a)** | Kept in the table as the record of why it was deferred once and then not deferred again: the gap was real, the reviewer's mutation proved it, and the infrastructure cost was the only thing standing in the way. |
+| 3 | **`retrieveCart` / `retrieveCartFresh` are near-identical siblings** differing only in a cache flag — now also in return type. Two 30-line functions that must stay in sync is a footgun; the next person to add a field to one will forget the other. | **Follow-up** | Collapsing them into one function with an options object touches every `retrieveCart` caller in the app, which is far outside a data-layer remediation pass. |
+| 4 | **Remaining `force-cache` + `Authorization` sites** in `customer.ts`, `orders.ts`, `cart.ts` (`retrieveCart`, and the order lookup), and `payment.ts`. | **Follow-up** | Already recorded above as the `retrieveCart` cache issue; PR1a only fixed the two functions on the checkout autosave path. |
+| 5 | **`revalidateTag(fulfillmentCacheTag)` is now inert.** After PR1a there is no cacheable fetch carrying the `fulfillment` tag — the only remaining `getCacheOptions("fulfillment")` is on a POST, which Next never caches. Six call sites now invalidate nothing. | **Follow-up** | Kept and documented in place rather than deleted: the tag is still the correct *expression* of "this cart's shipping options are stale", and removing every call means the day a cached fulfillment read returns, it returns silently wrong. Deleting six call sites is also not a data-layer remediation. |
+| 5b | **`retrieveCartFresh` is a `"use server"` export taking a client-controlled `cartId` AND a client-controlled `fields` string.** Any browser can invoke it for an arbitrary cart id with an arbitrary projection, and `GET /store/carts/:id` has no customer authentication — the only gate is the browser-shipped publishable key. | **Follow-up** | **Not a regression in kind:** the pre-existing `retrieveCart` in the same module has exactly the same shape and the same exposure, so PR1a neither introduced nor widened the class. Recorded because "the sibling already does it" is a reason not to block this PR, not a reason for the property to go unwritten. The fix is to stop exporting caller-supplied `fields` across the server-action boundary at all — pin the projection server-side — which touches every `retrieveCart` caller. |
+| 5c | **Worst-case checkout render is ~7 s PLUS an unbounded tail.** `checkout-form/index.tsx` awaits `listCartShippingMethods` and *then* `listCartPaymentMethods` sequentially. The first is bounded at 5 s + 2 s by PR1a; `payment.ts` has no timeout at all, so the total is bounded-plus-unbounded. | **PR2a** | Two separate fixes and neither belongs here: parallelising the two awaits is PR2a's `Promise.all`, and bounding `listCartPaymentMethods` is the same `force-cache`/timeout sweep as #4. Deliberately not parallelised in the remediation pass — changing the render order of the checkout page is not a bug fix. |
+| 6 | **A bare-PK upsert (`{ shipping_address: { id } }`) is emitted when a patch has no persistable fields.** Pinned as intended in `cart-address-payload.spec.ts`: the address row is untouched, but `updateCartWorkflow` still runs. | **PR2a** | Suppressing the pointless round trip is the caller's job, and §D3's "skip when the draft is unchanged" rule already assigns it to the PR2a reducer. PR1a's single caller always passes six populated fields, so the case cannot occur yet. |
