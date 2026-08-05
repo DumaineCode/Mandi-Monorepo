@@ -12,7 +12,6 @@ import { CheckCircleSolid, CreditCard } from "@medusajs/icons"
 import ErrorMessage from "@modules/checkout/components/error-message"
 import PaymentContainer, {
   OpenpayCardContainer,
-  StripeCardContainer,
 } from "@modules/checkout/components/payment-container"
 import { OpenpayContext } from "@modules/checkout/components/payment-wrapper/openpay-wrapper"
 import {
@@ -256,16 +255,13 @@ const Payment = ({
               >
                 {availablePaymentMethods.map((paymentMethod) => (
                   <div key={paymentMethod.id}>
-                    {isStripeLike(paymentMethod.id) ? (
-                      <StripeCardContainer
-                        paymentProviderId={paymentMethod.id}
-                        selectedPaymentOptionId={selectedPaymentMethod}
-                        paymentInfoMap={paymentInfoMap}
-                        setCardBrand={setCardBrand}
-                        setError={setError}
-                        setCardComplete={setCardComplete}
-                      />
-                    ) : isOpenpay(paymentMethod.id) ? (
+                    {/* The `isStripeLike` branch and its `StripeCardContainer`
+                        were deleted with `stripe-wrapper.tsx` (PR1b, 1b.18).
+                        Unreachable per `design.md` §0 CONFLICT-1 RESOLUTION: the
+                        backend registers only `openpay` and `mercadopago`, so
+                        `listCartPaymentMethods` can never yield a Stripe id.
+                        This whole component is deleted in PR2c (2c.19). */}
+                    {isOpenpay(paymentMethod.id) ? (
                       <OpenpayCardContainer
                         paymentProviderId={paymentMethod.id}
                         selectedPaymentOptionId={selectedPaymentMethod}

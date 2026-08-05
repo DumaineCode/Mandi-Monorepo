@@ -1,5 +1,4 @@
 import { listCartShippingMethods } from "@lib/data/fulfillment"
-import { listCartPaymentMethods } from "@lib/data/payment"
 import { HttpTypes } from "@medusajs/types"
 import AddressShippingGroup from "@modules/checkout/components/address-shipping-group"
 import CheckoutUnavailable from "@modules/checkout/components/checkout-unavailable"
@@ -9,9 +8,17 @@ import Review from "@modules/checkout/components/review"
 export default async function CheckoutForm({
   cart,
   customer,
+  availablePaymentMethods: paymentMethods,
 }: {
   cart: HttpTypes.StoreCart | null
   customer: HttpTypes.StoreCustomer | null
+  /**
+   * Fetched by the checkout page rather than here, because `PaymentWrapper`
+   * needs the same list to decide whether Openpay's browser SDK is loaded at
+   * all. `null` means the request failed, and is rendered as such below — the
+   * failure handling did not move, only the fetch.
+   */
+  availablePaymentMethods: HttpTypes.StorePaymentProvider[] | null
 }) {
   // The caller currently guarantees a cart, so this branch is unreachable
   // today. It renders the failure state anyway rather than `return null`: a
@@ -24,7 +31,6 @@ export default async function CheckoutForm({
   }
 
   const shippingMethods = await listCartShippingMethods(cart.id)
-  const paymentMethods = await listCartPaymentMethods(cart.region?.id ?? "")
 
   // Neither list is optional: without shipping options there is nothing to
   // choose and without payment providers there is nothing to pay with, so the

@@ -3,7 +3,6 @@
 import CartTotals from "@modules/common/components/cart-totals"
 import DiscountCode from "@modules/checkout/components/discount-code"
 import LocalizedClientLink from "@modules/common/components/localized-client-link"
-import { getCheckoutStep } from "@lib/util/checkout-step"
 import { HttpTypes } from "@medusajs/types"
 
 type SummaryProps = {
@@ -11,8 +10,6 @@ type SummaryProps = {
 }
 
 const Summary = ({ cart }: SummaryProps) => {
-  const step = getCheckoutStep(cart)
-
   return (
     <div className="flex flex-col rounded-[18px] border-2 border-ink bg-paper p-6">
       <h2 className="mb-4 font-bricolage text-2xl font-extrabold tracking-[-0.02em] text-ink">
@@ -26,7 +23,7 @@ const Summary = ({ cart }: SummaryProps) => {
       </div>
 
       <LocalizedClientLink
-        href={"/checkout?step=" + step}
+        href="/checkout"
         data-testid="checkout-button"
         className="flex h-12 w-full items-center justify-center rounded-xl bg-coral font-semibold text-coral-foreground transition-colors hover:bg-coral-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2 focus-visible:ring-offset-paper motion-reduce:transition-none"
       >

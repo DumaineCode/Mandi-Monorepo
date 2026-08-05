@@ -70,6 +70,7 @@ type MissingRequirementCode =
   | "shipping_address"
   | "billing_address"
   | "shipping_method"
+  | "shipping_method_stale"   // AMENDED — see "Amendment A2" below
   | "payment_method"
   | "card_details"
 
@@ -78,15 +79,55 @@ type MissingRequirement = {
   message: string   // customer-facing, Mexican Spanish
 }
 
+// AMENDED — see "Amendment A1" below. The input is a plain snapshot, not a
+// cart, and `toReadinessInput` is the single adapter from a `StoreCart`.
 type OrderReadinessInput = {
-  cart: HttpTypes.StoreCart | null | undefined
-  selectedPaymentMethod: string | null | undefined
-  isCardDataComplete: boolean
+  itemCount: number
+  email?: string | null
+  shippingAddress?: ReadinessAddressSnapshot | null
+  hasBillingAddress: boolean
+  hasShippingMethod: boolean
+  selectionSignature: string | null        // signature in force when the method was picked
+  currentQuoteSignature: string | null     // signature of the address as it stands now
+  selectedPaymentProviderId?: string | null
+  paymentDetailsComplete: boolean
+  paidByGiftCard: boolean
 }
 
 getMissingOrderRequirements(input: OrderReadinessInput): MissingRequirement[]
 canPlaceOrder(input: OrderReadinessInput): boolean
+
+toReadinessInput(
+  cart: HttpTypes.StoreCart | null | undefined,
+  client: {
+    selectionSignature: string | null
+    currentQuoteSignature: string | null
+    selectedPaymentProviderId: string | null
+    paymentDetailsComplete: boolean
+  }
+): OrderReadinessInput
 ```
+
+#### Amendment A1 — the input is a snapshot, not a cart
+
+**Landed in PR1b.** The original contract took a `StoreCart` directly. It takes a
+plain snapshot instead, with `toReadinessInput` as the one adapter, for two
+reasons that the original shape could not satisfy:
+
+- Two of the nine conditions are **not on the cart at all**. `selectionSignature`
+  and `currentQuoteSignature` are client state (see Amendment A2); a cart-shaped
+  input cannot express staleness, which is the condition the whole F1/F2
+  mitigation rests on.
+- A POJO is testable from fixtures without constructing a `StoreCart`, and does
+  not drift when Medusa's types move.
+
+The adapter is spec'd in the same file as the rule it feeds. A predicate that is
+provably correct against a snapshot nobody builds correctly is not correct.
+
+`selectedPaymentMethod` is named `selectedPaymentProviderId` and
+`isCardDataComplete` is named `paymentDetailsComplete`, matching `design.md` §2.
+`paidByGiftCard` is carried from the existing `paidByGiftcard` short-circuit
+(`payment/index.tsx:83-88`); see the note under the catalogue table.
 
 `canPlaceOrder(input)` MUST be exactly equivalent to `getMissingOrderRequirements(input).length === 0`. It MUST NOT re-derive the conditions independently — a second copy of the rule is how the two drift apart.
 
@@ -142,9 +183,39 @@ The predicate MUST evaluate exactly the conditions in the table below, in the st
 | 2 | `phone` | `cart.shipping_address.phone` absent | `Falta tu teléfono.` |
 | 3 | `shipping_address` | `cart.shipping_address` absent, **or** any of `first_name`, `last_name`, `address_1`, `postal_code`, `city`, `province`, `country_code` absent | `Completa tu dirección de envío.` |
 | 4 | `billing_address` | `cart.billing_address` absent | `Falta tu dirección de facturación.` |
-| 5 | `shipping_method` | `cart.shipping_methods` absent or empty | `Elige un método de envío.` |
-| 6 | `payment_method` | `selectedPaymentMethod` absent | `Elige un método de pago.` |
-| 7 | `card_details` | `selectedPaymentMethod` is the Openpay provider **and** `isCardDataComplete` is `false` | `Completa los datos de tu tarjeta.` |
+| 5 | `shipping_method` | `hasShippingMethod` is `false` | `Elige un método de envío.` |
+| 5.5 | `shipping_method_stale` | `hasShippingMethod` is `true` **and** `selectionSignature` is non-null **and** `selectionSignature !== currentQuoteSignature` | `Vuelve a elegir el método de envío: cambiaste el código postal.` |
+| 6 | `payment_method` | `selectedPaymentProviderId` absent | `Elige un método de pago.` |
+| 7 | `card_details` | `selectedPaymentProviderId` is the Openpay provider **and** `paymentDetailsComplete` is `false` | `Completa los datos de tu tarjeta.` |
+
+#### Amendment A2 — the catalogue gains a ninth code
+
+**Landed in PR1b.** This section previously called the eight-code catalogue
+"exhaustive and fixed". It gains `shipping_method_stale` at position 5.5. This is
+an amendment, not drift, and the reason is a finding that post-dates the spec:
+
+- Settled decision 8 (`proposal.md` §9) was resolved after this document was
+  written and makes the code load-bearing.
+- **Finding F1** (`design.md` §0): there is no store API to remove a shipping
+  method. `POST /store/carts/:id/shipping-methods` exports `POST` only,
+  `StoreUpdateCart` carries no `shipping_methods` key, and the only path to
+  `removeShippingMethodFromCartStep` is a replace-all that requires a
+  replacement option id — precisely the auto-pick settled decision 1 forbids. The
+  outcome this spec originally asserted, *"THEN `cart.shipping_methods` is
+  empty"*, is **not expressible from the storefront**.
+- **Finding F2** (`design.md` §0): `updateCartWorkflow` unconditionally runs
+  `refreshCartShippingMethodsWorkflow`, which silently **re-prices** a surviving
+  method to the new destination. Doing nothing is therefore not neutral — it is
+  the exact failure mode settled decision 1 exists to prevent.
+
+Without this code the CTA has no way to block an order placed against a
+superseded quote, which is the entire product guarantee decision 1 asked for.
+
+The two codes are **mutually exclusive**: `shipping_method` already covers
+"nothing chosen", and emitting both would tell the customer to re-choose
+something they never chose. A `null` `selectionSignature` is never stale — a
+method chosen before any signature existed is not evidence that anything moved,
+and reporting it would block an order the customer cannot unblock.
 
 Rules that constrain the table:
 
@@ -152,6 +223,7 @@ Rules that constrain the table:
 - **`phone` is separate from `shipping_address` on purpose.** A missing phone is a single actionable field and gets its own line; folding it into the generic address message would hide the exact cause of the documented Skydropx labelling incident (`lib/util/checkout-step.ts` docstring).
 - **`card_details` is Openpay-only.** Mercado Pago collects card data off-site; Stripe's readiness is an element-mount concern, not a cart concern, and is not part of this predicate.
 - **Legal-text acceptance is NOT in this table** (settled decision 2). The legal text is informational, not a checkbox, and therefore never appears in the missing list.
+- **`paidByGiftCard` suppresses conditions 6 and 7 and nothing else.** A gift card pays for an order; it does not address, phone or ship one. Two caveats are recorded rather than assumed: `gift_cards` is not on Medusa v2's `StoreCart`, so the adapter can only ever derive `false` in this deployment; and if it ever became reachable it must be re-verified against `completeCart`, which per `explore §7` still requires an acceptable payment session — a CTA enabled by this bypass on a session-less cart would fail at placement with nothing for the customer to diagnose.
 - **Format validity is NOT in this table** beyond presence. Phone/email *format* is the input `pattern`'s job (`lib/util/phone.ts`) and the backend normalizes. Re-checking format here risks trapping a customer behind a CTA they cannot satisfy — the same over-strictness that previously made the phone pattern a revenue stopper.
 
 #### Scenario: Empty cart suppresses every other message
@@ -449,32 +521,63 @@ The shipping-option list returned by `listCartShippingMethods` is **filtered by 
 
 `PR1` (rule) + `PR2` (effect) · `AUTO` for the rule, `MANUAL` for the effect
 
-Per settled decision 1: when the quote-relevant address signature changes and the cart already has a shipping method, that method MUST be removed from the cart. The customer re-picks.
+Per settled decision 1: when the quote-relevant address signature changes and the cart already has a shipping method, that selection MUST stop counting. The customer re-picks.
 
 Auto-reselecting an equivalent option was **rejected**: the shipping price changes with the postal code, and a silently changed total is worse than one extra click.
 
-- The trigger is a change in the signature defined above — `country_code`, `postal_code`, `province`, `city` **only**. Editing `address_1`, `address_2`, `company`, `first_name`, `last_name` or `phone` MUST NOT clear the shipping method.
-- Observable outcome after clearing: `cart.shipping_methods` is empty; the Envío section shows the refetched options with none selected; the CTA is disabled and reports `Elige un método de envío.`; the order summary shows shipping as pending, never a price derived from the previous postal code.
+#### Amendment A3 — the mechanism is client-side invalidation, not a cart mutation
 
-#### Scenario: Changing the postal code clears the selection
+**Landed in PR1b (rule) / PR2a–PR2b (effect).** This requirement originally
+asserted `cart.shipping_methods` is empty after the change. That outcome is
+**inexpressible from the storefront**, and the three scenarios asserting it are
+restated below.
+
+Per **finding F1** (`design.md` §0), verified against installed source: the store
+route `POST /store/carts/:id/shipping-methods` exports `POST` only — there is no
+`DELETE`; `StoreUpdateCart` has no `shipping_methods` key, so the cart-update
+route cannot clear them either; and the POST is a **replace-all** whose only path
+to `removeShippingMethodFromCartStep` requires a replacement option id, which is
+exactly the auto-pick this decision forbids. There is no sequence of store API
+calls that leaves a cart with items, an address, and zero shipping methods.
+
+Per **finding F2**, leaving the method alone is not neutral either:
+`updateCartWorkflow` unconditionally runs `refreshCartShippingMethodsWorkflow`,
+which re-lists options for the new destination and **re-prices the surviving
+method** — the customer's total changes without a word.
+
+The requirement is therefore met by **client-side selection invalidation plus an
+explicit provisional-total state**: the `shipping_method_stale` code blocks the
+CTA, no radio is checked, and the summary marks the shipping line and grand total
+as provisional rather than presenting a number the customer never agreed to.
+
+**The product outcome is unchanged.** The customer re-picks the shipping method,
+and no silently changed total is ever presented as final. Only the mechanism
+differs from the one the proposal assumed.
+
+- The trigger is a change in the signature defined above — `country_code`, `postal_code`, `province`, `city` **only**. Editing `address_1`, `address_2`, `company`, `first_name`, `last_name` or `phone` MUST NOT invalidate the shipping method.
+- Observable outcome after invalidation: no option is preselected in the Envío section; the CTA is disabled and reports `Vuelve a elegir el método de envío: cambiaste el código postal.`; the order summary shows shipping and the grand total as **provisional**, never a price derived from the previous postal code presented as final.
+
+#### Scenario: Changing the postal code invalidates the selection
 
 - GIVEN a cart with a selected shipping method quoted for postal code A
 - WHEN the customer changes the postal code to B and the address is persisted
-- THEN `cart.shipping_methods` is empty
-- AND no option is preselected in the Envío section
-- AND the CTA is disabled with `Elige un método de envío.`
+- THEN no option is preselected in the Envío section
+- AND the CTA is disabled with `Vuelve a elegir el método de envío: cambiaste el código postal.`
+- AND `getMissingOrderRequirements` reports `shipping_method_stale`
+- *(The cart may still carry the method row, re-priced by the backend per F2. That row is not what gates the order; the predicate is.)*
 
-#### Scenario: Editing the street does not clear the selection
+#### Scenario: Editing the street does not invalidate the selection
 
 - GIVEN a cart with a selected shipping method
 - WHEN the customer edits `address_1` and blurs it
-- THEN `cart.shipping_methods` still contains the selected method
+- THEN the selection survives and the CTA reports neither `shipping_method` nor `shipping_method_stale`
 
-#### Scenario: The summary never shows a stale shipping price
+#### Scenario: The summary never shows a stale shipping price as final
 
 - GIVEN a selected shipping method with a displayed price
 - WHEN the quote signature changes
-- THEN the summary stops displaying that price before any new price is displayed
+- THEN the summary marks the shipping line and grand total as provisional with `El costo de envío se recalcula cuando elijas el método.`
+- AND no re-priced number is presented as the final total before the customer re-picks
 
 ---
 
