@@ -337,7 +337,16 @@ This PR is where PR1b's stale-selection rule finally gets its effect. Reference 
 
 ---
 
-## PR2c — Pago + CTA
+## PR2c
+> **Settled decision added after PR1b review — Openpay fingerprinting trigger.**
+> The Openpay scripts must load when the customer **selects Openpay as their payment
+> method**, NOT on checkout mount. See `design.md` §12b. PR1b left the mount gated on
+> `openpayConfig && isOpenpayOffered(...)`; PR2c must move the trigger to selection.
+> The wrapper must still NOT depend on a payment session existing — that is what makes
+> R5 possible. Surface the script-load delay as a pending state on the card fields,
+> never as a blocked section.
+
+ — Pago + CTA
 
 Branch `feat/checkout-pago-cta` → `feat/checkout-envio`.
 **~900 changed lines. `size:exception` required.**
