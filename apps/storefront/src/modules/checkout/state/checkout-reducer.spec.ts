@@ -789,6 +789,77 @@ describe("quote ordering traps", () => {
     ).toBe("quote")
   })
 
+  /**
+   * The customer-visible end of the release rule, and the contract the requote
+   * effect now leans on entirely.
+   *
+   * `QUOTE_STARTED` claims `inFlightSignature`, and ONLY a `QUOTE_READY` or a
+   * `QUOTE_FAILED` for that signature ever gives it back. The effect used to hold
+   * a `cancelled` flag that returned WITHOUT dispatching on the success path — so
+   * a customer who edited the postal code mid-flight leaked the slot, and typing
+   * their way back to that address left `selectQuoteStatus` reporting `"quoting"`
+   * forever with nothing running. That flag is gone; every completed round now
+   * dispatches.
+   *
+   * Honest about what this test is: it is GREEN before the deletion too, because
+   * the leak lived entirely in the `.tsx` effect and this repo's runner is
+   * node-only. It is a regression guard on the reducer half of the contract — if
+   * the superseded branch is ever "simplified" to a bare `return state`, this is
+   * what objects, and the effect has no cancellation of its own left to hide it.
+   */
+  it("recovers a quotable status after a mid-flight edit and a return", () => {
+    const first = baseState()
+    const signatureA = first.quoteSignature!
+
+    const movedAway = run(
+      first,
+      { type: "QUOTE_STARTED", signature: signatureA },
+      { type: "FIELD_BLUR", field: "postal_code", value: "44160" }
+    )
+    expect(movedAway.inFlightSignature).toBe(signatureA)
+
+    // A's round finishes for an address the customer has left. The effect
+    // dispatches it anyway; the reducer decides.
+    const superseded = checkoutReducer(movedAway, {
+      type: "QUOTE_READY",
+      signature: signatureA,
+      options: [option("so_a")],
+      prices: { so_a: 100 },
+    })
+    expect(superseded.quotedSignature).toBeNull()
+    expect(superseded.inFlightSignature).toBeNull()
+
+    const backToA = checkoutReducer(superseded, {
+      type: "FIELD_BLUR",
+      field: "postal_code",
+      value: "06700",
+    })
+    expect(backToA.quoteSignature).toBe(signatureA)
+
+    // Not permanently "quoting" with nothing running: a fresh round is allowed.
+    expect(
+      evaluateQuoteReadiness({
+        draftAddress: selectQuoteRelevantAddress(backToA.draft),
+        lastRequestedSignature: backToA.quotedSignature,
+        inFlightSignature: backToA.inFlightSignature,
+        cartId: backToA.cart?.id,
+      })
+    ).toMatchObject({ action: "quote", signature: signatureA })
+
+    const requoted = run(
+      backToA,
+      { type: "QUOTE_STARTED", signature: signatureA },
+      {
+        type: "QUOTE_READY",
+        signature: signatureA,
+        options: [option("so_a")],
+        prices: { so_a: 100 },
+      }
+    )
+    expect(selectQuoteStatus(requoted)).toBe("quoted")
+    expect(selectShippingChoices(requoted)).toHaveLength(1)
+  })
+
   it("does not release an in-flight slot belonging to a different request", () => {
     const state = baseState()
     const started = checkoutReducer(state, {

@@ -368,8 +368,6 @@ export function CheckoutProvider({
       return
     }
 
-    let cancelled = false
-
     const timer = setTimeout(async () => {
       const current = stateRef.current
 
@@ -461,14 +459,28 @@ export function CheckoutProvider({
           return
         }
 
-        if (cancelled) {
-          return
-        }
-
         /**
-         * The reducer drops this whole result if the signature has moved on.
-         * That single comparison replaces the `AbortController` +
-         * `lastPrefetchedSignature` + `cancelled` triad this change deletes.
+         * Dispatched unconditionally, and that is the point.
+         *
+         * The reducer drops this whole result if the signature has moved on —
+         * one comparison, which is what replaced the `AbortController` +
+         * `lastPrefetchedSignature` + `cancelled` triad. A `cancelled` check
+         * here survived that deletion and re-opened the hole from the one
+         * direction the reducer cannot see: `QUOTE_STARTED` has already claimed
+         * `inFlightSignature`, and ONLY a `QUOTE_READY` or a `QUOTE_FAILED` for
+         * that signature ever gives it back. Returning without dispatching leaked
+         * the slot permanently, so a customer who edited the postal code
+         * mid-flight and then typed their way BACK to it found
+         * `evaluateQuoteReadiness` answering `already_in_flight` forever:
+         * `selectQuoteStatus` pinned at `"quoting"`, `selectShippingChoices`
+         * empty, CTA blocked, dead until a page reload.
+         *
+         * Note the asymmetry it created — every failure path above dispatches
+         * `QUOTE_FAILED`, which DOES release the slot. Only success leaked.
+         *
+         * The rule is that a round which STARTED must always reach a terminal
+         * action. What to do with a superseded one is the reducer's decision,
+         * where a spec can contradict it, and it already makes it correctly.
          */
         dispatch({ type: "QUOTE_READY", signature, options, prices })
       } catch {
@@ -476,10 +488,11 @@ export function CheckoutProvider({
       }
     }, QUOTE_DEBOUNCE_MS)
 
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-    }
+    /**
+     * Cancels only the DEBOUNCE. A round that has already begun is left to run to
+     * completion and dispatch; see the note on `QUOTE_READY` above.
+     */
+    return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cartId, quoteSignature, state.failedSignature])
 
