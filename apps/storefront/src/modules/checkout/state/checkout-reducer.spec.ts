@@ -1001,7 +1001,7 @@ describe("selectQuoteStatus", () => {
   it("never reports failed because SEPOMEX found nothing", () => {
     // A postal-code miss degrades to manual entry. It is not a quote failure and
     // must not present itself as one.
-    const state = checkoutReducer(baseState(), { type: "CP_LOOKUP_NOT_FOUND" })
+    const state = checkoutReducer(baseState(), { type: "CP_LOOKUP_NOT_FOUND", postalCode: "06700" })
 
     expect(state.cpStatus).toBe("not_found")
     expect(selectQuoteStatus(state)).not.toBe("failed")
@@ -1027,6 +1027,7 @@ describe("SEPOMEX lookup", () => {
 
     const resolved = checkoutReducer(typed, {
       type: "CP_LOOKUP_FOUND",
+      postalCode: "06700",
       province: "CDMX",
       city: "Ciudad de México",
       colonias: ["Roma Norte", "Roma Sur"],
@@ -1039,6 +1040,7 @@ describe("SEPOMEX lookup", () => {
   it("keeps a colonia that is not in the returned list as free text", () => {
     const state = checkoutReducer(baseState(), {
       type: "CP_LOOKUP_FOUND",
+      postalCode: "06700",
       province: "CDMX",
       city: "Ciudad de México",
       colonias: ["Condesa", "Juárez"],
@@ -1051,6 +1053,7 @@ describe("SEPOMEX lookup", () => {
   it("uses the dropdown when the saved colonia IS in the returned list", () => {
     const state = checkoutReducer(baseState(), {
       type: "CP_LOOKUP_FOUND",
+      postalCode: "06700",
       province: "CDMX",
       city: "Ciudad de México",
       colonias: ["Roma Norte", "Roma Sur"],
@@ -1063,7 +1066,7 @@ describe("SEPOMEX lookup", () => {
     // Otherwise "No encontramos ese código postal" stays on screen after the
     // customer has deleted the digits it was about, and a colonia dropdown
     // keeps offering colonias for a postal code that is no longer entered.
-    const missed = checkoutReducer(baseState(), { type: "CP_LOOKUP_NOT_FOUND" })
+    const missed = checkoutReducer(baseState(), { type: "CP_LOOKUP_NOT_FOUND", postalCode: "06700" })
     expect(missed.cpStatus).toBe("not_found")
 
     expect(checkoutReducer(missed, { type: "CP_LOOKUP_RESET" }).cpStatus).toBe(
@@ -1072,6 +1075,7 @@ describe("SEPOMEX lookup", () => {
 
     const listed = checkoutReducer(baseState(), {
       type: "CP_LOOKUP_FOUND",
+      postalCode: "06700",
       province: "CDMX",
       city: "Ciudad de México",
       colonias: ["Roma Norte", "Roma Sur"],
@@ -1089,6 +1093,153 @@ describe("SEPOMEX lookup", () => {
     // the whole checkout tree for no reason.
     const state = baseState()
     expect(checkoutReducer(state, { type: "CP_LOOKUP_RESET" })).toBe(state)
+  })
+
+  /**
+   * ## The stale-lookup rule (D2)
+   *
+   * `CP_LOOKUP_FOUND` used to carry no postal code at all, which made the reducer
+   * STRUCTURALLY incapable of rejecting a result for an address the customer had
+   * already left. The provider compensated with a `cancelled` flag in the effect's
+   * cleanup — and that flag is what stranded `cpStatus` at `"loading"` forever,
+   * because it also swallowed results that were perfectly current.
+   *
+   * The repro was routine, not exotic: the customer types a postal code and blurs;
+   * the 400 ms autosave persists it; `CART_UPDATED` moves
+   * `cart.shipping_address.postal_code` from undefined to that code; the lookup
+   * effect re-runs because that field is in its dep array; cleanup sets
+   * `cancelled = true`; the new effect body early-returns on the dedupe ref because
+   * the postal code did not change. SEPOMEX then answers into a dead callback.
+   * `cpStatus` stays `"loading"`, `selectQuoteStatus` short-circuits on it and
+   * returns `"looking_up"` ahead of everything else, and the order can never be
+   * placed. Any SEPOMEX latency above roughly one autosave debounce plus a server
+   * round trip reaches it.
+   *
+   * The decision moves here, where a spec can contradict it: the action carries the
+   * postal code it was requested FOR, and the reducer compares it against the
+   * draft. The effect keeps only its dedupe ref, which guards an external call
+   * rather than a state transition — the two guards no longer own the same
+   * decision.
+   */
+  describe("a result for a postal code the customer has left", () => {
+    it("is dropped whole rather than overwriting the current destination", () => {
+      // The customer typed 44100, then moved on to 06700 before SEPOMEX answered.
+      // Applying the late answer writes Jalisco/Guadalajara onto a draft whose
+      // postal code is 06700 — a destination that does not exist, quoted as if it
+      // did.
+      const moved = run(
+        baseState(),
+        { type: "FIELD_BLUR", field: "postal_code", value: "44100" },
+        { type: "CP_LOOKUP_STARTED" },
+        { type: "FIELD_BLUR", field: "postal_code", value: "06700" },
+        { type: "CP_LOOKUP_STARTED" }
+      )
+
+      const late = checkoutReducer(moved, {
+        type: "CP_LOOKUP_FOUND",
+        postalCode: "44100",
+        province: "Jalisco",
+        city: "Guadalajara",
+        colonias: ["Americana"],
+      })
+
+      expect(late.draft.province).toBe("CDMX")
+      expect(late.draft.city).toBe("Ciudad de México")
+      expect(late.colonias).toEqual([])
+      // The lookup for 06700 is genuinely still running, so `loading` is the
+      // honest answer — not a leftover.
+      expect(late.cpStatus).toBe("loading")
+      expect(late).toBe(moved)
+    })
+
+    it("does not let a late miss wipe a list that did resolve", () => {
+      // 44100 misses, 06700 hits, and the miss lands last. Without the postal code
+      // on the action the colonia dropdown vanishes for a postal code SEPOMEX
+      // answered, and "No encontramos ese código postal" appears under one it
+      // found.
+      const resolved = run(
+        baseState(),
+        { type: "FIELD_BLUR", field: "postal_code", value: "44100" },
+        { type: "CP_LOOKUP_STARTED" },
+        { type: "FIELD_BLUR", field: "postal_code", value: "06700" },
+        { type: "CP_LOOKUP_STARTED" },
+        {
+          type: "CP_LOOKUP_FOUND",
+          postalCode: "06700",
+          province: "CDMX",
+          city: "Ciudad de México",
+          colonias: ["Roma Norte", "Roma Sur"],
+        }
+      )
+      expect(resolved.cpStatus).toBe("found")
+
+      const late = checkoutReducer(resolved, {
+        type: "CP_LOOKUP_NOT_FOUND",
+        postalCode: "44100",
+      })
+
+      expect(late.cpStatus).toBe("found")
+      expect(late.colonias).toEqual(["Roma Norte", "Roma Sur"])
+      expect(late).toBe(resolved)
+    })
+
+    /**
+     * The other half, and the one the effect now depends on: a result for the
+     * postal code STILL in the draft must always land, however much else moved
+     * while it was in the air. This is what makes dropping the `cancelled` flag
+     * safe — the reducer, not the cleanup function, decides what is stale.
+     */
+    it("still applies once the autosave has caught the cart up", () => {
+      const inFlight = run(
+        baseState({ shipping_address: null }),
+        { type: "FIELD_BLUR", field: "postal_code", value: "44100" },
+        { type: "CP_LOOKUP_STARTED" }
+      )
+      expect(inFlight.cpStatus).toBe("loading")
+
+      // The 400 ms autosave lands first — this is the dep-array change that used
+      // to re-run the effect and set `cancelled`.
+      const persisted = run(
+        inFlight,
+        { type: "CART_WRITE_STARTED", sequence: 1 },
+        {
+          type: "CART_UPDATED",
+          sequence: 1,
+          cart: cartWith({
+            shipping_address: { id: "caaddr_01", ...CDMX, postal_code: "44100" },
+          }),
+        }
+      )
+
+      const found = checkoutReducer(persisted, {
+        type: "CP_LOOKUP_FOUND",
+        postalCode: "44100",
+        province: "Jalisco",
+        city: "Guadalajara",
+        colonias: ["Americana"],
+      })
+
+      expect(found.cpStatus).toBe("found")
+      expect(selectQuoteStatus(found)).not.toBe("looking_up")
+    })
+
+    it("compares on the trimmed postal code", () => {
+      const typed = run(
+        baseState(),
+        { type: "FIELD_BLUR", field: "postal_code", value: "44100" },
+        { type: "CP_LOOKUP_STARTED" }
+      )
+
+      const found = checkoutReducer(typed, {
+        type: "CP_LOOKUP_FOUND",
+        postalCode: " 44100 ",
+        province: "Jalisco",
+        city: "Guadalajara",
+        colonias: [],
+      })
+
+      expect(found.cpStatus).toBe("found")
+    })
   })
 
   it("clears the colonia when the customer asks to type one", () => {
@@ -1172,6 +1323,7 @@ describe("selectShouldLookUpPostalCode", () => {
     })
     const resolved = checkoutReducer(typed, {
       type: "CP_LOOKUP_FOUND",
+      postalCode: "44160",
       province: "Jalisco",
       city: "Guadalajara",
       colonias: ["Americana"],
@@ -2015,6 +2167,7 @@ describe("mutation survivors — behaviour that was never asserted (B2)", () => 
       const state = baseState()
       const found = checkoutReducer(state, {
         type: "CP_LOOKUP_FOUND",
+        postalCode: "06700",
         province: "Jalisco",
         city: "Guadalajara",
         colonias: [],
@@ -2040,6 +2193,7 @@ describe("mutation survivors — behaviour that was never asserted (B2)", () => 
 
       const found = checkoutReducer(filled, {
         type: "CP_LOOKUP_FOUND",
+        postalCode: "06700",
         province: "",
         city: "Guadalajara",
         colonias: [],
@@ -2058,6 +2212,7 @@ describe("mutation survivors — behaviour that was never asserted (B2)", () => 
 
       const found = checkoutReducer(filled, {
         type: "CP_LOOKUP_FOUND",
+        postalCode: "06700",
         province: "Jalisco",
         city: "",
         colonias: [],
@@ -2070,6 +2225,7 @@ describe("mutation survivors — behaviour that was never asserted (B2)", () => 
     it("still overwrites when SEPOMEX has a real answer, since the CP is authoritative", () => {
       const found = checkoutReducer(baseState(), {
         type: "CP_LOOKUP_FOUND",
+        postalCode: "06700",
         province: "Jalisco",
         city: "Guadalajara",
         colonias: [],
@@ -2183,12 +2339,18 @@ describe("mutation survivors — behaviour that was never asserted (B2)", () => 
 
   describe("the colonia dropdown renders when it should", () => {
     it("does NOT go manual for an empty colonia with a returned list", () => {
-      const found = checkoutReducer(baseState({ shipping_address: null }), {
-        type: "CP_LOOKUP_FOUND",
-        province: "Jalisco",
-        city: "Guadalajara",
-        colonias: ["Americana", "Lafayette"],
-      })
+      const found = checkoutReducer(
+        baseState({
+          shipping_address: { id: "caaddr_01", ...CDMX, address_2: "" },
+        }),
+        {
+          type: "CP_LOOKUP_FOUND",
+          postalCode: "06700",
+          province: "Jalisco",
+          city: "Guadalajara",
+          colonias: ["Americana", "Lafayette"],
+        }
+      )
 
       expect(found.draft.address_2).toBe("")
       expect(found.coloniaManual).toBe(false)
@@ -2197,6 +2359,7 @@ describe("mutation survivors — behaviour that was never asserted (B2)", () => 
     it("goes manual for a colonia the returned list does not contain", () => {
       const found = checkoutReducer(baseState(), {
         type: "CP_LOOKUP_FOUND",
+        postalCode: "06700",
         province: "Jalisco",
         city: "Guadalajara",
         colonias: ["Americana"],
@@ -2211,6 +2374,7 @@ describe("mutation survivors — behaviour that was never asserted (B2)", () => 
     it("drops stale colonias, so a dead dropdown cannot outlive its address", () => {
       const withList = checkoutReducer(baseState(), {
         type: "CP_LOOKUP_FOUND",
+        postalCode: "06700",
         province: "Jalisco",
         city: "Guadalajara",
         colonias: ["Americana", "Lafayette"],
@@ -2218,7 +2382,7 @@ describe("mutation survivors — behaviour that was never asserted (B2)", () => 
 
       expect(withList.colonias).toHaveLength(2)
       expect(
-        checkoutReducer(withList, { type: "CP_LOOKUP_NOT_FOUND" }).colonias
+        checkoutReducer(withList, { type: "CP_LOOKUP_NOT_FOUND", postalCode: "06700" }).colonias
       ).toEqual([])
     })
   })

@@ -239,9 +239,23 @@ export function CheckoutProvider({
   // -------------------------------------------------------------------------
 
   /**
-   * Dedupe guard for the postal-code lookup. The one ref this file keeps, and
-   * it guards an EXTERNAL call rather than a state transition: React may re-run
-   * an effect for reasons that have nothing to do with the value changing.
+   * Dedupe guard for the postal-code lookup. The one ref this file keeps, and it
+   * guards an EXTERNAL call rather than a state transition: React may re-run an
+   * effect for reasons that have nothing to do with the value changing.
+   *
+   * It is now the ONLY guard on this path. It used to sit beside a `cancelled`
+   * flag set from the cleanup function, and the two contradicted each other
+   * whenever the effect re-ran for any reason other than a postal-code change —
+   * which the dep array makes routine, because
+   * `cart.shipping_address.postal_code` moves on the very autosave this lookup
+   * arms. Cleanup set `cancelled`, the new body early-returned HERE because the
+   * postal code had not changed, and SEPOMEX then answered into a dead callback:
+   * `cpStatus` pinned at `"loading"` with no lookup in flight, `selectQuoteStatus`
+   * short-circuiting on it, and no order placeable until a page reload.
+   *
+   * Staleness is a state transition, so it moved to the reducer, which compares
+   * the postal code carried on the action against the draft. This ref keeps only
+   * the job it was always right about.
    */
   const lastLookedUpCp = useRef("")
 
@@ -265,43 +279,40 @@ export function CheckoutProvider({
     }
     lastLookedUpCp.current = cp
 
-    let cancelled = false
     dispatch({ type: "CP_LOOKUP_STARTED" })
 
+    /**
+     * Every path dispatches, unconditionally. There is no cleanup flag and no
+     * early return: a lookup that STARTED must always reach a terminal action,
+     * because `CP_LOOKUP_STARTED` is what puts `cpStatus` into `"loading"` and
+     * nothing else takes it out. Whether the answer is still wanted is the
+     * reducer's call, made against `postalCode` below.
+     */
     getPostalCode(cp)
       .then((res) => {
-        if (cancelled) {
-          return
-        }
-
         if (!res || !res.found) {
-          dispatch({ type: "CP_LOOKUP_NOT_FOUND" })
+          dispatch({ type: "CP_LOOKUP_NOT_FOUND", postalCode: cp })
           return
         }
 
         dispatch({
           type: "CP_LOOKUP_FOUND",
+          postalCode: cp,
           province: res.state || "",
           city: res.city || "",
           colonias: res.colonias || [],
         })
       })
       .catch(() => {
-        if (cancelled) {
-          return
-        }
         /**
          * A lookup failure is NOT a quote failure and must never block the
          * section. It degrades to manual state/city entry, and once province
          * and city are present by any means the signature completes and quoting
          * proceeds identically.
          */
-        dispatch({ type: "CP_LOOKUP_NOT_FOUND" })
+        dispatch({ type: "CP_LOOKUP_NOT_FOUND", postalCode: cp })
       })
 
-    return () => {
-      cancelled = true
-    }
     /**
      * W6: `selectShouldLookUpPostalCode` reads `draft.province`, `draft.city` and
      * the cart's persisted postal code as well as the draft postal code. Its

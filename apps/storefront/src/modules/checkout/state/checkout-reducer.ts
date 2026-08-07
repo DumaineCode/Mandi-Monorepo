@@ -161,11 +161,20 @@ export type CheckoutAction =
   | { type: "CP_LOOKUP_STARTED" }
   | {
       type: "CP_LOOKUP_FOUND"
+      /**
+       * The postal code this lookup was REQUESTED for.
+       *
+       * Required, not optional, and the reason the action exists in this shape: the
+       * reducer is the only place that can tell a current result from a stale one,
+       * and without this field it was structurally incapable of doing so. See
+       * {@link isStalePostalCodeLookup}.
+       */
+      postalCode: string
       province: string
       city: string
       colonias: string[]
     }
-  | { type: "CP_LOOKUP_NOT_FOUND" }
+  | { type: "CP_LOOKUP_NOT_FOUND"; postalCode: string }
   | { type: "CP_LOOKUP_RESET" }
   | { type: "COLONIA_MANUAL_REQUESTED" }
   | { type: "CART_WRITE_STARTED"; sequence: number }
@@ -410,6 +419,35 @@ export function initFromServer(init: CheckoutInit): CheckoutState {
   }
 }
 
+/**
+ * Whether a SEPOMEX result belongs to a postal code the customer has since left.
+ *
+ * ## Why this lives here and not in the effect's cleanup
+ *
+ * It used to be a `cancelled` flag closed over by the lookup effect, set from the
+ * cleanup function. That flag could not distinguish "the customer moved on" from
+ * "React re-ran this effect for some other reason" — and the effect's dep array
+ * includes `cart.shipping_address.postal_code`, which MOVES on the very autosave
+ * the lookup itself arms. So the routine sequence "type a postal code, blur,
+ * autosave persists it" re-ran the effect, cancelled the open lookup, and then
+ * early-returned on the dedupe ref because the postal code had not actually
+ * changed. Nothing was ever dispatched, `cpStatus` stayed `"loading"`, and
+ * `selectQuoteStatus` short-circuits on `"loading"` ahead of every other rule —
+ * the order could not be placed until the page was reloaded.
+ *
+ * Two guards owned one decision and disagreed. The dedupe ref legitimately guards
+ * an EXTERNAL CALL (do not ask SEPOMEX the same question twice); staleness is a
+ * STATE TRANSITION and belongs here, where a spec can contradict it.
+ *
+ * Compared against the DRAFT rather than the cart: the draft is what the effect
+ * read when it issued the request and what the customer is looking at. Trimmed on
+ * both sides because the effect trims before dispatching and the draft may not be.
+ */
+const isStalePostalCodeLookup = (
+  state: CheckoutState,
+  postalCode: string
+): boolean => postalCode.trim() !== state.draft.postal_code.trim()
+
 export function checkoutReducer(
   state: CheckoutState,
   action: CheckoutAction
@@ -464,6 +502,22 @@ export function checkoutReducer(
 
     case "CP_LOOKUP_FOUND": {
       /**
+       * Dropped WHOLE when it is stale — not merged, not partially applied. The
+       * postal code is authoritative for province and city, so applying a late
+       * answer would stamp one destination's state and city onto another's postal
+       * code and quote a place that does not exist.
+       *
+       * `cpStatus` is deliberately left untouched here. If this result is stale
+       * the draft has moved, and the effect has either started a lookup for the
+       * new postal code (so `"loading"` is honest) or dispatched
+       * `CP_LOOKUP_RESET` (so `"idle"` is). Either way there is nothing for this
+       * branch to correct.
+       */
+      if (isStalePostalCodeLookup(state, action.postalCode)) {
+        return state
+      }
+
+      /**
        * The postal code is authoritative for state and city, so it overwrites
        * them. This is also what makes R4 work: a customer who types five digits
        * and nothing else ends up with a complete quote signature.
@@ -494,6 +548,16 @@ export function checkoutReducer(
     }
 
     case "CP_LOOKUP_NOT_FOUND":
+      /**
+       * Stale misses are dropped for the same reason stale hits are, and the
+       * damage is just as visible: a miss for an abandoned postal code would clear
+       * the colonia list belonging to one SEPOMEX DID resolve, and put "no
+       * encontramos ese código postal" under a postal code it found.
+       */
+      if (isStalePostalCodeLookup(state, action.postalCode)) {
+        return state
+      }
+
       /**
        * NOT a quote failure. A SEPOMEX miss degrades to manual state/city entry
        * and must never block the section or enter `failed` — the customer can

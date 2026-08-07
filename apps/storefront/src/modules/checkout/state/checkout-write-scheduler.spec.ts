@@ -321,6 +321,7 @@ describe("at most one write in flight (B1)", () => {
     // SEPOMEX lands while the write is open and widens the draft.
     h.dispatchToState({
       type: "CP_LOOKUP_FOUND",
+      postalCode: "44100",
       province: "Jalisco",
       city: "Guadalajara",
       colonias: [],
