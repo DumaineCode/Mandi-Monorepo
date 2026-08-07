@@ -157,7 +157,19 @@ export type OrderReadinessInput = {
   email?: string | null
   shippingAddress?: ReadinessAddressSnapshot | null
   hasBillingAddress: boolean
+  /** Whether `cart.shipping_methods` carries a row. Server-side fact. */
   hasShippingMethod: boolean
+  /**
+   * Whether the CLIENT currently holds a shipping selection — i.e. whether a radio
+   * is checked on screen.
+   *
+   * Separate from {@link hasShippingMethod} because per F1 the two can disagree
+   * and routinely do: there is no store API to remove a shipping method, so the
+   * cart row survives every invalidation while the client selection is cleared.
+   * The cart row alone answers "has the backend been told about a method"; only
+   * this answers "has the customer chosen one".
+   */
+  hasSelectedShippingOption: boolean
   /** Quote signature in force when the customer picked the shipping method. */
   selectionSignature: string | null
   /** Quote signature of the address as it stands right now. */
@@ -258,15 +270,45 @@ export function getMissingOrderRequirements(
   if (!input.hasShippingMethod) {
     codes.push("shipping_method")
   } else if (
+    !input.hasSelectedShippingOption ||
     isShippingSelectionStale(
       input.selectionSignature,
       input.currentQuoteSignature
     )
   ) {
     /**
-     * Only reachable when a method IS selected: `shipping_method` already
-     * covers "nothing chosen", and emitting both would tell the customer to
+     * Only reachable when a cart row EXISTS: `shipping_method` already covers
+     * "nothing chosen at all", and emitting both would tell the customer to
      * re-choose something they never chose.
+     *
+     * ## Why the client selection is a condition and not just the signature
+     *
+     * The signature comparison alone has a hole it cannot see by construction,
+     * because a signature can come back to where it started while a selection
+     * cannot. Postal code A -> B -> A: the reducer clears
+     * `selectedShippingOptionId` on the way out and never restores it, and it
+     * deliberately keeps `selectionSignature` at A. On the way back
+     * `isShippingSelectionStale(A, A)` is `false` again, `hasShippingMethod` is
+     * still `true` because F1 makes the row unremovable, and NOTHING was emitted:
+     * no radio checked, CTA enabled, summary presenting the twice-re-priced total
+     * as final. The customer could place an order for a shipping method the page
+     * showed as unselected.
+     *
+     * The alternative fix — clearing `selectionSignature` alongside the option id
+     * — is strictly worse. `isShippingSelectionStale(null, …)` is documented to
+     * answer `false`, so the ORDINARY A -> B case would unblock the CTA
+     * immediately, which is the precise failure this whole mechanism exists to
+     * prevent. Gating on the selection is also the truer statement of what the
+     * module promises: the CTA and the summary must not disagree with the radio
+     * group, and the radio group renders from `selectedShippingOptionId`, so that
+     * is the thing the CTA has to read.
+     *
+     * Both conditions produce THIS code rather than `shipping_method` on purpose.
+     * `selectShippingIsProvisional` is defined as the presence of
+     * `shipping_method_stale`, so routing the cleared-selection case to the
+     * generic code would leave a blocked CTA beside a total presented as FINAL.
+     * The message is accurate either way: the only thing that clears the client
+     * selection is a signature change, which is a destination change.
      *
      * This is the F1/F2 mitigation. Per F1 there is no store API to remove a
      * shipping method, so the spec's original outcome — `cart.shipping_methods`
@@ -374,6 +416,7 @@ export function canPlaceOrder(input: OrderReadinessInput): boolean {
 export function toReadinessInput(
   cart: HttpTypes.StoreCart | null | undefined,
   client: {
+    selectedShippingOptionId: string | null
     selectionSignature: string | null
     currentQuoteSignature: string | null
     selectedPaymentProviderId: string | null
@@ -392,6 +435,7 @@ export function toReadinessInput(
      * gate must fail closed: absence blocks.
      */
     hasShippingMethod: (cart?.shipping_methods?.length ?? 0) > 0,
+    hasSelectedShippingOption: client.selectedShippingOptionId !== null,
     selectionSignature: client.selectionSignature,
     currentQuoteSignature: client.currentQuoteSignature,
     selectedPaymentProviderId: client.selectedPaymentProviderId,

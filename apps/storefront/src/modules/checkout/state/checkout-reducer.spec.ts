@@ -1461,6 +1461,90 @@ describe("selectReadinessInput — the seam PR1b left open, now closed", () => {
     )
   })
 
+  /**
+   * The A -> B -> A round trip, for the SELECTION.
+   *
+   * This file already round-trips the FAILURE record ("forgets a failure once the
+   * customer leaves and returns to that address") because a failure that survived
+   * the trip would lock a customer out of the only address they want. The
+   * selection had no equivalent, and the two records do NOT behave the same way on
+   * the way back:
+   *
+   * - `failedSignature` is cleared on every signature change, so returning to A
+   *   genuinely forgets it;
+   * - `selectedShippingOptionId` is cleared on the way OUT and never restored,
+   *   while `selectionSignature` is deliberately kept at A.
+   *
+   * So on the way back `isShippingSelectionStale(A, A)` is `false` again, and that
+   * is the whole bug: the radio group is empty, the cart still carries the method
+   * row (F1 — there is no store API to remove it), and a rule that reads staleness
+   * ALONE concludes there is nothing left to fix. The CTA unblocks, the summary
+   * presents the total as FINAL, and the customer places an order for a shipping
+   * method the page shows as unselected.
+   *
+   * The module's core invariant is that the CTA and the summary cannot disagree
+   * with the radio group. This is the test that says so.
+   */
+  it("keeps blocking when the customer leaves an address and returns to it", () => {
+    const selected = run(
+      baseState({
+        shipping_methods: [{ shipping_option_id: "so_std" }],
+        billing_address: { id: "baddr_01", ...CDMX },
+      }),
+      selectShipping("so_std"),
+      {
+        type: "SELECT_PAYMENT_PROVIDER",
+        providerId: "pp_mercadopago_mercadopago",
+      }
+    )
+    const signatureA = selected.quoteSignature
+    expect(getMissingOrderRequirements(selectReadinessInput(selected))).toEqual(
+      []
+    )
+
+    const roundTrip = run(
+      selected,
+      { type: "FIELD_BLUR", field: "postal_code", value: "44160" },
+      { type: "FIELD_BLUR", field: "postal_code", value: "06700" }
+    )
+
+    // Back at the address the selection was originally made under…
+    expect(roundTrip.quoteSignature).toBe(signatureA)
+    expect(roundTrip.selectionSignature).toBe(signatureA)
+    // …but the radio the customer sees is empty, and the cart still carries the
+    // row the backend has re-priced twice on the way there and back.
+    expect(roundTrip.selectedShippingOptionId).toBeNull()
+    expect(roundTrip.cart?.shipping_methods).toHaveLength(1)
+
+    expect(
+      getMissingOrderRequirements(selectReadinessInput(roundTrip)).map(
+        (r) => r.code
+      )
+    ).toEqual(["shipping_method_stale"])
+  })
+
+  it("clears again once the customer re-picks after the round trip", () => {
+    const repicked = run(
+      baseState({
+        shipping_methods: [{ shipping_option_id: "so_std" }],
+        billing_address: { id: "baddr_01", ...CDMX },
+      }),
+      selectShipping("so_std"),
+      {
+        type: "SELECT_PAYMENT_PROVIDER",
+        providerId: "pp_mercadopago_mercadopago",
+      },
+      { type: "FIELD_BLUR", field: "postal_code", value: "44160" },
+      { type: "FIELD_BLUR", field: "postal_code", value: "06700" },
+      selectShipping("so_std")
+    )
+
+    expect(repicked.selectedShippingOptionId).toBe("so_std")
+    expect(getMissingOrderRequirements(selectReadinessInput(repicked))).toEqual(
+      []
+    )
+  })
+
   it("does not report staleness after a street edit", () => {
     const selected = run(
       baseState({
@@ -2636,6 +2720,25 @@ describe("selectShippingIsProvisional", () => {
 
     expect(orphan.cart?.shipping_methods).toEqual([])
     expect(selectShippingIsProvisional(orphan)).toBe(false)
+  })
+
+  /**
+   * The summary half of the A -> B -> A round trip. `selectShippingIsProvisional`
+   * is DEFINED as the presence of `shipping_method_stale`, so if the CTA unblocks
+   * on the way back the summary re-presents the twice-re-priced total as final in
+   * the very same render. One rule, so the two cannot disagree — which is exactly
+   * why the rule has to be right.
+   */
+  it("stays true after the customer leaves an address and returns to it", () => {
+    const roundTrip = run(
+      ordered(),
+      selectShipping("so_std"),
+      { type: "FIELD_BLUR", field: "postal_code", value: "44160" },
+      { type: "FIELD_BLUR", field: "postal_code", value: "06700" }
+    )
+
+    expect(roundTrip.selectedShippingOptionId).toBeNull()
+    expect(selectShippingIsProvisional(roundTrip)).toBe(true)
   })
 
   it("is false when the cart emptied under a stale selection", () => {

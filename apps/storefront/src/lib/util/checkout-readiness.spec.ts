@@ -42,6 +42,7 @@ const READY: OrderReadinessInput = {
   },
   hasBillingAddress: true,
   hasShippingMethod: true,
+  hasSelectedShippingOption: true,
   selectionSignature: SIGNATURE,
   currentQuoteSignature: SIGNATURE,
   selectedPaymentProviderId: MERCADOPAGO,
@@ -309,6 +310,7 @@ describe("getMissingOrderRequirements", () => {
 
   it("does not throw and reports only cart_empty for a null cart", () => {
     const readiness = toReadinessInput(null, {
+      selectedShippingOptionId: null,
       selectionSignature: null,
       currentQuoteSignature: null,
       selectedPaymentProviderId: null,
@@ -548,6 +550,73 @@ describe("shipping_method_stale", () => {
     ).toEqual(["shipping_method"])
   })
 
+  /**
+   * ## The A -> B -> A hole this closes
+   *
+   * `hasShippingMethod` is read off `cart.shipping_methods`, and per F1 that row
+   * can never be removed by the storefront. `selectionSignature` is deliberately
+   * NOT cleared when the destination moves. So a customer who edits the postal
+   * code A -> B and then back to A arrives at: the client selection cleared (no
+   * radio checked), the cart row still present, and `selectionSignature === A ===
+   * currentQuoteSignature` — not stale.
+   *
+   * Read on staleness alone, that state emits NOTHING: the CTA enables, the
+   * summary presents the total as final, and the order goes out for a shipping
+   * method the page shows as unselected. The signature comparison cannot see this
+   * case by construction, because the signature came back to where it started
+   * while the selection did not.
+   *
+   * The fix is to gate on the CLIENT selection as well as on the cart row, rather
+   * than to clear `selectionSignature` on invalidation. Clearing it would be
+   * strictly worse: `isShippingSelectionStale(null, …)` is documented to answer
+   * `false`, so the plain A -> B case would unblock the CTA immediately — the exact
+   * failure the whole mechanism exists to prevent. Gating on the selection also
+   * matches what the module actually promises, which is that the CTA and the
+   * summary cannot disagree with the radio group; the radio group renders from
+   * `selectedShippingOptionId`, so that is what the CTA has to read.
+   */
+  it("reports the code when the cart carries a method the customer has not chosen", () => {
+    // Signatures AGREE — this is the A -> B -> A state, and it is invisible to
+    // `isShippingSelectionStale`.
+    expect(
+      codes(input({ hasSelectedShippingOption: false }))
+    ).toEqual(["shipping_method_stale"])
+  })
+
+  it("blocks placement when the cart carries an unchosen method", () => {
+    expect(canPlaceOrder(input({ hasSelectedShippingOption: false }))).toBe(
+      false
+    )
+  })
+
+  /**
+   * The summary reads `selectShippingIsProvisional`, which is DEFINED as the
+   * presence of this code. Emitting `shipping_method` here instead would leave the
+   * CTA blocked beside a total presented as FINAL — the two disagreeing about the
+   * same cart, which is the drift this catalogue exists to prevent.
+   */
+  it("prefers the stale code over the generic one when a cart row survives", () => {
+    expect(
+      codes(
+        input({
+          hasSelectedShippingOption: false,
+          currentQuoteSignature: OTHER_SIGNATURE,
+        })
+      )
+    ).toEqual(["shipping_method_stale"])
+  })
+
+  /**
+   * The other side: nothing on the cart at all is `shipping_method`, whatever the
+   * client believes it selected. Reachable when a `setShippingMethod` response was
+   * superseded by a newer write.
+   */
+  it("falls back to shipping_method when the cart carries no row at all", () => {
+    expect(
+      codes(input({ hasShippingMethod: false, hasSelectedShippingOption: true }))
+    ).toEqual(["shipping_method"])
+  })
+
   it("sits immediately after shipping_method in the order", () => {
     expect(
       codes(
@@ -624,6 +693,7 @@ describe("hasCompleteShippingContact port (D8)", () => {
   ): MissingRequirementCode[] =>
     getMissingOrderRequirements(
       toReadinessInput(cart, {
+        selectedShippingOptionId: "so_std",
         selectionSignature: null,
         currentQuoteSignature: null,
         selectedPaymentProviderId: MANUAL,
@@ -699,6 +769,36 @@ describe("hasCompleteShippingContact port (D8)", () => {
     expect(cartCodes(buildCart({ shipping_methods: [] }))).toEqual([
       "shipping_method",
     ])
+  })
+
+  /**
+   * The adapter half of the A -> B -> A fix. `hasShippingMethod` and
+   * `hasSelectedShippingOption` are two DIFFERENT facts and the adapter must keep
+   * them apart: the first is the cart row, which per F1 can never be removed, and
+   * the second is the client's radio, which the reducer clears on every
+   * destination change. Collapsing either into the other re-opens the hole.
+   */
+  it("maps the client selection separately from the cart row", () => {
+    const withSelection = toReadinessInput(buildCart(), {
+      selectedShippingOptionId: "so_std",
+      selectionSignature: null,
+      currentQuoteSignature: null,
+      selectedPaymentProviderId: MANUAL,
+      paymentDetailsComplete: false,
+    })
+    expect(withSelection.hasShippingMethod).toBe(true)
+    expect(withSelection.hasSelectedShippingOption).toBe(true)
+
+    const cleared = toReadinessInput(buildCart(), {
+      selectedShippingOptionId: null,
+      selectionSignature: null,
+      currentQuoteSignature: null,
+      selectedPaymentProviderId: MANUAL,
+      paymentDetailsComplete: false,
+    })
+    // Same cart, same row — only the radio changed.
+    expect(cleared.hasShippingMethod).toBe(true)
+    expect(cleared.hasSelectedShippingOption).toBe(false)
   })
 })
 
@@ -798,6 +898,7 @@ describe("strictness floor", () => {
       expect(
         canPlaceOrder(
           toReadinessInput(blockedCart, {
+            selectedShippingOptionId: "so_std",
             selectionSignature: null,
             currentQuoteSignature: null,
             selectedPaymentProviderId: MANUAL,
@@ -834,6 +935,7 @@ describe("strictness floor", () => {
     expect(
       canPlaceOrder(
         toReadinessInput(laxCart, {
+          selectedShippingOptionId: "so_std",
           selectionSignature: null,
           currentQuoteSignature: null,
           selectedPaymentProviderId: MANUAL,
@@ -848,6 +950,7 @@ describe("strictness floor", () => {
     expect(
       canPlaceOrder(
         toReadinessInput(cart(), {
+          selectedShippingOptionId: "so_std",
           selectionSignature: null,
           currentQuoteSignature: null,
           selectedPaymentProviderId: MANUAL,
@@ -916,14 +1019,46 @@ describe("full catalogue ordering", () => {
 
   it("never emits both shipping_method and shipping_method_stale", () => {
     for (const hasShippingMethod of [true, false]) {
-      for (const currentQuoteSignature of [SIGNATURE, OTHER_SIGNATURE, null]) {
-        const emitted = codes(
-          input({ hasShippingMethod, currentQuoteSignature })
-        )
+      for (const hasSelectedShippingOption of [true, false]) {
+        for (const currentQuoteSignature of [
+          SIGNATURE,
+          OTHER_SIGNATURE,
+          null,
+        ]) {
+          const emitted = codes(
+            input({
+              hasShippingMethod,
+              hasSelectedShippingOption,
+              currentQuoteSignature,
+            })
+          )
 
+          expect(
+            emitted.filter((code) => code.startsWith("shipping_method")).length
+          ).toBeLessThanOrEqual(1)
+        }
+      }
+    }
+  })
+
+  /**
+   * The floor, swept across every combination of the three shipping inputs: a cart
+   * that carries a method row the customer has not selected is NEVER placeable. A
+   * future condition added to the branch has to keep this true.
+   */
+  it("never allows placement while a cart row has no client selection", () => {
+    for (const currentQuoteSignature of [SIGNATURE, OTHER_SIGNATURE, null]) {
+      for (const selectionSignature of [SIGNATURE, OTHER_SIGNATURE, null]) {
         expect(
-          emitted.filter((code) => code.startsWith("shipping_method")).length
-        ).toBeLessThanOrEqual(1)
+          canPlaceOrder(
+            input({
+              hasShippingMethod: true,
+              hasSelectedShippingOption: false,
+              currentQuoteSignature,
+              selectionSignature,
+            })
+          )
+        ).toBe(false)
       }
     }
   })
@@ -1029,6 +1164,7 @@ describe("paidByGiftCard", () => {
         ...overrides,
       } as unknown as HttpTypes.StoreCart,
       {
+        selectedShippingOptionId: "so_std",
         selectionSignature: null,
         currentQuoteSignature: null,
         selectedPaymentProviderId: null,

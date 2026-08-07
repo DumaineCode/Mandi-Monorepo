@@ -237,12 +237,20 @@ export const selectQuoteRelevantAddress = (
  *
  * `selectionSignature` is deliberately NOT cleared. Per finding F1 there is no
  * store API to remove a shipping method, so `cart.shipping_methods` still holds
- * the row and `toReadinessInput` still reports `hasShippingMethod: true`. The
- * ONLY input that can make `getMissingOrderRequirements` emit
- * `shipping_method_stale` is a selection signature that differs from the current
- * one — and `isShippingSelectionStale(null, sig)` is documented to be `false`.
- * Clearing it would therefore leave the CTA enabled against a superseded quote,
- * which is the exact failure the whole mechanism exists to prevent.
+ * the row and `toReadinessInput` still reports `hasShippingMethod: true`. Since
+ * `isShippingSelectionStale(null, sig)` is documented to be `false`, clearing the
+ * signature would leave the CTA enabled against a superseded quote on the
+ * ORDINARY A -> B path — the exact failure the whole mechanism exists to prevent.
+ *
+ * Keeping it is necessary but was not sufficient, and the gap is worth stating
+ * because it is invisible from this transition alone. A signature can return to a
+ * value it held before; a cleared selection cannot. On A -> B -> A the signature
+ * comes back to A, `isShippingSelectionStale(A, A)` answers `false` again, and
+ * the cleared radio becomes invisible to the staleness comparison. So
+ * `getMissingOrderRequirements` gates on the CLIENT SELECTION as well — see the
+ * `shipping_method_stale` branch in `lib/util/checkout-readiness.ts`. This
+ * transition clearing `selectedShippingOptionId` is what feeds that gate; the two
+ * halves are one rule and neither works alone.
  *
  * Prices are dropped because a price quoted for the previous destination is not
  * a stale number, it is the WRONG number. The options list is kept: it is
@@ -1043,6 +1051,7 @@ export function selectReadinessInput(
   state: CheckoutState
 ): OrderReadinessInput {
   return toReadinessInput(state.cart, {
+    selectedShippingOptionId: state.selectedShippingOptionId,
     selectionSignature: state.selectionSignature,
     currentQuoteSignature: state.quoteSignature,
     selectedPaymentProviderId: state.selectedPaymentProviderId,
