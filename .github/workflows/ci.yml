@@ -107,7 +107,7 @@ jobs:
       # a focused storefront test fails in the storefront job.
       - name: Focused-test guard (no .only / fit / fdescribe)
         run: |
-          if grep -rnE "\.(only)\(|fit\(|fdescribe\(" apps/storefront/src --include="*.spec.ts"; then
+          if grep -rnE "\.(only)\(|fit\(|fdescribe\(" apps/storefront/src --include="*.spec.ts" --include="*.spec.tsx"; then
             echo "::error::Focused tests found (.only/fit/fdescribe). Remove them before merging — they silently skip the rest of the suite."
             exit 1
           fi
