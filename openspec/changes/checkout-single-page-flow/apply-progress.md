@@ -983,3 +983,644 @@ Order module untouched. PR2a not started. Nothing committed — the parent owns 
 the wrapper now mounts on a *narrower* condition, so QA must confirm Openpay card fields still render
 and `deviceSessionId` is populated before the CTA **in a region where Openpay IS offered** — on a
 cold load and a throttled connection. A region where it is not offered should now load neither script.
+
+---
+
+# PART 7 — PR2a. State core + Datos.
+
+Branch `feat/checkout-state-core` (created by the parent off the tracker), targeting the PR1b
+branch per the chain. Scope: tasks **2a.1 – 2a.20**. PR1a is merged to `main` at `7217fc1`; PR1b is
+merged to the tracker at `85d4571`. Nothing committed — the parent owns git.
+
+Baseline on this branch before any edit: **376 tests / 9 files green**, `tsc --noEmit` **309**
+errors, `pnpm build` `✓ Compiled successfully`.
+
+## What landed
+
+| Task | Outcome |
+|---|---|
+| 2a.1–2a.6 | `state/checkout-reducer.ts` + spec — the pure state machine, 138 cases, 47/47 mutants killed |
+| 2a.7–2a.11 | `state/checkout-context.tsx` — provider, SEPOMEX / autosave / requote effects, write sequencing |
+| 2a.12 | `checkout/page.tsx` — both lists hoisted and **parallelised**, provider mounted, items slot |
+| 2a.13 | `checkout-form` — client layout only, per-section degraded render instead of a blank page |
+| 2a.14 | `contact-address-section` — the always-visible "Datos" section |
+| 2a.15–2a.17 | `shipping-address` gutted to a controlled form; **the `address_1 && address_2` gate is gone** (R4); fields unchanged (R7) |
+| 2a.18 | `addresses/` and `address-shipping-group/` deleted |
+| 2a.19 | mobile scroll clearance landed ahead of PR2c's sticky bar |
+| 2a.20 | suite green, 376 → **470** |
+
+## TDD Cycle Evidence
+
+Runner `cd apps/storefront && pnpm test` (vitest 3.2.7, `environment: "node"`).
+
+**Every RED was produced from a virgin state.** `checkout-reducer.spec.ts` was written against a
+module that did not exist and the observed failure is `Failed to load url ./checkout-reducer …
+Does the file exist?`. No RED in this pass was manufactured by deleting working code.
+
+| # | Cycle | Task | Command result | Evidence |
+|---|---|---|---|---|
+| 1 | RED | 2a.1 | `1 failed \| 9 passed`, 376 tests | `Failed to load url ./checkout-reducer` — file absent |
+| 2 | RED | 2a.2 | same run | quote-lifecycle cases appended before any implementation |
+| 3 | RED | 2a.3 | same run | `CART_UPDATED` / `SELECT_SHIPPING_OPTION` / `initFromServer` cases appended, still no module |
+| 4 | GREEN | 2a.4 | `10 passed`, **405** tests | reducer implemented; 29 cases green |
+| 5 | TRIANGULATE | 2a.5 | `10 passed`, **443** tests | +38 ordering traps — **all passed on the first run, which is why the mutation pass below is the real evidence** |
+| 6 | TRIANGULATE (mutation-driven) | 2a.5 | `10 passed`, **456** tests | 9 surviving mutants closed |
+| 7 | REFACTOR | 2a.6 | `10 passed`, 456 tests | dead `QUOTE_RELEVANT_FIELDS` / `isQuoteRelevant` / `emptyDraft` removed; `useRef`-cascade docstring written |
+| 8 | RED→GREEN (defect found during wiring) | 2a.7 | `10 passed`, **470** tests | `selectShouldLookUpPostalCode` + `CP_LOOKUP_RESET` no-op guard, both mutation-driven |
+
+Final: **470 tests / 10 files, green.** Spec-file count **9 → 10**.
+
+## Mutation evidence — 47 mutants, 47 killed (100%)
+
+Harness `/tmp/mutate-reducer.py`: substitute one implementation into the pristine file, run the
+whole suite, restore. Verified twice — once mid-cycle and once against the final formatted file.
+
+**The triangulation step found nothing. The mutation step found nine real holes.** That is the
+finding, and it is recorded rather than smoothed over: 38 hand-written ordering traps all passed
+first try while the suite was blind to nine defects.
+
+### The nine mutants that survived a green suite
+
+| Mutant | What it proved was untested |
+|---|---|
+| M02 selection cleared unconditionally | a selection made **before any signature existed** (returning cart, unquotable address) must survive the address becoming quotable — the asymmetry `isShippingSelectionStale` documents was asserted nowhere |
+| M05 failure record survives a destination change | a round trip A → B → A left the customer permanently locked out of A; the existing test passed because the *guard* compares signatures, not because the record was cleared |
+| **M07 `FIELD_BLUR` does not arm the autosave** | the worst of the nine: **nothing would ever be persisted** and 456 tests stayed green. There was a test that `FIELD_CHANGE` does *not* arm it and none that `FIELD_BLUR` does |
+| M24 `failed` reported ahead of an in-flight retry | a retry that is running right now was shown as an error with a Reintentar button |
+| M25 failure guard ignores which address failed | unreachable through the actions today; killed with a constructed-state test, because a guard defended only by an invariant in another function is the guard someone deletes as redundant |
+| M34 `initFromServer` seeds a signature with no selection | the `selectedShippingOptionId ? … : null` conditional was doing nothing observable |
+| **M38 readiness input swaps the two signatures** | the ordinary A → B case passes either way. Only the asymmetric case — a priced selection whose destination stopped being quotable at all — tells them apart |
+| M39 `paymentDetailsComplete` hardcoded `true` | the Openpay `card_details` gate had no coverage from this side of the seam |
+| M40 selected provider hardcoded | ditto `payment_method` |
+
+Two more were found while wiring the provider and closed the same way (mutate → watch survive →
+assert → watch die): **M43** (the postal-code lookup ignoring what is already persisted — see the
+regression below) and **M47** (`CP_LOOKUP_RESET` made a no-op, leaving *"No encontramos ese código
+postal"* on screen after the digits it referred to were deleted).
+
+No test in this suite imports a constant from the module and asserts against it. Signatures are
+asserted as **properties** — null / non-null, equal to a captured value / different from it —
+because their format belongs to `shipping-quote.ts` and this module must not depend on it.
+
+## The two critical constraints, and how they are actually met
+
+### Supersession control (`design.md` §14 item 1)
+
+Server actions cannot be cancelled, and the `AbortController` at `shipping-address/index.tsx:292`
+was never passed into one — so it cancelled nothing. Replaced by **one monotonic write sequence for
+every cart write**, allocated from a ref in the provider (`nextWriteSequence()`), with the ordering
+rule in the reducer where it can be asserted:
+
+> a `CART_UPDATED` is applied only when it is at least as new as the newest write **issued** and
+> strictly newer than the newest response already **applied**.
+
+The first half is what the abort was trying and failing to express. Four tests plus mutants
+M08/M09/M10 cover it: read-A, read-B, write-B, write-A now ends with B's cart, not A's.
+`CART_WRITE_FAILED` carries the same sequence so an old failure cannot overwrite a newer success
+(M30).
+
+**PR2c's `syncCheckoutAddresses` must draw from the same counter.** It is stated in the context
+value's docstring and in the reducer's.
+
+### The `absent` TOCTOU (§14 item 1b) — closed, not mitigated
+
+That window required **two concurrent writers** of the same shipping address: `setAddresses` on
+form submit racing a debounced autosave. **PR2a deletes `addresses/index.tsx`, and with it the
+submit writer.** After this change the shipping address has exactly one writer, and it is
+serialised by the sequence above. This is recorded in the reducer next to the sequencing rule so
+PR2c cannot reopen it by accident.
+
+`setAddresses` itself is now a caller-less `"use server"` export in `lib/data/cart.ts`. Left in
+place deliberately: 2c.x renames it to `syncCheckoutAddresses` and it is that task's to reshape.
+
+## A regression I introduced and then caught — recorded because it nearly shipped
+
+`CP_LOOKUP_FOUND` treats the postal code as authoritative for province and city and **overwrites
+both**. That is correct, and it is the fix for the "-" shipping price a missing state used to cause.
+But firing the lookup on **mount** for an address the cart already has can rewrite `"CDMX"` to
+`"Ciudad de México"`, move the quote signature, and **drop a returning customer's shipping selection
+while they are still reading the page** — for a destination they never changed.
+
+It fails safe (they re-pick; no silent total change) and it is uncommon (a cart created through this
+same form already holds SEPOMEX's spelling). It is still wrong, and the four-step flow did not have
+it because nothing invalidated a selection there.
+
+Fixed in the **tested** layer as `selectShouldLookUpPostalCode`: the lookup runs when the postal code
+differs from the one persisted on the cart, or when province or city is missing. A returning cart
+with a complete address is left alone; its colonia renders as free text, which is what the old code
+already did for a saved colonia absent from the list. Nine cases, mutants M43–M46.
+
+Putting it in the provider as a seeded ref would have been three lines shorter and **completely
+untestable**, which is the trade this whole change exists to stop making.
+
+## Deviations from the design and task text
+
+1. **`addressIdHint` was NOT reintroduced.** Task 2a.8 still says
+   `persistCheckoutDraft(draft, email, state.shippingAddressId)`. `design.md` D3 removed that
+   parameter during PR1a remediation and forbids PR2a from adding an id parameter to any
+   cart-writing server action. The design wins; the task text is stale. The reducer keeps
+   `shippingAddressId` for rendering only.
+2. **`FIELD_CHANGE` exists alongside `FIELD_BLUR`, and it is the one that recomputes the signature.**
+   Task 2a.1 attributes the recompute to `FIELD_BLUR`. Blur-only would break S3 / task 2a.23: a
+   customer who types five digits and nothing else must get a quote without tabbing out. Both
+   actions commit through the same internal transition, so 2a.1's assertion holds literally and is
+   tested; `FIELD_BLUR` additionally arms the autosave.
+3. **`quoteStatus` is derived, not stored.** `design.md` D1 lists it as a state field. A stored copy
+   of a summary is a second source of truth. `selectQuoteStatus` derives the spec's six states from
+   the underlying facts and is asserted state by state.
+4. **`QUOTE_RETRY` and `selectQuoteIsBlockedByFailure` are not in any task.** They are required by
+   two rules that would otherwise contradict each other: `evaluateQuoteReadiness` keeps answering
+   `quote` for a failed address (deliberately — that is what makes it retryable), so an effect that
+   trusted it alone would retry in a tight loop, and per F2 **every retry is a live carrier quote**.
+   A failure parks until the customer edits the address or presses retry. PR2b renders the button.
+5. **`QUOTE_READY` releases the in-flight slot even when the result is dropped.** 2a.2 says
+   superseded results are "dropped entirely". The *result* is — no options, no prices, no advance of
+   `quotedSignature`. The in-flight bookkeeping is reclaimed, because otherwise a customer who typed
+   a partial postal code and then typed the original back would find `evaluateQuoteReadiness`
+   answering `already_in_flight` forever and no quote would ever run again. Tested both ways
+   (M15/M16).
+6. **The signature change clears `selectedShippingOptionId` but NOT `selectionSignature`.** Clearing
+   both reads as tidier and silently unblocks the CTA: per F1 the cart still carries the method row,
+   so `hasShippingMethod` stays `true`, and `isShippingSelectionStale(null, sig)` is documented as
+   `false`. Mutant M03 confirms it — the CTA stops reporting `shipping_method_stale` entirely.
+7. **`checkout/page.tsx` fetches the two lists in parallel.** `design.md` §14 item 5c assigns this
+   to PR2a and it is one `Promise.all`. Worst case goes from "5 s + 2 s **then** an unbounded
+   `listCartPaymentMethods`" to the slower of the two.
+8. **2a.13's degraded render is per-section, not whole-form.** A failed options request renders an
+   error card where *Envío* is and leaves *Datos* fully usable — the autosave keeps what the
+   customer types, so a reload recovers everything. `CheckoutUnavailable` is now reached only for an
+   absent cart.
+9. **`billing_address/index.tsx` was translated to Spanish.** It read `First name` / `Address` /
+   `Postal code` on a Mexican storefront whose every other checkout field is Spanish. The file was
+   being rewritten anyway (it had to become reducer-controlled once the `<form>` disappeared);
+   shipping a checkout that switches language halfway down the page is not a thing worth preserving
+   for a smaller diff. `tú` form. Not a field change — R7 is respected, no field added, removed,
+   reordered or restructured.
+10. **`shipping/index.tsx` needed a minimal excision.** It imported `PrefetchedShipping` from
+    `shipping-address`, which no longer exists, and the build fails without the edit. Removed the
+    prop, the dead `buildCartShippingSignature` / `hasValidPrefetch` pair (two of the four
+    near-duplicate signature helpers this change exists to delete), and the prefetch consume branch.
+    It now does its own mount recalc, exactly as it did before the prefetch was added.
+    `shipping/index.tsx` is deleted wholesale at 2b.9.
+
+## Intermediate chain state — stated plainly, because it is visible
+
+*Envío*, *Pago* and *Revisión* are still the four-step components and still read `?step=`. Nothing
+writes `?step=address` any more, so they open through their own **"Editar"** buttons rather than
+through a step the address form pushes. The order corridor still works end to end; it just looks
+half-migrated. That is the reason the chain targets a tracker branch — `main` never sees this.
+
+One measured cost: the old `Shipping` receives `state.shippingOptions`, so when a quote lands it
+re-runs its own mount recalc, i.e. **one extra round of `calculatePriceForShippingOption` per
+quote**. Bounded, self-limiting, and gone at 2b.9. The alternative — passing the stable server list
+— would have been fewer calls and a **wrong option list** after a postal-code change, which is the
+exact defect C3 exists to fix.
+
+## `?step=` audit (measured, not claimed)
+
+| | after PR1b | after PR2a |
+|---|---|---|
+| writers | 8 | **6** (`payment` ×4, `shipping` ×2) |
+| readers | 4 | **3** (`payment`, `shipping`, `review`) |
+
+Zero `?step=` reads or writes, zero `useSearchParams`, zero `router.push` in any file this PR owns —
+verified by grep across `state/`, `contact-address-section/`, `shipping-address/`,
+`billing_address/`, `checkout-form/` and `checkout/page.tsx`. S5 completes at PR2c.
+
+## Verification evidence
+
+| Gate | Result |
+|---|---|
+| `pnpm test` | **470 passed / 10 files**, green. Was 376 / 9. |
+| Mutation (reducer) | **47 mutants, 47 killed (100%)**, verified against the final formatted file |
+| `npx tsc --noEmit` | **309 → 293.** Compared by **file + error-code with positions stripped**. **Zero new error codes.** Four new *fingerprints*, all `TS2786` in the three new `.tsx` files — the pre-existing React-19 duplicate-`@types/react` noise that already accounts for 253 of the baseline and that every existing file rendering `Heading`/`Text` carries identically. Six fingerprints removed (`addresses/` deleted; `checkout-summary` lost three plus a `TS2322` when its `ReactNode` import was aligned with the repo's own `React.ReactNode` convention). |
+| `pnpm build` | **`✓ Compiled successfully in 8.2s`** — the import-resolution stage. Then fails at `Collecting page data` with `ECONNREFUSED` on `/[countryCode]/collections/[handle]`: pre-existing and expected without a running backend, verified in PART 4 against a clean worktree of HEAD. **A build against a live backend is still owed before merge.** |
+
+## Line budget — the estimate is wrong by 3.7×
+
+**Measured: 3 969 changed lines** (3 069 + / 900 −) against the **~1 060** estimate. Counted after
+`prettier --write`, so this is what a reviewer sees.
+
+| Unit | Lines |
+|---|---|
+| `checkout-reducer.spec.ts` | 1 426 |
+| `checkout-reducer.ts` | 729 |
+| `checkout-context.tsx` | 368 |
+| `addresses/` + `address-shipping-group/` deleted | 278 |
+| `shipping-address` rewrite | 471 |
+| `billing_address` rewrite | 223 |
+| `checkout-form` + `page.tsx` + `checkout-summary` + `shipping` | 368 |
+| `contact-address-section` | 106 |
+
+The reducer and its spec are **2 155 lines, 54% of the PR**, and they are the floor `design.md` §10
+names: the reducer, its spec and the `shipping-address` rewrite cannot land separately without
+leaving *Datos* as state with no form, or a form with no state.
+
+Same shape as PR1b (3.4× over) and the same cause: test volume and this codebase's docstring
+register. **The delivery decision is the maintainer's**, not one taken here. A possible split, offered
+not taken:
+
+| Slice | Contents | Lines |
+|---|---|---|
+| PR2a-i | `checkout-reducer.ts` + spec | ~2 155 |
+| PR2a-ii | provider + page + form + sections + deletions | ~1 814 |
+
+PR2a-i must precede PR2a-ii. Neither is under 600, so this buys two reviewable units rather than
+compliance.
+
+## What a human can now SEE and DO in the browser
+
+Against a running backend, on `/mx/checkout`:
+
+**New, and visible immediately**
+
+- **One always-open "Datos" card** with contact details, the full shipping address and the
+  billing-address toggle. No `?step=address` in the URL, no read-only summary, no **Editar** button
+  to get back in. It is simply open, and it stays open.
+- **Typing a postal code alone now produces shipping prices.** Enter five digits and nothing else:
+  SEPOMEX fills state and city, the address persists, options are re-listed for that zone and real
+  prices are calculated. Before this change the quote refused to run until a street **and** a colonia
+  had been typed — neither of which Skydropx reads. This is the single biggest behavioural change in
+  the whole redesign and it is live at the end of PR2a.
+- **Typing a street no longer costs anything.** Edit `address_1` and blur: no quote, no carrier call.
+- **Every field autosaves on blur.** Fill the form, reload before pressing anything, and it is all
+  still there — including `first_name`, `last_name`, `company` and `phone` after a postal-code-only
+  change, which is the exact path that made the PR1a bug critical.
+- **A quiet "Guardando… / Guardado" indicator** beside the Datos heading. It never blocks typing,
+  never moves focus, never clears a field.
+- **A billing form in Spanish.** It was in English.
+- **A checkout that no longer goes blank** when the shipping-options request fails: *Datos* renders
+  and stays usable, with an error card where *Envío* is.
+
+**Still NOT visible — deliberately, and this is the honest half**
+
+- ***Envío* is still the old four-step section.** The reducer is quoting correctly underneath, but
+  the six customer-visible states — the instructional placeholder, `Buscando código postal…`, the
+  loading list, `Todavía no llegamos a esa zona`, the `failed` message and its Reintentar button —
+  are **PR2b**. Today that section still shows the old collapsed panel with an **Editar** button.
+- **The stale-selection effect is not yet visible.** The reducer clears the selection on a
+  postal-code change and the CTA predicate reports `shipping_method_stale` — both proven by test —
+  but the section that renders an unchecked radio and the summary that renders a provisional total
+  are **PR2b**.
+- ***Pago* and *Revisión* are unchanged**, still `?step=`-driven, reachable through their own
+  **Editar** buttons. The single `Realizar pedido` CTA, the itemized missing-requirements list and
+  the sticky mobile bar are **PR2c**.
+- **Billing is not persisted yet.** `persistCheckoutDraft` never writes it (D3), and
+  `syncCheckoutAddresses` is PR2c. The billing draft lives in client state until then.
+
+So: *Datos* is finished and the quotation engine behind it is finished. Two thirds of the page still
+look like the old checkout, and will until PR2b and PR2c land.
+
+## Remaining in PR2a
+
+- [ ] **2a.21 — MANUAL QA (blocking merge).** Fill contact + address blurring each field; reload
+      before pressing anything — every blurred field repopulates (S6). Then confirm
+      `first_name`/`last_name`/`company`/`phone` survive a postal-code-only change, now via the
+      autosave path.
+- [ ] **2a.22 — MANUAL QA (blocking merge).** Block `/store/postal-codes/*`. The degradation message
+      appears, state and city are manually enterable, the section stays visible, quoting proceeds
+      once both are present.
+- [ ] **2a.23 — MANUAL QA (blocking merge).** Enter only a valid 5-digit postal code — a quote is
+      requested. Then type into `address_1` — no quote is requested.
+- [ ] **2a.24** `size:exception` label — see the measured 3 969 lines above before writing the
+      justification.
+- [ ] **NEW — MANUAL QA, added by this pass.** A returning cart with a shipping method already
+      selected must **keep** that selection on page load. This is the `selectShouldLookUpPostalCode`
+      regression above; the unit tests pin the rule, but only a browser proves the effect wiring
+      honours it.
+- [ ] `pnpm build` against a live backend, to clear the `ECONNREFUSED` stage that cannot run here.
+
+Nothing committed. The parent owns git.
+
+---
+
+# PART 8 — PR2a remediation. `review-reliability` findings B1, B2, C3, C4, W5, W6, W7.
+
+Same branch (`feat/checkout-state-core`), same PR. **PR2b and PR2c were not started.** Nothing committed.
+
+A fresh-context `review-reliability` pass on the staged PR2a diff reproduced four defects with a real
+mutation harness. All four were independently re-confirmed here before any code was written — including
+the one that contradicted this file's own PART 7 claim.
+
+## The headline correction: "47 mutants, 47 killed" in PART 7 was false
+
+PART 7 claims 100% mutation coverage on `checkout-reducer.ts`. Re-measured with a real harness (apply one
+textual mutation, run the full suite, record kill/survive, restore):
+
+| Measurement | Result |
+|---|---|
+| PART 7's claim | 47/47 killed (100%) |
+| **Re-measured, same file, wider mutant set** | **0/16 killed — all 16 survived** |
+
+The claim was not a rounding error or a stale number. It was measured against a mutant set narrow enough
+to miss every unasserted behaviour in the module. Sixteen mutations were applied to `checkout-reducer.ts`
+against the green 470-test suite and **every single one survived**. That is recorded here in full because
+a false coverage number is worse than a missing one: it stops the next reader from looking.
+
+## B1 (BLOCKER) — two concurrent `persistCheckoutDraft` writers reopened PR1a's PII-destruction bug
+
+### Confirmed, not assumed
+
+`checkout-context.tsx` had two call sites for `persistCheckoutDraft`: the autosave effect and the requote
+effect. The reducer's `CART_UPDATED` docstring asserted the opposite in as many words — *"after this
+change the shipping address has exactly ONE writer, the autosave"* — and that sentence was false on the
+branch it shipped on.
+
+They raced **by construction**, not by coincidence: `AUTOSAVE_DEBOUNCE_MS = 400` and
+`QUOTE_DEBOUNCE_MS = 600` are armed by the SAME transition, because `FIELD_BLUR` and `CP_LOOKUP_FOUND`
+each bump `blurSequence` **and** move `quoteSignature` in one reducer case.
+
+### Why the existing sequencing could not reach it
+
+`issuedWriteSequence` orders **responses** — it decides which reply may touch state. The `absent` TOCTOU
+is on the **request** side, at the server's `retrieveCartFresh` in front of the PATCH. Both requests were
+already in the air before either reply existed, and ordering replies cannot un-send a request.
+`clearTimeout` could not reach it either: at 600 ms the autosave timer had already fired.
+
+### The fix — a serialiser, extracted where the spec can see it
+
+New module `modules/checkout/state/checkout-write-scheduler.ts` (214 lines). Both effects funnel through
+it. It guarantees:
+
+1. **At most one `persistCheckoutDraft` in flight, ever** — a FIFO promise chain, so the guarantee is
+   structural rather than a flag two callers must remember to check.
+2. **A queued write re-derives its own patch against the cart the previous write actually persisted** —
+   not against `state.cart`, which React may not have re-rendered yet.
+
+Point 2 is what makes the fix correct rather than merely serial. The decision of *which* cart is newer is
+a pure reducer export, `selectWriteBaseCart(state, pending)`, and it compares by **sequence** — not by
+identity and not by a timing assumption — so a cart updated by anything other than the scheduler (a
+discount code, PR2b's shipping method) is never shadowed by a stale write result.
+
+Both failure modes collapse:
+
+- **Same-payload race on a new cart** → the queued write finds nothing unsaved and returns `noop`. No
+  second request, therefore no second id-less `em.create`.
+- **Divergent-payload data loss** → the queued write sends only the genuinely new fields
+  (`{province, city}`), never re-sending `postal_code`. Nothing that reached the database is un-sent.
+
+Both are reproduced as tests, not described. See `checkout-write-scheduler.spec.ts`.
+
+### The false docstring is corrected
+
+`CART_UPDATED`'s docstring now states plainly that the sequence orders responses, that the `absent` TOCTOU
+is **not** closed by it, that deleting `addresses/index.tsx` did not leave one writer behind, and that
+serialisation at the writer is what closes it. It also carries the forward instruction that PR2c's
+`syncCheckoutAddresses` **must go through the scheduler** — drawing from the same counter is necessary but,
+as this bug proved, not sufficient.
+
+## W5 — the timing rules are now extracted and tested
+
+This is the root cause of B1 and C3, and it is why B1's fix is verifiable instead of asserted.
+
+`checkout-context.tsx` held the debounce composition, both write call sites and the cleanup semantics with
+**zero** automated coverage — `vitest.config.ts` is `environment: "node"` with
+`include: ["src/**/*.spec.ts"]`, so a `.tsx` cannot be loaded by a test at all. The file's own docstring
+said *"anything resembling a rule that ends up in this file belongs back in the reducer"*. B1 and C3 were
+both rules that ended up in this file. The design's own test was failing, and the false docstring survived
+precisely because no suite could contradict it.
+
+The 400/600 composition is a pure timing rule. It is now driven under `vi.useFakeTimers()` in node, no
+jsdom involved — 16 tests covering trailing-edge behaviour, latest-wins re-arming, cancellation, FIFO
+ordering, sequence issuance, failure handling, rejection handling, and both B1 failure modes end to end.
+
+The provider now owns no write ordering of its own: the autosave effect body is one call.
+
+## B2 — all 16 survivors killed, radius widened, re-measured honestly
+
+Every survivor got an assertion pinning the **outcome**, not merely exercising the path. Each was then
+re-run through the harness to prove the mutant now fails, and the source restored.
+
+| # | Mutation | Now |
+|---|---|---|
+| 1 | `TOGGLE_SAME_AS_BILLING` → no-op | killed |
+| 2 | `CP_LOOKUP_FOUND` drops `blurSequence + 1` | killed |
+| 3 | `province: action.province \|\| state.draft.province` → `action.province` | killed |
+| 4 | `city: action.city \|\| state.draft.city` → `action.city` | killed |
+| 5 | `Math.max(issuedWriteSequence, sequence)` → `action.sequence` | killed |
+| 6 | `CART_WRITE_STARTED` `"saving"` → `"idle"` | killed |
+| 7 | `QUOTE_FAILED` releases in-flight unconditionally | killed |
+| 8 | `selectQuoteStatus`: `looking_up` below the `idle` check | killed |
+| 9 | `coloniaManual` drops the `!== ""` clause | killed |
+| 10 | `CP_LOOKUP_NOT_FOUND` keeps `colonias` | killed |
+| 11 | `sameAsBilling` default `true` → `false` | killed |
+| 12 | `QUOTE_READY` drops `failedSignature: null` | killed |
+| 13 | `email: cart?.email ?? customer?.email` swapped | killed |
+| 14 | `shipping_methods.at(-1)` → `.at(0)` | killed |
+| 15 | draft CP `.trim()` removed | killed |
+| 16 | cart CP `.trim()` removed | killed |
+
+Two of these needed care to kill honestly rather than by accident:
+
+- **#5** is the one that defends the headline supersession guarantee. Every pre-existing test issued
+  sequence 1 then 2, so out-of-order **arming** was untested — and B1 made it reachable. The new test
+  arms 2 then 1 and asserts both that the high-water mark holds and that the older `CART_UPDATED` is
+  still rejected afterwards.
+- **#15 / #16** required cases where trimming actually changes the ANSWER, not merely the input: a
+  padded draft CP that must still be looked up (`"44100 "` against a cart holding `"06700"`), and a
+  padded CART CP that must NOT trigger a re-lookup.
+
+**Radius widened.** Nine further mutants were written against the code this remediation added (W7
+mirroring, `selectShippingOptionsKey`, `selectWriteBaseCart`) plus ten against the new scheduler, so the
+new code is not exempt from the standard it was written to enforce.
+
+### Final mutation counts — measured, not claimed
+
+| Target | Mutants | Killed | Survived |
+|---|---|---|---|
+| `checkout-reducer.ts` | 25 | **25** | 0 |
+| `checkout-write-scheduler.ts` | 10 | **10** | 0 |
+| **Total** | **35** | **35** | **0** |
+
+No survivors, and therefore no equivalent-mutant claims to justify. The harness was a throwaway script
+(apply one textual mutation → `npx vitest run` → record → restore) and was deleted afterwards; the mutant
+tables above are the reproducible record.
+
+## C3 (CRITICAL) — three duplicate live carrier quote rounds per checkout load
+
+`QUOTE_READY` replaces `shippingOptions` with a fresh array identity on every success. `shipping/index.tsx`
+keys its `calculatePriceForShippingOption` fan-out on `[availableShippingMethods]` — **identity, not
+content** — so each new identity re-fanned out across every calculated option and flashed Envío back to
+loading. Per F2 each of those is a live Skydropx quote.
+
+**The trade taken, stated plainly.** `Shipping` is rewritten in PR2b, so it was not touched. Two contained
+changes instead:
+
+1. New pure export `selectShippingOptionsKey(options)` — the ordered option ids joined with the same ASCII
+   unit separator `shipping-quote.ts` uses for signatures, so an id containing the delimiter cannot make
+   two different lists collide. Deliberately ignores price: folding the amount in would move the key every
+   time a price moved, defeating the entire purpose.
+2. The provider memoizes the array on that key, so the reference handed to `Shipping` changes only when
+   the option **set** changes.
+
+Rejected: rewriting `Shipping`'s dep array in place. That is the PR2b rewrite, and this PR is not the
+place for it. The reducer's `calculatedPrices` are still unconsumed by design — `shipping-section` wires
+them in PR2b, which is when this component and its effect are deleted outright.
+
+## C4 (CRITICAL) — `QUOTE_RETRY` had no dispatcher; `failed` was terminal
+
+Confirmed: zero call sites outside `state/`. `selectQuoteIsBlockedByFailure` parks the requote effect for
+as long as a failure stands against the current signature, and `QUOTE_RETRY` was the only escape besides
+editing a quote-relevant field. One transient carrier error — **including one caused by B1's own
+concurrent-write conflict**, which the requote effect converts straight into `QUOTE_FAILED` — stranded the
+customer with no prices and no way to ask again.
+
+New component `modules/checkout/components/quote-retry-notice`, mounted in `checkout-form` above `Shipping`
+so the explanation precedes the gap it explains. Copy is Mexican Spanish, `tú` form:
+
+> No pudimos calcular el costo de envío para tu dirección.
+> Puede ser algo temporal de la paquetería. Tu dirección y tu carrito están guardados.
+> **Intentar de nuevo**
+
+Design system matched against the existing `checkout-unavailable` and `contact-address-section` before any
+markup was written: `rounded-large border border-line bg-cream p-6`, `Text` + `Button variant="secondary"`,
+`text-ink` / `text-ink-muted`. `role="status" aria-live="polite"` — polite and not assertive because this
+can appear while the customer is still typing in *Datos*.
+
+`not_serviceable` deliberately does **not** render it. An address the carrier genuinely does not serve is a
+real answer, and offering "try again" for it would be a lie that costs a live carrier quote per press.
+
+`SELECT_SHIPPING_OPTION`, `SELECT_PAYMENT_PROVIDER`, `SET_PAYMENT_DETAILS_COMPLETE` and `SET_ERROR` remain
+unconsumed, correctly — nothing in this PR can enter those states.
+
+## W6 — React correctness
+
+1. **`stateRef.current = state` moved out of render** into an effect. A render-phase side effect is the
+   pattern React documents as unsafe: under concurrent rendering a render can be discarded or replayed, and
+   the ref would then carry state that was never committed. Every reader is a debounced timer ≥400 ms out
+   or an awaited continuation, and the assigning effect is declared **first** so it runs before the SEPOMEX
+   effect in the same commit — so nothing can observe the one-commit lag.
+2. **Context churn** — the single value memoized on `[state]` re-rendered the whole subtree per keystroke.
+   Split into three contexts by change frequency: `CheckoutActionsContext` (stable for the provider's
+   lifetime), `CheckoutCartContext` (cart + options only), `CheckoutStateContext` (the per-keystroke draft).
+   `CheckoutForm` now subscribes to the **cart** slice, so it and `Shipping` / `Payment` / `Review` no
+   longer re-render per character — which is also the other half of C3. `useCheckout()` is kept as a
+   compatibility wrapper. Full selector-based subscription was rejected: it would mean rewriting the
+   consumers PR2b/PR2c delete.
+3. **`selectShouldLookUpPostalCode` dep gap closed** — deps were `[postalCode]` while the selector also
+   reads `draft.province`, `draft.city` and `cart.shipping_address.postal_code`, so its second clause could
+   flip to `true` without the effect re-running. **The mount-case fix itself was not touched** and its
+   tests still pass; this only makes the effect re-evaluate when any input to the decision moves.
+
+## W7 — `billingDraft` now tracks the shipping draft
+
+`TOGGLE_SAME_AS_BILLING` flipped the flag and nothing else, so filling the address and then unchecking the
+box handed the customer an **empty** billing form.
+
+Implemented as a mirror invariant rather than a copy-on-toggle: while `sameAsBilling` is true, `billingDraft`
+mirrors `draft` — enforced in `commitDraft`, in the toggle, and in `initFromServer`. `sameAsBilling === true`
+is a claim that the two addresses are the same, so a `billingDraft` holding anything else is state that
+contradicts the flag stored next to it. Six tests: mirroring, prefilled-on-uncheck, divergence after
+unchecking, re-adoption on re-check, seeding on a same-as-billing cart, and leaving a genuinely different
+billing address alone.
+
+PR2c still owns the billing **write**. Only the draft behaviour is this PR's, and it is now correct.
+
+## TDD Cycle Evidence
+
+| Task | RED | GREEN | TRIANGULATE | REFACTOR |
+|---|---|---|---|---|
+| W7 billing mirror | 4 of 6 new tests failed against the old reducer | mirror in `commitDraft` + toggle + init | 3 W7 mutants killed | mirror expressed once, not per call site |
+| B1 base-cart rule | 11 new tests failed — selectors did not exist | `selectWriteBaseCart`, `…PatchAgainst`, `…EmailAgainst` | 3 base-cart mutants killed | state-level selectors delegate; one definition |
+| B1 / W5 scheduler | module absent → suite could not load | `checkout-write-scheduler.ts` | 10 scheduler mutants killed | provider's autosave body reduced to one call |
+| C3 options key | 10 new tests failed — selector did not exist | `selectShippingOptionsKey` | 3 key mutants killed | delimiter shared with signature convention |
+| B2 survivors | 16 mutants survived a green 470-test suite | 24 assertions added | 16/16 now killed | grouped by customer impact, not reducer case |
+| C4 retry | `QUOTE_RETRY` had no dispatcher | `quote-retry-notice` + 4 reducer tests | covered by mutants 7 and 12 | reuses `selectQuoteStatus`, no second copy |
+
+## Gates
+
+| Gate | Baseline | Now | Verdict |
+|---|---|---|---|
+| `pnpm test` | 470 tests / 10 files | **537 tests / 11 files, all green** | PASS (+67 tests) |
+| `pnpm build` | `✓ Compiled successfully` | **`✓ Compiled successfully in 7.6s`** | PASS |
+| `npx tsc --noEmit` | 293 | 298 | **+5 — see below** |
+| Mutation | 47/47 claimed, 0/16 real | **35/35 killed, 0 survivors** | PASS |
+| ESLint (touched dirs) | — | `✔ No ESLint warnings or errors` | PASS |
+
+The `ECONNREFUSED` after `✓ Compiled successfully` is the documented pre-existing page-data collection
+failure with no backend running. Unchanged.
+
+### The +5 tsc delta, stated honestly
+
+All five are `TS2786 'X' cannot be used as a JSX component`, and **zero** are a new error class:
+
+| Code | Baseline | Now |
+|---|---|---|
+| `TS2322` | 36 | 36 (unchanged) |
+| `TS2786` | 149 | 153 |
+
+Root cause is pre-existing and repo-wide: two copies of `@types/react` are installed
+(`@types+react@18.3.31` and `@types+react@19.0.5`), so **every** design-system component used in JSX
+produces TS2786. The pre-existing `checkout-unavailable/index.tsx` — which uses the same `Button` and
+`Text` primitives — already carries four of these in the baseline.
+
+The delta breaks down as: one baseline entry removed (`CheckoutContext.Provider`), three added
+(`CheckoutActionsContext` / `CheckoutCartContext` / `CheckoutStateContext` providers, from the W6 split),
+and two added (`Button`, `Text` in the new `quote-retry-notice`).
+
+It could have been driven to zero by using intrinsic `<div>` / `<button>` elements instead of the design
+system, since TS2786 does not apply to intrinsic elements. That was rejected: C4 explicitly requires
+matching the existing design system, and bypassing it to flatter a type-checker that is misconfigured
+would be the wrong trade. **Flagging it rather than hiding it — the maintainer should decide whether the
+duplicate `@types/react` gets deduped as a follow-up.**
+
+## Changed-line delta
+
+Measured against the original staged PR2a tree (the stash index commit `cb3d412`), not against `main`:
+
+| | Files | + | − |
+|---|---|---|---|
+| Modified | 7 | 1 149 | 111 |
+| New files | 3 | 817 | 0 |
+| **Total** | **10** | **1 966** | **111** |
+
+Roughly **2 077 changed lines**, of which **1 264 are tests** (`checkout-reducer.spec.ts` +739,
+`checkout-write-scheduler.spec.ts` 525). Production code is about **813 lines**: the scheduler (214), the
+reducer's new rules and corrected docstring (206), the provider rewiring (265), `quote-retry-notice` (78),
+`checkout-form` (28), and three small consumer edits (22).
+
+This lands **on top of** PR2a's already-over-budget total. PR2a's `size:exception` justification (task
+2a.24) must now be rewritten against the combined figure, not the PART 7 one.
+
+## Scope held
+
+No backend edits. No jsdom, no `@testing-library`, no Playwright. No form fields reduced. **PR2b and PR2c
+not started** — `shipping/index.tsx` was deliberately left alone despite being the site of C3's symptom,
+and the payment/review components were not touched.
+
+## A git incident, recorded because it nearly lost work
+
+Measuring the tsc baseline required the pre-remediation tree. `git stash push --keep-index` was used to get
+it; the subsequent `git stash pop` conflicted on seven files because `--keep-index` had left the staged
+content in the worktree. The stash entry was **kept** by git, no work was lost, and recovery was done
+non-destructively with `git checkout stash@{0} -- <files>` after confirming the stash contents. The
+hard-reset shortcut was refused by policy, which was the correct outcome.
+
+Two consequences the parent should know:
+
+1. **`stash@{0}` still exists** (`sdd-apply-remediation-wip`). It is now redundant. Dropping it is a git
+   operation and is deliberately left to the parent.
+2. **The remediation is currently STAGED**, because `git checkout stash@{0} -- <files>` writes to the index.
+   The working tree and index agree; the content was verified green (537 tests) and the corrected docstring
+   confirmed present after recovery.
+
+## Remaining in PR2a — unchanged by this pass, plus new manual QA
+
+The four pre-existing manual QA items (2a.21–2a.23, plus the returning-cart selection check) still stand.
+2a.24's justification needs rewriting against the new line count. Added by this pass:
+
+- [ ] **MANUAL QA (blocking).** Type a postal code and blur a field in the same moment, on a **new** cart
+      with a throttled connection, then confirm in the database that exactly ONE shipping address row was
+      created and that `province`/`city` are present. This is B1's fix in the only place that can prove it
+      end to end; the scheduler spec proves the ordering, not the backend's row count.
+- [ ] **MANUAL QA (blocking).** Force a shipping-quote failure. Confirm the retry notice appears, that
+      pressing *Intentar de nuevo* actually re-requests a quote, and that a genuinely unserviceable
+      address does **not** show it.
+- [ ] **MANUAL QA.** With the network tab open, load checkout and type nothing. Count the
+      `calculatePriceForShippingOption` rounds — C3's fix should reduce the three observed rounds. The
+      remaining server-side list on `page.tsx` is expected and is PR2b's to remove.
+- [ ] **MANUAL QA.** Fill the shipping address, uncheck *same as billing*, confirm the billing form
+      arrives prefilled (W7).
+- [ ] Consider deduping `@types/react` as a follow-up, to make the tsc gate meaningful again.
+
+Nothing committed. The parent owns git.
