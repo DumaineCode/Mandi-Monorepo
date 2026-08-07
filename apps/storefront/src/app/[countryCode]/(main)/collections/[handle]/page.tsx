@@ -17,37 +17,54 @@ type Props = {
 
 export const PRODUCT_LIMIT = 12
 
+// Prerendering queries the backend over HTTP, which means the build depends on a
+// running API. That is fine in CI but not during a container build, where the
+// backend may not be up yet (first deploy) or reachable from the build network.
+// An unhandled rejection here fails the whole `next build`.
+//
+// Returning an empty list instead degrades gracefully: nothing is prerendered,
+// and these routes render on demand at request time. Same try/catch the product
+// page already uses.
 export async function generateStaticParams() {
-  const { collections } = await listCollections({
-    fields: "*products",
-  })
+  try {
+    const { collections } = await listCollections({
+      fields: "*products",
+    })
 
-  if (!collections) {
+    if (!collections) {
+      return []
+    }
+
+    const countryCodes = await listRegions().then(
+      (regions: StoreRegion[]) =>
+        regions
+          ?.map((r) => r.countries?.map((c) => c.iso_2))
+          .flat()
+          .filter(Boolean) as string[]
+    )
+
+    const collectionHandles = collections.map(
+      (collection: StoreCollection) => collection.handle
+    )
+
+    const staticParams = countryCodes
+      ?.map((countryCode: string) =>
+        collectionHandles.map((handle: string | undefined) => ({
+          countryCode,
+          handle,
+        }))
+      )
+      .flat()
+
+    return staticParams
+  } catch (error) {
+    console.error(
+      `Failed to generate static paths for collection pages: ${
+        error instanceof Error ? error.message : "Unknown error"
+      }.`
+    )
     return []
   }
-
-  const countryCodes = await listRegions().then(
-    (regions: StoreRegion[]) =>
-      regions
-        ?.map((r) => r.countries?.map((c) => c.iso_2))
-        .flat()
-        .filter(Boolean) as string[]
-  )
-
-  const collectionHandles = collections.map(
-    (collection: StoreCollection) => collection.handle
-  )
-
-  const staticParams = countryCodes
-    ?.map((countryCode: string) =>
-      collectionHandles.map((handle: string | undefined) => ({
-        countryCode,
-        handle,
-      }))
-    )
-    .flat()
-
-  return staticParams
 }
 
 export async function generateMetadata(props: Props): Promise<Metadata> {

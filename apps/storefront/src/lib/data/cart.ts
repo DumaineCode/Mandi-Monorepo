@@ -70,9 +70,16 @@ export async function retrieveCart(cartId?: string, fields?: string) {
  * An earlier version of this comment said the timeout stops "a hung upstream
  * turning into a hung autosave". That overstates it. This bounds ONE of the two
  * sequential calls the autosave makes. `sdk.store.cart.update` in
- * `persistCheckoutDraft` has no timeout, so a backend that hangs on the WRITE
- * still hangs the autosave for as long as the platform's own socket timeout
- * allows.
+ * `persistCheckoutDraft` still has no timeout of its own, so a backend that hangs
+ * on the WRITE keeps that request open for as long as the platform's own socket
+ * timeout allows.
+ *
+ * What no longer follows from that is a hung CHECKOUT. `checkout-write-scheduler`
+ * races its `await` on this action against `CHECKOUT_WRITE_TIMEOUT_MS` and reports
+ * a timeout exactly like a failure, so the FIFO chain and the requote path recover
+ * even though the request itself cannot be cancelled. That bounds the wait, not
+ * the call — the call is still out there, and this comment is still the reason the
+ * READ half is the half worth bounding here.
  *
  * The write is deliberately left unbounded for now. `sdk.store.cart.update` is
  * typed `(id, body, query?, headers?)`

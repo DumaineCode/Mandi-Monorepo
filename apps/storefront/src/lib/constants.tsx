@@ -1,3 +1,4 @@
+import { isOpenpayProviderId } from "@lib/util/checkout-readiness"
 import { CreditCard } from "@medusajs/icons"
 import {
   CardBrandLogos,
@@ -74,8 +75,19 @@ export const isManual = (providerId?: string) => {
   return providerId?.startsWith("pp_system_default")
 }
 
+/**
+ * Delegates to the pure module rather than repeating the prefix.
+ *
+ * `checkout-readiness.ts` needs this predicate for the `card_details` rule and
+ * cannot import this file: this is a `.tsx` carrying JSX icon elements, and
+ * pulling it in would drag React into a module whose purity is the only reason
+ * it can be tested under `environment: "node"`. So the dependency points the
+ * other way and there is still exactly one definition of what "is Openpay"
+ * means. A second copy here is how the CTA's card-details rule and the card
+ * form's own provider check would drift apart.
+ */
 export const isOpenpay = (providerId?: string) => {
-  return providerId?.startsWith("pp_openpay_")
+  return isOpenpayProviderId(providerId)
 }
 
 export const isMercadopago = (providerId?: string) => {

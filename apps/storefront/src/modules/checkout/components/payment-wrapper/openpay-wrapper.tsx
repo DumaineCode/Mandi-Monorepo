@@ -192,8 +192,37 @@ const OpenpayWrapper: React.FC<OpenpayWrapperProps> = ({
     <OpenpayContext.Provider
       value={{ ready, unavailable, deviceSessionId, tokenize, cardData, setCardData }}
     >
-      {/* Scripts load ONLY while an Openpay session is active on the payment
-          step — this wrapper is rendered conditionally by payment-wrapper/index. */}
+      {/* WHEN THESE LOAD, AND WHAT THEY COLLECT.
+
+          Neither half of what this comment used to say is true any more, and it
+          said the opposite of the truth on both counts. It claimed the scripts
+          load "ONLY while an Openpay session is active on the payment step".
+          There is no payment step (R5/C1 collapsed checkout to one page), and
+          the mount no longer looks at payment sessions at all.
+
+          What actually happens: `payment-wrapper/index` mounts this wrapper
+          from provider configuration plus regional availability, and it wraps
+          the whole checkout form. So both scripts begin loading on CHECKOUT
+          MOUNT — as soon as the page renders, before the customer has entered
+          an address, chosen a provider, or committed to paying anything.
+
+          `openpay.v1.min.js` is the tokenization SDK. `openpay-data.v1.min.js`
+          is NOT: it is Openpay's antifraud DEVICE-FINGERPRINTING collector. On
+          load, `handleDataScriptLoaded` calls `deviceData.setup()`, which
+          profiles the browser and returns a device session id that identifies
+          this device to Openpay. That collection used to begin only after a
+          customer reached the payment step and an Openpay session existed —
+          i.e. after they had chosen Openpay. It now begins for every visitor
+          who opens checkout in a region where Openpay is on offer.
+
+          `strategy="lazyOnload"` defers this past hydration. It does not make
+          it conditional; it only makes it late. The ONLY thing that scopes this
+          collection is the mount gate in `payment-wrapper/index`, which is why
+          that gate checks regional availability and not just merchant keys.
+
+          Anything that widens where this wrapper mounts widens who gets
+          fingerprinted. Treat this as a data-collection boundary, not a script
+          tag. */}
       {!configMissing && (
         <Script
           src={OPENPAY_CORE_SRC}

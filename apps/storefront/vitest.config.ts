@@ -15,7 +15,20 @@ export default defineConfig({
      * specific suite that needs it rather than flipping this global default.
      */
     environment: "node",
-    include: ["src/**/*.spec.ts"],
+    /**
+     * `.tsx` is included even though every suite here is currently `.ts`.
+     *
+     * Not aspiration — a trap. With `*.spec.ts` alone, a spec named `foo.spec.tsx`
+     * is collected by NOTHING: vitest reports the files it did run and says nothing
+     * about the one it never looked at, so the suite stays green and the author
+     * believes their rule is covered. The same glob is duplicated in
+     * `.github/workflows/ci.yml`'s focused-test guard (`--include`), and the two
+     * must agree or a `.only` in a `.tsx` spec silently skips the rest of the file.
+     *
+     * Widening the pattern costs nothing and removes the failure mode where the
+     * absence of coverage is indistinguishable from passing coverage.
+     */
+    include: ["src/**/*.spec.{ts,tsx}"],
   },
   resolve: {
     /**

@@ -15,31 +15,48 @@ type Props = {
   }>
 }
 
+// Prerendering queries the backend over HTTP, which means the build depends on a
+// running API. That is fine in CI but not during a container build, where the
+// backend may not be up yet (first deploy) or reachable from the build network.
+// An unhandled rejection here fails the whole `next build`.
+//
+// Returning an empty list instead degrades gracefully: nothing is prerendered,
+// and these routes render on demand at request time. Same try/catch the product
+// page already uses.
 export async function generateStaticParams() {
-  const product_categories = await listCategories()
+  try {
+    const product_categories = await listCategories()
 
-  if (!product_categories) {
+    if (!product_categories) {
+      return []
+    }
+
+    const countryCodes = await listRegions().then((regions: StoreRegion[]) =>
+      regions?.map((r) => r.countries?.map((c) => c.iso_2)).flat()
+    )
+
+    const categoryHandles = product_categories.map(
+      (category: HttpTypes.StoreProductCategory) => category.handle
+    )
+
+    const staticParams = countryCodes
+      ?.map((countryCode: string | undefined) =>
+        categoryHandles.map((handle: string) => ({
+          countryCode,
+          category: [handle],
+        }))
+      )
+      .flat()
+
+    return staticParams
+  } catch (error) {
+    console.error(
+      `Failed to generate static paths for category pages: ${
+        error instanceof Error ? error.message : "Unknown error"
+      }.`
+    )
     return []
   }
-
-  const countryCodes = await listRegions().then((regions: StoreRegion[]) =>
-    regions?.map((r) => r.countries?.map((c) => c.iso_2)).flat()
-  )
-
-  const categoryHandles = product_categories.map(
-    (category: HttpTypes.StoreProductCategory) => category.handle
-  )
-
-  const staticParams = countryCodes
-    ?.map((countryCode: string | undefined) =>
-      categoryHandles.map((handle: string) => ({
-        countryCode,
-        category: [handle],
-      }))
-    )
-    .flat()
-
-  return staticParams
 }
 
 export async function generateMetadata(props: Props): Promise<Metadata> {

@@ -1,157 +1,146 @@
+"use client"
+
+import Image from "next/image"
+import { useCallback, useEffect, useState } from "react"
+
 import LocalizedClientLink from "@modules/common/components/localized-client-link"
 
-// Home hero (ref wireframe lines 38-121). Server component — fully static.
-// The global header is a solid sticky bar that occupies its own layout space
-// above this section, so the hero only needs normal section padding.
+import { HERO_SLIDES } from "./slides"
+
+const AUTOPLAY_MS = 6500
+
+/**
+ * Home hero — image slider.
+ *
+ * Each slide is a PAIR of images sharing one canvas: the base artwork and a
+ * fully transparent overlay that only contains the headline, already positioned
+ * by the designer. Because both layers are painted into the exact same box, the
+ * headline lands where it was designed for every slide, with zero per-slide CSS.
+ * The overlay is what animates in; the base only gets a subtle settle.
+ *
+ * The frame's aspect ratio comes from the FIRST slide, so the section height
+ * never jumps while sliding. Keep every pair on the same ratio.
+ */
 const Hero = () => {
+  const slides = HERO_SLIDES
+  const hasMultiple = slides.length > 1
+
+  const [active, setActive] = useState(0)
+  const [paused, setPaused] = useState(false)
+
+  const goTo = useCallback(
+    (index: number) => setActive((index + slides.length) % slides.length),
+    [slides.length]
+  )
+
+  useEffect(() => {
+    if (!hasMultiple || paused) {
+      return
+    }
+
+    const timer = window.setInterval(
+      () => setActive((current) => (current + 1) % slides.length),
+      AUTOPLAY_MS
+    )
+
+    return () => window.clearInterval(timer)
+  }, [hasMultiple, paused, slides.length])
+
+  const ratio = `${slides[0].width} / ${slides[0].height}`
+
   return (
-    <section className="relative overflow-hidden bg-ink text-cream">
-      {/* decorative glows + dots (lines 40-43), non-interactive */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -left-[120px] -top-20 h-[420px] w-[420px] rounded-full blur-[20px]"
-        style={{
-          background:
-            "radial-gradient(circle, rgba(101,59,103,.55), transparent 65%)",
-        }}
-      />
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -bottom-[120px] -right-[100px] h-[480px] w-[480px] rounded-full blur-[24px]"
-        style={{
-          background:
-            "radial-gradient(circle, rgba(155,213,231,.5), transparent 65%)",
-        }}
-      />
-      <div
-        aria-hidden
-        className="pointer-events-none absolute right-[38%] top-[18%] h-3.5 w-3.5 rounded-full bg-gold"
-      />
-      <div
-        aria-hidden
-        className="pointer-events-none absolute bottom-[20%] left-[46%] h-[9px] w-[9px] rounded-full bg-coral"
-      />
+    <section
+      aria-roledescription={hasMultiple ? "carousel" : undefined}
+      aria-label={hasMultiple ? "Destacados" : undefined}
+      className="relative w-full"
+      onMouseEnter={() => setPaused(true)}
+      onMouseLeave={() => setPaused(false)}
+      onFocusCapture={() => setPaused(true)}
+      onBlurCapture={() => setPaused(false)}
+    >
+      {/* The headline only exists as pixels inside `textImage`; this is the real
+          text for screen readers and crawlers. */}
+      <h1 className="sr-only">{slides[active].headline}</h1>
 
-      {/* hero body */}
-      <div className="relative z-[2] mx-auto grid max-w-[1180px] grid-cols-1 items-center gap-10 px-6 pb-16 pt-16 small:grid-cols-[1.05fr_.95fr] small:pb-[70px] small:pt-20">
-        {/* LEFT */}
-        <div>
-          <div className="inline-flex items-center gap-2 rounded-full border border-cream/20 px-3.5 py-1.5 font-mono text-[11px] uppercase tracking-[0.14em] text-cream-muted">
-            <span className="h-[7px] w-[7px] rounded-full bg-coral" />
-            Insumos para cafeterías · Mayoreo
-          </div>
+      <div className="mx-auto w-full max-w-[1320px] px-4 pt-4 small:px-6 small:pt-6">
+        <div
+          className="relative w-full overflow-hidden rounded-large"
+          style={{ aspectRatio: ratio }}
+        >
+          {slides.map((slide, index) => {
+            const isActive = index === active
 
-          <h1 className="mt-5 font-bricolage text-[44px] font-extrabold leading-[.94] tracking-[-0.035em] small:text-[64px] large:text-[78px]">
-            El{" "}
-            <span className="inline-block -rotate-[1.6deg] rounded-lg bg-coral px-3 text-coral-foreground">
-              sabor
-            </span>{" "}
-            que tu menú estaba esperando.
-          </h1>
-
-          <p className="mt-6 max-w-[430px] text-[18px] leading-[1.55] text-cream-muted">
-            Polvos, jarabes y todo para frappés y tapioca — calidad de mayoreo y
-            pedido en minutos. Hecho para baristas que no se conforman.
-          </p>
-
-          <div className="mt-7 flex flex-wrap gap-3">
-            <LocalizedClientLink
-              href="/store"
-              className="inline-flex items-center gap-2 rounded-xl bg-coral px-6 py-4 text-base font-semibold text-coral-foreground transition-colors hover:bg-coral-hover"
-            >
-              Explorar la tienda →
-            </LocalizedClientLink>
-            <a
-              href="#"
-              className="inline-flex items-center rounded-xl border border-cream/35 px-6 py-4 text-base font-medium text-cream transition-colors hover:border-cream/70"
-            >
-              Ver sabor del mes
-            </a>
-          </div>
-
-          {/* stats row */}
-          <div className="mt-9 flex flex-wrap items-center gap-x-6 gap-y-4">
-            <div>
-              <div className="font-bricolage text-[26px] font-bold">+40</div>
-              <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-cream-soft">
-                sabores
+            const media = (
+              // `key` on the animated wrapper: remounting on slide change is what
+              // replays the CSS entrance animation.
+              <div
+                key={`${slide.id}-${active}`}
+                className="absolute inset-0 animate-hero-media-in motion-reduce:animate-none"
+              >
+                <Image
+                  src={slide.image}
+                  alt={slide.alt}
+                  fill
+                  priority={index === 0}
+                  sizes="(max-width: 1320px) 100vw, 1320px"
+                  className="object-cover"
+                />
+                <Image
+                  src={slide.textImage}
+                  alt=""
+                  aria-hidden
+                  fill
+                  priority={index === 0}
+                  sizes="(max-width: 1320px) 100vw, 1320px"
+                  className="animate-hero-text-in object-cover motion-reduce:animate-none"
+                />
               </div>
-            </div>
-            <div className="hidden h-[34px] w-px bg-cream/[.18] small:block" />
-            <div>
-              <div className="font-bricolage text-[26px] font-bold">24 h</div>
-              <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-cream-soft">
-                envío
-              </div>
-            </div>
-            <div className="hidden h-[34px] w-px bg-cream/[.18] small:block" />
-            <div>
-              <div className="font-bricolage text-[26px] font-bold">+500</div>
-              <div className="font-mono text-[11px] uppercase tracking-[0.06em] text-cream-soft">
-                cafeterías
-              </div>
-            </div>
-          </div>
-        </div>
+            )
 
-        {/* RIGHT collage — decorative, hidden on mobile to protect layout */}
-        <div className="relative hidden h-[470px] small:block">
-          {/* main product card */}
-          <div className="absolute left-1/2 top-1/2 w-[340px] -translate-x-1/2 -translate-y-1/2 -rotate-3 rounded-[22px] bg-paper p-3.5 shadow-[0_30px_60px_rgba(0,0,0,.4)]">
-            <div
-              className="flex h-[300px] items-end justify-center rounded-[14px] pb-4"
-              style={{
-                background:
-                  "repeating-linear-gradient(135deg,#ECE4D5 0,#ECE4D5 11px,#F5F0E5 11px,#F5F0E5 22px)",
-              }}
-            >
-              <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-[#A99E86]">
-                foto · producto
-              </span>
-            </div>
-            <div className="flex items-center justify-between px-1.5 pb-1 pt-3.5">
-              <div>
-                <div className="font-bricolage text-[18px] font-bold text-ink">
-                  Polvo Taro
-                </div>
-                <div className="font-mono text-[11px] text-ink-muted">
-                  1 kg · cremoso
-                </div>
+            return (
+              <div
+                key={slide.id}
+                aria-hidden={!isActive}
+                inert={!isActive}
+                className={`absolute inset-0 transition-opacity duration-700 ease-out ${
+                  isActive ? "opacity-100" : "opacity-0"
+                }`}
+              >
+                {slide.href ? (
+                  <LocalizedClientLink
+                    href={slide.href}
+                    className="block h-full w-full focus:outline-none focus-visible:ring-2 focus-visible:ring-ink focus-visible:ring-offset-2"
+                    tabIndex={isActive ? undefined : -1}
+                  >
+                    {media}
+                  </LocalizedClientLink>
+                ) : (
+                  media
+                )}
               </div>
-              <div className="font-bricolage text-[20px] font-bold text-ink">
-                $189
-              </div>
-            </div>
-          </div>
-
-          {/* price sticker */}
-          <div className="absolute right-0.5 top-3.5 flex h-[78px] w-[78px] rotate-[11deg] flex-col items-center justify-center rounded-full border-2 border-ink bg-gold text-ink shadow-[0_10px_24px_rgba(0,0,0,.3)]">
-            <span className="font-bricolage text-[19px] font-extrabold leading-none">
-              $189
-            </span>
-            <span className="font-mono text-[9px]">/kg</span>
-          </div>
-
-          {/* flavor pills */}
-          <div className="absolute -left-1.5 top-[54px] flex -rotate-[5deg] items-center gap-2 rounded-full bg-paper py-1.5 pl-2.5 pr-3.5 text-ink shadow-[0_10px_22px_rgba(0,0,0,.28)]">
-            <span className="h-[18px] w-[18px] rounded-full bg-[#B79CE0]" />
-            <span className="text-sm font-semibold">Taro</span>
-          </div>
-          <div className="absolute bottom-[120px] right-1.5 flex rotate-[4deg] items-center gap-2 rounded-full bg-paper py-1.5 pl-2.5 pr-3.5 text-ink shadow-[0_10px_22px_rgba(0,0,0,.28)]">
-            <span className="h-[18px] w-[18px] rounded-full bg-[#8FB96A]" />
-            <span className="text-sm font-semibold">Matcha</span>
-          </div>
-          <div className="absolute bottom-[30px] left-[18px] flex -rotate-3 items-center gap-2 rounded-full bg-paper py-1.5 pl-2.5 pr-3.5 text-ink shadow-[0_10px_22px_rgba(0,0,0,.28)]">
-            <span className="h-[18px] w-[18px] rounded-full bg-[#F2A03D]" />
-            <span className="text-sm font-semibold">Mango</span>
-          </div>
-
-          {/* best seller tag */}
-          <div className="absolute bottom-[18px] right-[34px] -rotate-[4deg] rounded-[7px] bg-coral px-[11px] py-1.5 font-mono text-[10px] uppercase tracking-[0.1em] text-coral-foreground">
-            ★ best seller
-          </div>
+            )
+          })}
         </div>
       </div>
+
+      {hasMultiple && (
+        <div className="mx-auto flex w-full max-w-[1320px] items-center justify-center gap-2 px-4 pt-4 small:px-6">
+          {slides.map((slide, index) => (
+            <button
+              key={slide.id}
+              type="button"
+              aria-label={`Ir a la diapositiva ${index + 1}`}
+              aria-current={index === active}
+              onClick={() => goTo(index)}
+              className={`h-2 rounded-circle transition-all duration-300 ${
+                index === active
+                  ? "w-7 bg-ink"
+                  : "w-2 bg-ink/25 hover:bg-ink/45"
+              }`}
+            />
+          ))}
+        </div>
+      )}
     </section>
   )
 }

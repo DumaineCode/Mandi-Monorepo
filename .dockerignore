@@ -30,3 +30,21 @@ node_modules
 .idea
 .vscode
 *.log
+
+# Agent / spec tooling — never read by a build, but shipped to the daemon on
+# every deploy if left in. .codegraph alone is ~9MB of index nobody needs.
+.codegraph
+.agents
+.atl
+.turbo
+openspec
+wireframes
+docs
+skills-lock.json
+opencode.json
+
+# Tests and fixtures: the runtime image never executes them
+**/integration-tests
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts

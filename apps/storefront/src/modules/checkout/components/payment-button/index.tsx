@@ -1,15 +1,9 @@
 "use client"
 
-import {
-  isManual,
-  isMercadopago,
-  isOpenpay,
-  isStripeLike,
-} from "@lib/constants"
+import { isManual, isMercadopago, isOpenpay } from "@lib/constants"
 import { placeOrder, retrieveCart } from "@lib/data/cart"
 import { HttpTypes } from "@medusajs/types"
 import { Button } from "@modules/common/components/ui"
-import { useElements, useStripe } from "@stripe/react-stripe-js"
 import React, { useState } from "react"
 import ErrorMessage from "../error-message"
 import { CORAL_CTA } from "../submit-button"
@@ -33,14 +27,6 @@ const PaymentButton: React.FC<PaymentButtonProps> = ({
   const paymentSession = cart.payment_collection?.payment_sessions?.[0]
 
   switch (true) {
-    case isStripeLike(paymentSession?.provider_id):
-      return (
-        <StripePaymentButton
-          notReady={notReady}
-          cart={cart}
-          data-testid={dataTestId}
-        />
-      )
     case isOpenpay(paymentSession?.provider_id):
       return (
         <OpenpayPaymentButton notReady={notReady} data-testid={dataTestId} />
@@ -67,114 +53,29 @@ const PaymentButton: React.FC<PaymentButtonProps> = ({
 // checkout CTA.
 const PLACE_ORDER_CTA = CORAL_CTA
 
-const StripePaymentButton = ({
-  cart,
-  notReady,
-  "data-testid": dataTestId,
-}: {
-  cart: HttpTypes.StoreCart
-  notReady: boolean
-  "data-testid"?: string
-}) => {
-  const [submitting, setSubmitting] = useState(false)
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
-
-  const onPaymentCompleted = async () => {
-    await placeOrder()
-      .catch((err) => {
-        setErrorMessage(err.message)
-      })
-      .finally(() => {
-        setSubmitting(false)
-      })
-  }
-
-  const stripe = useStripe()
-  const elements = useElements()
-  const card = elements?.getElement("card")
-
-  const session = cart.payment_collection?.payment_sessions?.find(
-    (s) => s.status === "pending"
-  )
-
-  const disabled = !stripe || !elements ? true : false
-
-  const handlePayment = async () => {
-    setSubmitting(true)
-
-    if (!stripe || !elements || !card || !cart) {
-      setSubmitting(false)
-      return
-    }
-
-    await stripe
-      .confirmCardPayment(session?.data.client_secret as string, {
-        payment_method: {
-          card: card,
-          billing_details: {
-            name:
-              cart.billing_address?.first_name +
-              " " +
-              cart.billing_address?.last_name,
-            address: {
-              city: cart.billing_address?.city ?? undefined,
-              country: cart.billing_address?.country_code ?? undefined,
-              line1: cart.billing_address?.address_1 ?? undefined,
-              line2: cart.billing_address?.address_2 ?? undefined,
-              postal_code: cart.billing_address?.postal_code ?? undefined,
-              state: cart.billing_address?.province ?? undefined,
-            },
-            email: cart.email,
-            phone: cart.billing_address?.phone ?? undefined,
-          },
-        },
-      })
-      .then(({ error, paymentIntent }) => {
-        if (error) {
-          const pi = error.payment_intent
-
-          if (
-            (pi && pi.status === "requires_capture") ||
-            (pi && pi.status === "succeeded")
-          ) {
-            onPaymentCompleted()
-          }
-
-          setErrorMessage(error.message || null)
-          return
-        }
-
-        if (
-          (paymentIntent && paymentIntent.status === "requires_capture") ||
-          paymentIntent.status === "succeeded"
-        ) {
-          return onPaymentCompleted()
-        }
-
-        return
-      })
-  }
-
-  return (
-    <>
-      <Button
-        disabled={disabled || notReady}
-        onClick={handlePayment}
-        size="large"
-        className={PLACE_ORDER_CTA}
-        isLoading={submitting}
-        data-testid={dataTestId}
-      >
-        Realizar pedido
-      </Button>
-      <ErrorMessage
-        error={errorMessage}
-        data-testid="stripe-payment-error-message"
-      />
-    </>
-  )
-}
-
+/**
+ * `StripePaymentButton` and its `case isStripeLike(...)` dispatch arm were
+ * deleted here (task 2c.6, pulled forward into PR1b).
+ *
+ * It could not stay: `payment-wrapper/stripe-wrapper.tsx` was deleted in the
+ * same PR (1b.18), so no `<Elements>` provider is mounted anywhere in the app.
+ * `useStripe()` and `useElements()` THROW outside that provider, so the
+ * component would have crashed on mount rather than merely misbehaving. A
+ * half-removed integration is strictly worse than either finishing or not
+ * starting.
+ *
+ * It was already unreachable per `design.md` §0 CONFLICT-1 RESOLUTION:
+ * `apps/backend/medusa-config.ts` registers exactly two payment providers,
+ * `openpay` and `mercadopago`, and `listCartPaymentMethods` is backend-driven
+ * (`lib/data/payment.ts:16`), so `isStripeLike` can never match a real provider
+ * id. Deleting it also let `@stripe/react-stripe-js` and `@stripe/stripe-js`
+ * leave `package.json` (task 2c.13, likewise pulled forward) — this file held
+ * the last source import of either package.
+ *
+ * `isStripeLike` itself STAYS exported from `lib/constants.tsx`: it still has a
+ * live caller outside checkout at `modules/order/components/payment-details/
+ * index.tsx:43`, which is out of scope for this change (task 2c.14).
+ */
 const OpenpayPaymentButton = ({
   notReady,
   "data-testid": dataTestId,
