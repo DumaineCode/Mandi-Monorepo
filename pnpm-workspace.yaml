@@ -2,6 +2,16 @@ packages:
   - "apps/**"
   - "!apps/backend/.medusa/**"
 
+# These used to live under `pnpm.overrides` in the root package.json. pnpm no
+# longer reads that field and only says so in a warning printed on every
+# command, so the pin silently stopped applying: @types/react@18.3.31 came back
+# alongside 19.0.5, and every design-system component used in JSX started
+# emitting TS2786 "cannot be used as a JSX component". That is the whole of the
+# ~298 tsc errors the repo had learned to treat as background noise.
+overrides:
+  "@types/react": "19.0.5"
+  "@types/react-dom": "19.0.5"
+
 allowBuilds:
   "@medusajs/telemetry": true
   "@swc/core": true
