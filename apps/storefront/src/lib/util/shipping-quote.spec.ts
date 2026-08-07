@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   AUTOSAVE_DEBOUNCE_MS,
   buildQuoteSignature,
+  classifyQuoteResult,
   evaluateQuoteReadiness,
   isQuotable,
   isShippingSelectionStale,
@@ -476,5 +477,137 @@ describe("isShippingSelectionStale", () => {
    */
   it("is true when the address stopped being quotable under a live selection", () => {
     expect(isShippingSelectionStale(SIG_A, null)).toBe(true)
+  })
+})
+
+/**
+ * `failed` vs `not_serviceable` — the distinction that decides whether the
+ * storefront tells a customer their address is wrong or tells them the store
+ * could not price the order.
+ *
+ * Getting it backwards is not a cosmetic bug: the `MissingDimensionsError`
+ * signature is a CATALOGUE data problem (a variant with no weight or no L/W/H,
+ * `parcel.ts:49-79`), so the copy the customer reads must not send them off to
+ * re-check a postal code that was correct all along, and re-typing it will never
+ * help.
+ *
+ * The expected values below are written out literally rather than imported from
+ * the module. Asserting `X === X` passes for every value of `X`.
+ */
+describe("classifyQuoteResult", () => {
+  const calculated = (id: string) => ({ id, price_type: "calculated" })
+  const flat = (id: string) => ({ id, price_type: "flat" })
+
+  it("is priced when every calculated option resolved an amount", () => {
+    expect(
+      classifyQuoteResult({
+        options: [calculated("so_a"), calculated("so_b")],
+        prices: { so_a: 15000, so_b: 21000 },
+      })
+    ).toBe("priced")
+  })
+
+  it("is priced when at least ONE calculated option resolved an amount", () => {
+    // A partial result is a real answer: the customer can pick the carrier that
+    // did quote. Only a TOTAL absence of prices is the dimensions signature.
+    expect(
+      classifyQuoteResult({
+        options: [calculated("so_a"), calculated("so_b")],
+        prices: { so_b: 21000 },
+      })
+    ).toBe("priced")
+  })
+
+  /**
+   * The `MissingDimensionsError` signature: the backend returned options — so the
+   * address IS serviceable — and every single one came back priceless because
+   * `buildParcel` threw before any carrier call.
+   */
+  it("is unpriceable when a non-empty calculated list resolved no amount at all", () => {
+    expect(
+      classifyQuoteResult({
+        options: [calculated("so_a"), calculated("so_b")],
+        prices: {},
+      })
+    ).toBe("unpriceable")
+  })
+
+  /**
+   * An EMPTY list is a different answer and must not be reported as a failure.
+   * It is `not_serviceable` — derived downstream from the option count — and
+   * telling that customer "we could not calculate shipping, try again" would
+   * invite them to retry an address the carrier will never serve, at the cost of
+   * a live carrier quote per press.
+   */
+  it("is priced when the option list is empty, because that is not a failure", () => {
+    expect(classifyQuoteResult({ options: [], prices: {} })).toBe("priced")
+  })
+
+  /**
+   * Flat-rate options carry their amount on the option itself and are never
+   * routed through `calculatePriceForShippingOption`, so an empty price map says
+   * nothing about them. Reporting a failure here would break a store that sells
+   * flat-rate shipping only.
+   */
+  it("is priced when the list is entirely flat-rate and the price map is empty", () => {
+    expect(
+      classifyQuoteResult({
+        options: [flat("so_a"), flat("so_b")],
+        prices: {},
+      })
+    ).toBe("priced")
+  })
+
+  it("ignores flat-rate options when deciding, so one priceless carrier still fails", () => {
+    expect(
+      classifyQuoteResult({
+        options: [flat("so_pickup"), calculated("so_a")],
+        prices: {},
+      })
+    ).toBe("unpriceable")
+  })
+
+  /**
+   * Free shipping is a price. `0` is falsy, and the component this rule was
+   * extracted from used a truthiness check — so a carrier quoting zero read as
+   * "no price returned".
+   */
+  it("counts a zero amount as a real price", () => {
+    expect(
+      classifyQuoteResult({
+        options: [calculated("so_a")],
+        prices: { so_a: 0 },
+      })
+    ).toBe("priced")
+  })
+
+  /**
+   * A price recorded against an option that is not in the list cannot rescue the
+   * options that are. Counting the map's size instead of matching per option is
+   * the mutation this kills.
+   */
+  it("ignores prices belonging to options that are not on the list", () => {
+    expect(
+      classifyQuoteResult({
+        options: [calculated("so_a")],
+        prices: { so_from_a_previous_quote: 19900 },
+      })
+    ).toBe("unpriceable")
+  })
+
+  it("treats a non-finite amount as no price", () => {
+    expect(
+      classifyQuoteResult({
+        options: [calculated("so_a")],
+        prices: { so_a: Number.NaN },
+      })
+    ).toBe("unpriceable")
+  })
+
+  it("is free of side effects on its input", () => {
+    const options = Object.freeze([Object.freeze(calculated("so_a"))])
+    const prices = Object.freeze({ so_a: 100 })
+
+    expect(() => classifyQuoteResult({ options, prices })).not.toThrow()
   })
 })

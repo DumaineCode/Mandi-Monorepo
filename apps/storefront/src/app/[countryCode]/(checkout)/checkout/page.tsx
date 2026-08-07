@@ -78,7 +78,6 @@ export default async function Checkout() {
         >
           <CheckoutForm
             customer={customer}
-            shippingOptionsFailed={shippingOptions === null}
             availablePaymentMethods={paymentMethods}
           />
         </PaymentWrapper>
@@ -91,10 +90,7 @@ export default async function Checkout() {
          * into a client component reading totals from this context; the slot is
          * already in place so that change stays about totals.
          */}
-        <CheckoutSummary
-          cart={cart}
-          itemsSlot={<ItemsPreviewTemplate cart={cart} />}
-        />
+        <CheckoutSummary itemsSlot={<ItemsPreviewTemplate cart={cart} />} />
       </CheckoutProvider>
     </div>
   )

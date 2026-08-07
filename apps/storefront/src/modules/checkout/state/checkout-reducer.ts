@@ -3,6 +3,7 @@ import {
   type CheckoutDraftAddress,
 } from "@lib/util/cart-address-payload"
 import {
+  getMissingOrderRequirements,
   toReadinessInput,
   type OrderReadinessInput,
 } from "@lib/util/checkout-readiness"
@@ -118,7 +119,13 @@ export type CheckoutState = {
   inFlightSignature: string | null
   /** Signature of the most recent FAILED attempt. Gates the auto-retry. */
   failedSignature: string | null
-  calculatedPrices: Record<string, number>
+  /**
+   * `number | null` deliberately. A calculated option whose price came back
+   * absent must stay absent all the way to {@link selectShippingChoices}, which
+   * renders it unselectable. Collapsing it to `0` upstream would present it as
+   * free shipping and let the order be placed with none.
+   */
+  calculatedPrices: Record<string, number | null>
   cpStatus: CpStatus
   colonias: string[]
   coloniaManual: boolean
@@ -169,11 +176,21 @@ export type CheckoutAction =
       type: "QUOTE_READY"
       signature: string
       options: HttpTypes.StoreCartShippingOption[]
-      prices: Record<string, number>
+      prices: Record<string, number | null>
     }
   | { type: "QUOTE_FAILED"; signature: string }
   | { type: "QUOTE_RETRY" }
-  | { type: "SELECT_SHIPPING_OPTION"; optionId: string }
+  | {
+      type: "SELECT_SHIPPING_OPTION"
+      optionId: string
+      /**
+       * The quote signature as it was WHEN THE CUSTOMER CLICKED, captured by the
+       * component before it awaits the round trip. Required, not optional: the
+       * caller is the only party that knows which destination the price on the
+       * row belonged to.
+       */
+      signature: string | null
+    }
   | { type: "SELECT_PAYMENT_PROVIDER"; providerId: string }
   | { type: "SET_PAYMENT_DETAILS_COMPLETE"; complete: boolean }
   | { type: "SET_ERROR"; error: string | null }
@@ -232,6 +249,16 @@ export const selectQuoteRelevantAddress = (
  * address-filtered too, but {@link selectQuoteStatus} reports `quoting` while
  * `quotedSignature` lags, so it is never presented as current.
  */
+/**
+ * Stamped on a restored selection whose destination cannot be reconstructed.
+ *
+ * Not a real signature and never equal to one: `buildQuoteSignature` returns
+ * either a joined address projection or `null`, so nothing can collide with
+ * this. Its only job is to make {@link isShippingSelectionStale} answer `true`
+ * for a selection we cannot vouch for.
+ */
+export const UNKNOWN_SELECTION_SIGNATURE = "__selection_signature_unknown__"
+
 const commitDraft = (
   state: CheckoutState,
   next: { draft?: AddressDraft; email?: string }
@@ -351,8 +378,22 @@ export function initFromServer(init: CheckoutInit): CheckoutState {
      * against the address that is still on the cart. Seeding it with the derived
      * signature says exactly that, and `isShippingSelectionStale` then reports
      * `false` until the customer actually changes the destination.
+     *
+     * The third case is the one that bites. When the persisted address is not
+     * QUOTABLE — no province, no city, a postal code that is not five digits,
+     * which is the legacy and `AddressSelect` cohort the phone incident docstring
+     * records — `quoteSignature` is `null` while the cart still carries a shipping
+     * method. Seeding `null` there reads as "no selection to compare", and
+     * `isShippingSelectionStale(null, …)` answers `false` FOREVER: no later
+     * postal-code change can ever clear that radio, `shipping_method_stale` can
+     * never fire, and the backend's silent re-pricing (finding F2) reaches the
+     * summary as a final total the customer never agreed to.
+     *
+     * A selection whose provenance is unknown is not fresh, it is suspect.
      */
-    selectionSignature: selectedShippingOptionId ? quoteSignature : null,
+    selectionSignature: selectedShippingOptionId
+      ? quoteSignature ?? UNKNOWN_SELECTION_SIGNATURE
+      : null,
 
     selectedPaymentProviderId: null,
     paymentDetailsComplete: false,
@@ -607,10 +648,28 @@ export function checkoutReducer(
       return { ...state, failedSignature: null }
 
     case "SELECT_SHIPPING_OPTION":
+      /**
+       * Stamped with the signature the customer SAW, not the one that happens to
+       * be current when this reduces.
+       *
+       * `setShippingMethod` is awaited before this dispatches, and the customer
+       * can edit the postal code during that round trip. Reading
+       * `state.quoteSignature` here recorded the selection as belonging to the
+       * NEW destination: `isShippingSelectionStale` then answered `false`,
+       * `shipping_method_stale` never fired, the radio rendered checked for an
+       * option only ever priced for the old postal code, and the summary
+       * presented that total as final. Settled decision 1 exists to prevent
+       * precisely that, and an awaited continuation walked straight through it.
+       *
+       * Carrying the click-time signature makes the staleness comparison
+       * downstream true by construction: if the destination moved while the
+       * request was in the air, the captured signature no longer matches and the
+       * selection is stale the moment it lands.
+       */
       return {
         ...state,
         selectedShippingOptionId: action.optionId,
-        selectionSignature: state.quoteSignature,
+        selectionSignature: action.signature,
       }
 
     case "SELECT_PAYMENT_PROVIDER":
@@ -664,6 +723,82 @@ export function selectQuoteStatus(state: CheckoutState): QuoteStatus {
   }
 
   return "quoting"
+}
+
+/**
+ * One row of the Envío option list, as the customer will read it.
+ *
+ * `amount: null` means "this option has no price we can stand behind" and is the
+ * ONLY way to say so. There is deliberately no placeholder, no `"-"`, no `0`
+ * default: R3 is that a fake price is worse than an honest absence, and a `0`
+ * default is indistinguishable from free shipping.
+ */
+export type ShippingChoice = {
+  id: string
+  name: string
+  amount: number | null
+  selectable: boolean
+}
+
+const readAmount = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? value : null
+
+/**
+ * What the Envío section is allowed to put on screen, and what may be picked.
+ *
+ * ## Empty unless the held quote belongs to the CURRENT destination
+ *
+ * This is the spec's "previously quoted prices MUST NOT remain visible as if
+ * current", enforced here rather than by a conditional in the section's JSX.
+ * `state.shippingOptions` survives a destination change on purpose (the list is
+ * address-filtered too, but keeping it avoids a flash of nothing), and
+ * `initFromServer` seeds it from the RSC render before any price exists at all.
+ * So "the list is non-empty" is not a licence to render it — only
+ * {@link selectQuoteStatus} reporting `quoted` is, because that is the single
+ * place where "the prices in hand were quoted for the address on screen" is
+ * decided.
+ *
+ * Rendering the list whenever it was non-empty is exactly what the component
+ * this replaces did, and it is how a price quoted for a postal code the customer
+ * had already changed stayed on screen looking current.
+ *
+ * ## Per-row rules
+ *
+ * - a `calculated` option is priced by the quote round, never by the option;
+ * - anything else carries its own `amount` — flat rates are never routed through
+ *   `calculatePriceForShippingOption`, so the price map says nothing about them,
+ *   and a stray map entry must not be able to give one an amount;
+ * - `Number.isFinite`, not truthiness. Free shipping quotes `0`, and the
+ *   component this replaces rendered `0` as `-` and refused to let it be chosen;
+ * - an option the warehouse cannot fulfil is shown and refused, rather than
+ *   hidden: a row that vanishes reads as a store with fewer carriers, and the
+ *   customer is left wondering where the option they used last time went.
+ *
+ * Unpriced rows are RETURNED, not filtered. The section renders them without an
+ * amount and unselectable — which is the honest statement — and
+ * {@link selectQuoteStatus} has already reported `failed` for the case where
+ * NONE of them priced (@see `classifyQuoteResult`).
+ *
+ * @see `modules/checkout/components/shipping-section/index.tsx` — the consumer.
+ */
+export function selectShippingChoices(state: CheckoutState): ShippingChoice[] {
+  if (selectQuoteStatus(state) !== "quoted") {
+    return []
+  }
+
+  return state.shippingOptions.map((option) => {
+    const amount =
+      option.price_type === "calculated"
+        ? readAmount(state.calculatedPrices[option.id])
+        : readAmount(option.amount)
+
+    return {
+      id: option.id,
+      name: option.name ?? "",
+      amount,
+      selectable: amount !== null && !option.insufficient_inventory,
+    }
+  })
 }
 
 /**
@@ -852,6 +987,43 @@ export function selectWriteBaseCart(
   }
 
   return state.cart
+}
+
+/**
+ * Whether the summary must present its shipping line and grand total as
+ * PROVISIONAL rather than final (D4 step 3).
+ *
+ * ## Why the summary needs a rule at all
+ *
+ * `CheckoutSummary` reads `cart.total` and `cart.shipping_subtotal` straight off
+ * the cart, which is normally exactly right. Finding F2 is what breaks it: per F1
+ * the storefront cannot remove a shipping method, and `updateCartWorkflow`
+ * unconditionally re-runs `refreshCartShippingMethodsWorkflow`, which re-lists
+ * options for the NEW destination and re-prices the surviving method to it. So
+ * the first autosave after a postal-code change silently rewrites the customer's
+ * total, and the summary would present the new number as if they had agreed to
+ * it. That is the precise failure settled decision 1 exists to prevent.
+ *
+ * ## Defined as the CTA's own answer, never as a second derivation
+ *
+ * This is `shipping_method_stale` being present in
+ * {@link getMissingOrderRequirements}, and nothing else. Re-deriving it from
+ * `isShippingSelectionStale` here would be a second copy of the rule, and the two
+ * would drift the day one of them grew a condition — leaving a checkout whose
+ * button says "re-choose your shipping method" beside a total presented as final,
+ * or the reverse.
+ *
+ * Routing through the catalogue also inherits two behaviours worth having for
+ * free: it cannot fire when nothing was ever chosen (`shipping_method` covers
+ * that case instead, and warning about the recalculation of a price that does not
+ * exist is noise), and it cannot fire on an empty cart.
+ *
+ * @see `modules/checkout/templates/checkout-summary/index.tsx` — the consumer.
+ */
+export function selectShippingIsProvisional(state: CheckoutState): boolean {
+  return getMissingOrderRequirements(selectReadinessInput(state)).some(
+    (requirement) => requirement.code === "shipping_method_stale"
+  )
 }
 
 /**

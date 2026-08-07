@@ -276,21 +276,25 @@ export function getMissingOrderRequirements(
      * customer re-picks. The product guarantee decision 1 asked for is intact;
      * only the mechanism differs.
      *
-     * ## Deliberately unconsumed in PR1b
+     * ## The seam PR1b opened, closed in PR2b
      *
-     * Nothing calls this code path yet, and that is a recorded decision rather
-     * than an oversight (`design.md` §13, and the "Deliberately unconsumed in
-     * this PR" section of the PR1b description). The rule ships with the
-     * catalogue because the catalogue has to be complete on arrival: shipping an
-     * under-strict `getMissingOrderRequirements` now and amending it later means
-     * touching the strictness floor twice, and this predicate is the only guard
-     * against orders Skydropx can never label.
+     * This code shipped with no producer and no consumer, deliberately
+     * (`design.md` §13). Both now exist: PR2a's reducer moves
+     * `selectionSignature`, and PR2b's Envío section and summary render the
+     * result. The rule shipped ahead of them because the catalogue has to be
+     * complete on arrival — shipping an under-strict
+     * `getMissingOrderRequirements` and amending it later means touching the
+     * strictness floor twice, and this predicate is the only guard against orders
+     * Skydropx can never label.
      *
      * @see `modules/checkout/state/checkout-reducer.ts` — PR2a. Clears
      * `selectedShippingOptionId` in the same transition that recomputes
      * `quoteSignature`, and is what makes `selectionSignature` move.
      * @see `modules/checkout/components/shipping-section/index.tsx` — PR2b.
      * Renders the cleared radio group.
+     * @see `modules/checkout/state/checkout-reducer.ts` —
+     * `selectShippingIsProvisional`, defined AS the presence of this code so the
+     * summary and the CTA cannot disagree about whether the order is ready.
      * @see `modules/checkout/templates/checkout-summary/index.tsx` — PR2b.
      * Renders the provisional-total state this code puts the summary into.
      */

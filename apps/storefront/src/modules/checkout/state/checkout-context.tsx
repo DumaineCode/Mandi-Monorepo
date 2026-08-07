@@ -8,6 +8,7 @@ import {
 import { getPostalCode } from "@lib/data/postal-code"
 import {
   AUTOSAVE_DEBOUNCE_MS,
+  classifyQuoteResult,
   evaluateQuoteReadiness,
   QUOTE_DEBOUNCE_MS,
 } from "@lib/util/shipping-quote"
@@ -133,6 +134,23 @@ const required = <T,>(value: T | null, hook: string): T => {
 /** Stable for the provider's lifetime. Prefer this when you only dispatch. */
 export function useCheckoutActions(): CheckoutActions {
   return required(useContext(CheckoutActionsContext), "useCheckoutActions")
+}
+
+/**
+ * The same actions, or `null` outside the provider.
+ *
+ * For the one component that legitimately has two homes: `discount-code` renders
+ * both inside `CheckoutSummary` and inside the CART page's summary, and only the
+ * first has client state to keep in step. On the cart page the `revalidateTag`
+ * that `applyPromotions` already performs is still the whole mechanism, because
+ * that page IS server-rendered on every navigation.
+ *
+ * Deliberately NOT the default: everything else under this provider needs the
+ * context to exist, and swallowing its absence would turn a missing provider into
+ * a checkout that silently stops updating instead of a crash in development.
+ */
+export function useOptionalCheckoutActions(): CheckoutActions | null {
+  return useContext(CheckoutActionsContext)
 }
 
 /**
@@ -402,22 +420,32 @@ export function CheckoutProvider({
           calculated.map((o) => calculatePriceForShippingOption(o.id, cartId))
         )
 
-        const prices: Record<string, number> = {}
+        /**
+         * `?? null`, never `?? 0`. A calculate call that resolves without an
+         * amount has NOT priced the option, and the previous `?? 0` here made
+         * that indistinguishable from free shipping: the row rendered $0.00 and
+         * selectable, `classifyQuoteResult` counted the round as priced, and the
+         * order could be placed with no shipping charged. Both
+         * `classifyQuoteResult` and `readAmount` were written to tell those two
+         * apart and neither could ever see a null, because it was coerced away
+         * one line before they ran.
+         */
+        const prices: Record<string, number | null> = {}
         settled.forEach((r) => {
           if (r.status === "fulfilled" && r.value?.id) {
-            prices[r.value.id] = r.value.amount ?? 0
+            prices[r.value.id] = r.value.amount ?? null
           }
         })
 
         /**
-         * Every calculated option came back priceless while the list itself is
-         * non-empty. That is the `MissingDimensionsError` signature
-         * (`buildParcel` throws before any carrier call when an item has no
-         * weight or no L/W/H) and it is NOT an unserviceable address — the
-         * customer cannot fix it and the message must not blame them. An empty
-         * list is a different thing and stays `not_serviceable`.
+         * The `unpriceable` vs `not_serviceable` judgement is NOT made here. It
+         * lives in `classifyQuoteResult`, where a spec can contradict it — this
+         * file is node-untestable, so a rule that stays here is a rule nothing
+         * can check. It previously lived here as a two-term boolean that also
+         * counted map keys rather than matching per option, so a leftover key
+         * from an earlier round could rescue a list none of whose options priced.
          */
-        if (calculated.length > 0 && Object.keys(prices).length === 0) {
+        if (classifyQuoteResult({ options, prices }) === "unpriceable") {
           dispatch({ type: "QUOTE_FAILED", signature })
           return
         }
