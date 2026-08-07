@@ -65,6 +65,79 @@ import {
  * @see `checkout-write-scheduler.spec.ts` — both failure modes, reproduced.
  */
 
+/**
+ * Last-resort bound on ONE cart write, in milliseconds.
+ *
+ * ## Why the scheduler needs its own bound at all
+ *
+ * `persistCheckoutDraft` is a `"use server"` action, and server actions cannot be
+ * cancelled from the client — the whole module is built around that fact. What
+ * this bounds is not the request but the AWAIT: how long this scheduler is willing
+ * to hold its FIFO chain open for a reply that may never come.
+ *
+ * Without it a single write that never settles is not a slow save, it is a
+ * permanently stalled checkout. `tail` never resolves, so every later
+ * `persistNow()` queues forever and `isBusy()` answers `true` forever; and the
+ * requote effect awaits `persistNow()` one line after `QUOTE_STARTED` has claimed
+ * `inFlightSignature`, so the slot is never released and `selectQuoteStatus`
+ * reports `"quoting"` until the page is reloaded. A dropped connection or a mobile
+ * tab suspended mid-write reaches this, and the platform socket timeout is the
+ * only other bound — neither guaranteed nor short.
+ *
+ * ## The number, and why it is bigger than every other timeout in this codebase
+ *
+ * The existing budgets are all on single READS: `CART_READ_TIMEOUT_MS` 5 s and
+ * `CART_OPTIONS_TIMEOUT_MS` 5 s (`lib/data/cart.ts`), `SHIPPING_OPTIONS_TIMEOUT_MS`
+ * 5 s + 2 s retry (`lib/data/fulfillment.ts`), `POSTAL_CODE_TIMEOUT_MS` and
+ * `PROVIDER_CONFIG_TIMEOUT_MS` 3 s.
+ *
+ * This one wraps a whole action that already contains one of them:
+ * `persistCheckoutDraft` runs `retrieveCartFresh` — bounded at 5 s — SEQUENTIALLY
+ * in front of the PATCH, and the PATCH itself is deliberately unbounded (the SDK's
+ * typed `cart.update` takes no request init, and hand-rolling `sdk.client.fetch`
+ * on the destructive write was rejected as a bad trade; see the note on
+ * `CART_READ_TIMEOUT_MS`). So this MUST exceed 5 s, or it would pre-empt the inner
+ * timeout — the half with the better-diagnosed failure path — and turn every slow
+ * read into an undiagnosable one. 15 s leaves the read its full budget and the
+ * write roughly 10 s.
+ *
+ * It is a stall breaker, not a UX budget. The customer's feedback on a slow save
+ * is the `saving` status line, which is already on screen.
+ */
+export const CHECKOUT_WRITE_TIMEOUT_MS = 15_000
+
+/**
+ * Resolves to {@link TIMED_OUT} rather than rejecting, because the caller is a
+ * step in the middle of `performWrite` and a throw there would skip the
+ * `CART_WRITE_FAILED` dispatch that is the customer's only feedback.
+ *
+ * The abandoned promise keeps both handlers attached, so a reply that arrives
+ * after the deadline cannot surface as an unhandled rejection. It is otherwise
+ * ignored: applying a cart this scheduler has already given up on would move
+ * `lastWrite` behind the writes queued after it. Being abandoned makes it behave
+ * exactly like a failed write, which is a path the chain already handles.
+ */
+const TIMED_OUT = Symbol("checkout-write-timeout")
+
+const withDeadline = <T>(
+  promise: Promise<T>,
+  ms: number
+): Promise<T | typeof TIMED_OUT> =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(TIMED_OUT), ms)
+
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (error) => {
+        clearTimeout(timer)
+        reject(error)
+      }
+    )
+  })
+
 export type PersistDraft = (
   patch: Partial<CheckoutDraftAddress>,
   email: string | null
@@ -142,15 +215,21 @@ export function createCheckoutWriteScheduler(
     const sequence = deps.nextSequence()
     deps.dispatch({ type: "CART_WRITE_STARTED", sequence })
 
-    let result: Awaited<ReturnType<PersistDraft>>
+    let result: Awaited<ReturnType<PersistDraft>> | typeof TIMED_OUT
 
     try {
       /**
        * Persists INVALID values too (settled decision 3). The backend normalises
        * the phone and format is the CTA predicate's job; losing what the customer
        * typed is worse than a dirty cart.
+       *
+       * Raced against a deadline so a reply that never comes cannot hold the FIFO
+       * chain — and with it the requote path — open forever.
        */
-      result = await deps.persist(patch ?? {}, email)
+      result = await withDeadline(
+        deps.persist(patch ?? {}, email),
+        CHECKOUT_WRITE_TIMEOUT_MS
+      )
     } catch {
       /**
        * A rejected server action must not poison the chain: the customer's next
@@ -162,7 +241,14 @@ export function createCheckoutWriteScheduler(
       return { status: "failed" }
     }
 
-    if (!result.ok) {
+    /**
+     * A write we gave up waiting for is reported EXACTLY like one that failed.
+     * The customer sees the same status line, the next blur retries, and — this is
+     * the load-bearing part — the requote effect gets a resolved
+     * `{ status: "failed" }` it can act on, so it dispatches `QUOTE_FAILED` and
+     * releases the in-flight signature instead of deadlocking on the await.
+     */
+    if (result === TIMED_OUT || !result.ok) {
       deps.dispatch({ type: "CART_WRITE_FAILED", sequence })
       return { status: "failed" }
     }

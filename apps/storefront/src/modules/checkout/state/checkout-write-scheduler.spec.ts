@@ -8,6 +8,7 @@ import {
   type CheckoutState,
 } from "./checkout-reducer"
 import {
+  CHECKOUT_WRITE_TIMEOUT_MS,
   createCheckoutWriteScheduler,
   type PersistDraft,
 } from "./checkout-write-scheduler"
@@ -482,6 +483,167 @@ describe("what the scheduler tells the reducer", () => {
     expect(state.autosaveStatus).toBe("error")
     // The queue is not poisoned by the rejection.
     expect(scheduler.isBusy()).toBe(false)
+  })
+})
+
+/**
+ * ## The failure mode none of the sixteen tests above could see
+ *
+ * Every one of them settles. `performWrite` did a bare `await deps.persist(...)`
+ * with no timeout and no `AbortSignal`, and the FIFO tail is `tail =
+ * run.catch(...)` — so a server action that NEVER settles is not a slow write, it
+ * is a permanently stalled scheduler:
+ *
+ * - `tail` never resolves, so every later `persistNow()` queues forever;
+ * - `isBusy()` answers `true` forever;
+ * - and the requote effect's `await scheduler.persistNow()` never returns, so the
+ *   `inFlightSignature` claimed by `QUOTE_STARTED` one line earlier is never
+ *   released — the same permanent "quoting" deadlock as the leaked in-flight slot,
+ *   arrived at from a second direction.
+ *
+ * A dropped connection or a mobile tab put to sleep mid-write reaches this. The
+ * platform's own socket timeout is the only other bound, and it is neither
+ * guaranteed nor short.
+ *
+ * Driven under `vi.useFakeTimers()` with a `persist` that simply never resolves,
+ * which is exactly what the harness's `pending` queue already models.
+ */
+describe("a write that never settles", () => {
+  /**
+   * Stated as a literal rather than imported, deliberately: asserting the module's
+   * constant against itself passes for every value. The magnitude is pinned
+   * against independent facts in the last test of this block.
+   */
+  const BUDGET_MS = 15_000
+
+  const hungHarness = () => {
+    const h = harness()
+    h.dispatchToState({
+      type: "FIELD_BLUR",
+      field: "address_1",
+      value: "Otra calle 9",
+    })
+    return h
+  }
+
+  it("gives up rather than hanging forever", async () => {
+    const h = hungHarness()
+
+    let settled: unknown = "pending"
+    void h.scheduler.persistNow().then((outcome) => {
+      settled = outcome
+    })
+
+    await vi.advanceTimersByTimeAsync(0)
+    expect(h.sent).toHaveLength(1)
+    expect(settled).toBe("pending")
+
+    await vi.advanceTimersByTimeAsync(BUDGET_MS)
+
+    expect(settled).toEqual({ status: "failed" })
+  })
+
+  it("tells the customer, through the same status line every other failure uses", async () => {
+    const h = hungHarness()
+
+    void h.scheduler.persistNow()
+    await vi.advanceTimersByTimeAsync(BUDGET_MS)
+
+    expect(h.actions.map((a) => a.type)).toEqual([
+      "CART_WRITE_STARTED",
+      "CART_WRITE_FAILED",
+    ])
+  })
+
+  it("releases the chain, so a later write is not stranded behind it", async () => {
+    const h = hungHarness()
+
+    void h.scheduler.persistNow()
+    await vi.advanceTimersByTimeAsync(BUDGET_MS)
+
+    // The customer edits again and blurs. This must reach the server.
+    void h.scheduler.persistNow()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(h.sent).toHaveLength(2)
+  })
+
+  /**
+   * `isBusy()` is what the provider reads to decide whether a write is open. Left
+   * `true` forever it is not merely wrong, it is a lie that every later decision
+   * is taken against.
+   */
+  it("stops reporting itself busy", async () => {
+    const h = hungHarness()
+
+    void h.scheduler.persistNow()
+    expect(h.scheduler.isBusy()).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(BUDGET_MS)
+
+    expect(h.scheduler.isBusy()).toBe(false)
+  })
+
+  /**
+   * The requote path, which is the one that deadlocks the checkout outright:
+   * `QUOTE_STARTED` claims the in-flight slot, then the effect awaits
+   * `persistNow()`. If that never returns, `QUOTE_FAILED` is never dispatched and
+   * the slot is never released. A resolved failure is what lets the effect reach
+   * its own error path at all.
+   */
+  it("resolves to a failure the requote path can act on", async () => {
+    const h = hungHarness()
+
+    let outcome: unknown = "pending"
+    void h.scheduler.persistNow().then((o) => {
+      outcome = o
+    })
+    await vi.advanceTimersByTimeAsync(BUDGET_MS)
+
+    // Not a rejection: the caller `await`s this without a try/catch of its own for
+    // the persist step, and a throw here would skip the QUOTE_FAILED dispatch.
+    expect(outcome).toEqual({ status: "failed" })
+  })
+
+  /**
+   * A PROPERTY, not `X === X`. The exported constant is compared against facts
+   * declared elsewhere in the codebase and restated here as literals, so this test
+   * fails if the number is retuned into a range that breaks the relationship —
+   * which asserting it against its own import never would.
+   */
+  it("stays above the read budget already inside the write it wraps", () => {
+    // `persistCheckoutDraft` runs `retrieveCartFresh` SEQUENTIALLY in front of the
+    // PATCH, and that read carries its own 5 s `AbortSignal.timeout`
+    // (`CART_READ_TIMEOUT_MS`, `lib/data/cart.ts`). A scheduler bound at or below
+    // that would pre-empt the inner timeout — the half with the diagnosable
+    // failure path — and turn every slow read into an undiagnosable one.
+    expect(CHECKOUT_WRITE_TIMEOUT_MS).toBeGreaterThan(5_000)
+
+    // …and it stays a stall breaker rather than a UX budget. A customer waiting
+    // this long has already been told the save is in progress by the status line.
+    expect(CHECKOUT_WRITE_TIMEOUT_MS).toBeLessThanOrEqual(30_000)
+
+    // The block above drives the timers off an independently stated literal; if
+    // the constant moves outside it, these tests stop exercising the deadline.
+    expect(BUDGET_MS).toBeGreaterThanOrEqual(CHECKOUT_WRITE_TIMEOUT_MS)
+  })
+
+  it("does not fire for a write that answers within the budget", async () => {
+    const h = hungHarness()
+
+    let settled: unknown = "pending"
+    void h.scheduler.persistNow().then((o) => {
+      settled = o
+    })
+
+    await vi.advanceTimersByTimeAsync(BUDGET_MS - 1)
+    await h.settleNext(cartWith({ address_1: "Otra calle 9" }))
+
+    expect(settled).toMatchObject({ status: "written" })
+    expect(h.actions.map((a) => a.type)).toEqual([
+      "CART_WRITE_STARTED",
+      "CART_UPDATED",
+    ])
   })
 })
 
