@@ -10,6 +10,8 @@ import {
   selectQuoteRelevantAddress,
   selectQuoteStatus,
   selectReadinessInput,
+  selectShippingChoices,
+  selectShippingIsProvisional,
   selectShippingOptionsKey,
   selectShouldLookUpPostalCode,
   selectUnsavedDraftPatch,
@@ -77,10 +79,46 @@ const baseState = (
   })
 
 /** Applies a list of actions left-to-right. Keeps the arrange step readable. */
+type CheckoutAction = Parameters<typeof checkoutReducer>[1]
+
+/**
+ * Accepts a thunk as well as a plain action, so a helper can build an action
+ * against the state it is about to be reduced into. Needed because
+ * `SELECT_SHIPPING_OPTION` now REQUIRES the signature the customer clicked
+ * under, and in a multi-action `run(...)` the intermediate state is not
+ * otherwise in scope.
+ */
 const run = (
   state: CheckoutState,
-  ...actions: Parameters<typeof checkoutReducer>[1][]
-): CheckoutState => actions.reduce(checkoutReducer, state)
+  ...actions: (CheckoutAction | ((state: CheckoutState) => CheckoutAction))[]
+): CheckoutState =>
+  actions.reduce(
+    (current, action) =>
+      checkoutReducer(
+        current,
+        typeof action === "function" ? action(current) : action
+      ),
+    state
+  )
+
+/**
+ * The ordinary selection: the customer picks under the destination currently on
+ * screen, having not touched the address during the round trip.
+ *
+ * The signature is a REQUIRED field on the action, not something the reducer
+ * reads off its own state, because the caller is the only party that knows
+ * which destination the price on the clicked row belonged to. Expressing that
+ * here keeps the tests honest about who decides. The race that motivated it —
+ * a postal-code edit landing while `setShippingMethod` is in flight — is
+ * covered separately, by passing a signature that deliberately disagrees.
+ */
+const selectShipping =
+  (optionId = "so_std") =>
+  (state: CheckoutState): CheckoutAction => ({
+    type: "SELECT_SHIPPING_OPTION",
+    optionId,
+    signature: state.quoteSignature,
+  })
 
 // ---------------------------------------------------------------------------
 // 2a.1 — the transition that is the whole point of the reducer
@@ -104,7 +142,7 @@ describe("FIELD_BLUR on a quote-relevant field", () => {
   it("clears the selected shipping option in the SAME transition", () => {
     const selected = run(
       baseState({ shipping_methods: [{ shipping_option_id: "so_std" }] }),
-      { type: "SELECT_SHIPPING_OPTION", optionId: "so_std" }
+      selectShipping("so_std")
     )
     expect(selected.selectedShippingOptionId).toBe("so_std")
 
@@ -125,7 +163,7 @@ describe("FIELD_BLUR on a quote-relevant field", () => {
     // current one. Clearing it to null would silently unblock the CTA.
     const selected = run(
       baseState({ shipping_methods: [{ shipping_option_id: "so_std" }] }),
-      { type: "SELECT_SHIPPING_OPTION", optionId: "so_std" }
+      selectShipping("so_std")
     )
     const signatureAtSelection = selected.selectionSignature
     expect(signatureAtSelection).not.toBeNull()
@@ -176,7 +214,7 @@ describe("FIELD_BLUR on a non-quote-relevant field", () => {
   it("does not clear the selected shipping option", () => {
     const selected = run(
       baseState({ shipping_methods: [{ shipping_option_id: "so_std" }] }),
-      { type: "SELECT_SHIPPING_OPTION", optionId: "so_std" }
+      selectShipping("so_std")
     )
 
     const after = checkoutReducer(selected, {
@@ -427,7 +465,7 @@ describe("CART_UPDATED", () => {
     // "read the selection back off the cart" would tick it again.
     const selected = run(
       baseState({ shipping_methods: [{ shipping_option_id: "so_std" }] }),
-      { type: "SELECT_SHIPPING_OPTION", optionId: "so_std" },
+      selectShipping("so_std"),
       { type: "FIELD_BLUR", field: "postal_code", value: "44160" }
     )
     expect(selected.selectedShippingOptionId).toBeNull()
@@ -445,13 +483,63 @@ describe("CART_UPDATED", () => {
 describe("SELECT_SHIPPING_OPTION", () => {
   it("records the signature in force at the moment of selection", () => {
     const state = baseState()
-    const after = checkoutReducer(state, {
-      type: "SELECT_SHIPPING_OPTION",
-      optionId: "so_std",
-    })
+    const after = checkoutReducer(state, selectShipping("so_std")(state))
 
     expect(after.selectedShippingOptionId).toBe("so_std")
     expect(after.selectionSignature).toBe(state.quoteSignature)
+  })
+
+  /**
+   * The race, and the reason `signature` is a required field on the action
+   * rather than something the reducer reads off its own state.
+   *
+   * `setShippingMethod` is awaited before the dispatch, and a customer can edit
+   * the postal code while that request is in the air. When the reducer stamped
+   * `state.quoteSignature` at reduce time, the selection was recorded as
+   * belonging to the destination that arrived DURING the round trip: the radio
+   * rendered checked for an option only ever priced for the old postal code,
+   * `shipping_method_stale` never fired, and the summary presented that total as
+   * final. Settled decision 1 exists to prevent exactly that, and an awaited
+   * continuation walked straight through it.
+   *
+   * Carrying the click-time signature makes the comparison downstream true by
+   * construction: if the destination moved, the captured signature no longer
+   * matches and the selection is stale the moment it lands.
+   */
+  it("lands STALE when the destination moved while the request was in flight", () => {
+    // The cart carries the method row: per finding F1 there is no store API to
+    // remove one, so `hasShippingMethod` stays true and the ONLY thing that can
+    // raise `shipping_method_stale` is a selection signature that disagrees with
+    // the current one. Without the row on the cart this test would pass for the
+    // wrong reason.
+    const onScreen = baseState({
+      shipping_methods: [{ shipping_option_id: "so_std" }],
+      billing_address: { id: "baddr_01", ...CDMX },
+    })
+    const signatureTheCustomerSaw = onScreen.quoteSignature
+    expect(signatureTheCustomerSaw).not.toBeNull()
+
+    // The customer edits the postal code while `setShippingMethod` is in flight.
+    const moved = checkoutReducer(onScreen, {
+      type: "FIELD_BLUR",
+      field: "postal_code",
+      value: "44160",
+    })
+    expect(moved.quoteSignature).not.toBe(signatureTheCustomerSaw)
+
+    // The response lands, carrying the signature captured at click time.
+    const landed = checkoutReducer(moved, {
+      type: "SELECT_SHIPPING_OPTION",
+      optionId: "so_std",
+      signature: signatureTheCustomerSaw,
+    })
+
+    expect(landed.selectionSignature).toBe(signatureTheCustomerSaw)
+    expect(landed.selectionSignature).not.toBe(landed.quoteSignature)
+    expect(selectShippingIsProvisional(landed)).toBe(true)
+    expect(
+      getMissingOrderRequirements(selectReadinessInput(landed)).map((r) => r.code)
+    ).toContain("shipping_method_stale")
   })
 })
 
@@ -1255,11 +1343,24 @@ describe("selectQuoteIsBlockedByFailure", () => {
 
 describe("a selection made before any signature existed", () => {
   /**
-   * `isShippingSelectionStale` is documented as asymmetric: a `null` SELECTION
-   * signature is never stale, because a method chosen before the client had
-   * derived a signature is not evidence that anything moved. The reducer has to
-   * honour that, or a returning customer whose address was not quotable loses
-   * the shipping method they already picked the moment they finish typing it.
+   * `isShippingSelectionStale` is asymmetric on purpose: a `null` SELECTION
+   * signature is never stale, because "nothing to compare" is not evidence that
+   * anything moved.
+   *
+   * That asymmetry is right for the rule and wrong as a seed. A returning cart
+   * whose persisted address is not quotable — no province, no city, a postal code
+   * that is not five digits — still carries a shipping method, chosen under a
+   * destination we cannot reconstruct. Seeding `null` there made
+   * `isShippingSelectionStale` answer `false` forever: no later postal-code
+   * change could clear the radio, `shipping_method_stale` could never fire, and
+   * finding F2's silent re-pricing arrived in the summary as a final total.
+   *
+   * An earlier version of this suite asserted the opposite — that the selection
+   * SURVIVES the address becoming quotable — on the grounds that losing it is
+   * unfriendly. It is unfriendly, and it is still correct: the moment the address
+   * becomes quotable the backend re-prices that method to a destination it was
+   * never priced for. Settled decision 1 already weighed this exact trade and
+   * chose the extra click over a total that changes underneath the customer.
    */
   const returningWithUnquotableAddress = () =>
     initFromServer({
@@ -1271,19 +1372,53 @@ describe("a selection made before any signature existed", () => {
       shippingOptions: [option("so_std")],
     })
 
-  it("survives the address becoming quotable", () => {
+  it("is seeded as unvouchable rather than as fresh", () => {
     const state = returningWithUnquotableAddress()
-    expect(state.selectedShippingOptionId).toBe("so_std")
-    expect(state.selectionSignature).toBeNull()
 
-    const completed = checkoutReducer(state, {
+    expect(state.selectedShippingOptionId).toBe("so_std")
+    expect(state.quoteSignature).toBeNull()
+
+    // Asserted as a property, not against an imported constant: what matters is
+    // that the seed is SOMETHING (so the staleness rule engages at all) and that
+    // it cannot equal a real signature. Importing the sentinel and comparing to
+    // it would pass for every possible value of the sentinel, including `null` —
+    // the bug.
+    expect(state.selectionSignature).not.toBeNull()
+
+    const quotable = checkoutReducer(state, {
+      type: "FIELD_BLUR",
+      field: "postal_code",
+      value: "06700",
+    })
+    expect(state.selectionSignature).not.toBe(quotable.quoteSignature)
+  })
+
+  it("is cleared once the address becomes quotable, so the customer re-picks", () => {
+    const completed = checkoutReducer(returningWithUnquotableAddress(), {
       type: "FIELD_BLUR",
       field: "postal_code",
       value: "06700",
     })
 
     expect(completed.quoteSignature).not.toBeNull()
-    expect(completed.selectedShippingOptionId).toBe("so_std")
+    expect(completed.selectedShippingOptionId).toBeNull()
+  })
+
+  it("reports the stale selection to the CTA while the cart still carries the method", () => {
+    // Per finding F1 the method row cannot be removed from the cart, so the CTA
+    // is the only thing that can stop an order going out against a price the
+    // customer never saw.
+    const completed = checkoutReducer(returningWithUnquotableAddress(), {
+      type: "FIELD_BLUR",
+      field: "postal_code",
+      value: "06700",
+    })
+
+    expect(
+      getMissingOrderRequirements(selectReadinessInput(completed)).map(
+        (r) => r.code
+      )
+    ).toContain("shipping_method_stale")
   })
 
   it("is not seeded with a signature when the cart has no method at all", () => {
@@ -1300,7 +1435,7 @@ describe("selectReadinessInput — the seam PR1b left open, now closed", () => {
         shipping_methods: [{ shipping_option_id: "so_std" }],
         billing_address: { id: "baddr_01", ...CDMX },
       }),
-      { type: "SELECT_SHIPPING_OPTION", optionId: "so_std" },
+      selectShipping("so_std"),
       {
         type: "SELECT_PAYMENT_PROVIDER",
         providerId: "pp_mercadopago_mercadopago",
@@ -1332,7 +1467,7 @@ describe("selectReadinessInput — the seam PR1b left open, now closed", () => {
         shipping_methods: [{ shipping_option_id: "so_std" }],
         billing_address: { id: "baddr_01", ...CDMX },
       }),
-      { type: "SELECT_SHIPPING_OPTION", optionId: "so_std" },
+      selectShipping("so_std"),
       {
         type: "SELECT_PAYMENT_PROVIDER",
         providerId: "pp_mercadopago_mercadopago",
@@ -1370,7 +1505,7 @@ describe("selectReadinessInput — the seam PR1b left open, now closed", () => {
         shipping_methods: [{ shipping_option_id: "so_std" }],
         billing_address: { id: "baddr_01", ...CDMX },
       }),
-      { type: "SELECT_SHIPPING_OPTION", optionId: "so_std" },
+      selectShipping("so_std"),
       {
         type: "SELECT_PAYMENT_PROVIDER",
         providerId: "pp_mercadopago_mercadopago",
@@ -1392,7 +1527,7 @@ describe("selectReadinessInput — the seam PR1b left open, now closed", () => {
         shipping_methods: [{ shipping_option_id: "so_std" }],
         billing_address: { id: "baddr_01", ...CDMX },
       }),
-      { type: "SELECT_SHIPPING_OPTION", optionId: "so_std" }
+      selectShipping("so_std")
     )
 
     expect(
@@ -1408,7 +1543,7 @@ describe("selectReadinessInput — the seam PR1b left open, now closed", () => {
         shipping_methods: [{ shipping_option_id: "so_std" }],
         billing_address: { id: "baddr_01", ...CDMX },
       }),
-      { type: "SELECT_SHIPPING_OPTION", optionId: "so_std" },
+      selectShipping("so_std"),
       { type: "SELECT_PAYMENT_PROVIDER", providerId: "pp_openpay_openpay" }
     )
 
@@ -2107,8 +2242,10 @@ describe("mutation survivors — behaviour that was never asserted (B2)", () => 
  * C4 — the customer can get out of a failed quote.
  *
  * `QUOTE_RETRY` had no dispatcher anywhere outside `state/`, so this escape path
- * existed only on paper. `quote-retry-notice` is now its consumer; these assert
- * the reducer half actually unblocks the effect.
+ * existed only on paper. PR2a added `quote-retry-notice` as a stopgap consumer;
+ * PR2b absorbed it into `shipping-section`, which now renders the `failed` state
+ * and its retry as one of the six. These assert the reducer half actually
+ * unblocks the effect.
  */
 describe("recovering from a failed quote (C4)", () => {
   const failedNow = () => {
@@ -2161,5 +2298,507 @@ describe("recovering from a failed quote (C4)", () => {
     })
 
     expect(selectQuoteStatus(running)).toBe("quoting")
+  })
+})
+
+/**
+ * PR2b — what the Envío section is allowed to put on screen.
+ *
+ * The old `shipping/index.tsx` decided all of this inline in JSX, which is why
+ * two of the defects below shipped and stayed: a free-shipping option rendered as
+ * `-` because the price check was truthiness, and a superseded price stayed on
+ * screen looking current because the list was rendered whenever it was non-empty.
+ * Neither could be contradicted by a suite that cannot render a component.
+ */
+describe("selectShippingChoices", () => {
+  const priced = (
+    state: CheckoutState,
+    prices: Record<string, number>,
+    options = state.shippingOptions
+  ) =>
+    checkoutReducer(state, {
+      type: "QUOTE_READY",
+      signature: state.quoteSignature!,
+      options,
+      prices,
+    })
+
+  const flatOption = (id: string, amount: number | null) =>
+    ({
+      id,
+      name: id,
+      price_type: "flat",
+      amount,
+    } as unknown as HttpTypes.StoreCartShippingOption)
+
+  it("returns nothing while no quote has landed for this destination", () => {
+    // Server-seeded options exist from the RSC render, but no price does. A row
+    // rendered here would be a carrier name with an empty price beside it.
+    expect(selectShippingChoices(baseState())).toEqual([])
+  })
+
+  it("returns the priced options once the quote lands", () => {
+    const state = priced(baseState({}, [option("so_std"), option("so_exp")]), {
+      so_std: 12900,
+      so_exp: 24900,
+    })
+
+    expect(selectShippingChoices(state)).toEqual([
+      { id: "so_std", name: "so_std", amount: 12900, selectable: true },
+      { id: "so_exp", name: "so_exp", amount: 24900, selectable: true },
+    ])
+  })
+
+  it("preserves the order the backend returned, because that is the render order", () => {
+    const state = priced(baseState({}, [option("so_b"), option("so_a")]), {
+      so_a: 100,
+      so_b: 200,
+    })
+
+    expect(selectShippingChoices(state).map((c) => c.id)).toEqual([
+      "so_b",
+      "so_a",
+    ])
+  })
+
+  /**
+   * The stale-price rule, enforced where it can be asserted rather than by a
+   * conditional in the section's JSX. The customer changed destination; the
+   * prices in hand were quoted for the previous one.
+   */
+  it("drops every choice the moment the destination moves", () => {
+    const quoted = priced(baseState(), { so_std: 12900 })
+    expect(selectShippingChoices(quoted)).toHaveLength(1)
+
+    const moved = checkoutReducer(quoted, {
+      type: "FIELD_BLUR",
+      field: "postal_code",
+      value: "44160",
+    })
+
+    expect(selectShippingChoices(moved)).toEqual([])
+  })
+
+  it("drops every choice while the address is being re-quoted", () => {
+    const quoted = priced(baseState(), { so_std: 12900 })
+    const inFlight = checkoutReducer(quoted, {
+      type: "QUOTE_STARTED",
+      signature: quoted.quoteSignature!,
+    })
+
+    expect(selectShippingChoices(inFlight)).toEqual([])
+  })
+
+  it("drops every choice when the quote failed", () => {
+    const quoted = priced(baseState(), { so_std: 12900 })
+    const failed = checkoutReducer(quoted, {
+      type: "QUOTE_FAILED",
+      signature: quoted.quoteSignature!,
+    })
+
+    expect(selectShippingChoices(failed)).toEqual([])
+  })
+
+  /**
+   * Free shipping is a price, and `0` is falsy. The component this replaces used
+   * `calculatedPricesMap[option.id] ? … : "-"`, so a carrier quoting zero was
+   * rendered as having no price and could not be chosen.
+   */
+  it("treats a zero amount as a real, selectable price", () => {
+    const state = priced(baseState(), { so_std: 0 })
+
+    expect(selectShippingChoices(state)).toEqual([
+      { id: "so_std", name: "so_std", amount: 0, selectable: true },
+    ])
+  })
+
+  /**
+   * A partial result. The row stays visible so the customer can see the carrier
+   * exists — a row that silently disappears reads as a store with fewer options
+   * — but it carries no amount and cannot be picked. No `-`, no placeholder.
+   */
+  it("keeps an unpriced calculated option visible and unselectable, with no amount", () => {
+    const state = priced(baseState({}, [option("so_std"), option("so_exp")]), {
+      so_std: 12900,
+    })
+
+    expect(selectShippingChoices(state)).toEqual([
+      { id: "so_std", name: "so_std", amount: 12900, selectable: true },
+      { id: "so_exp", name: "so_exp", amount: null, selectable: false },
+    ])
+  })
+
+  it("reads a flat option's amount off the option, not off the price map", () => {
+    const state = priced(
+      baseState({}, [flatOption("so_flat", 9900)]),
+      {},
+      [flatOption("so_flat", 9900)]
+    )
+
+    expect(selectShippingChoices(state)).toEqual([
+      { id: "so_flat", name: "so_flat", amount: 9900, selectable: true },
+    ])
+  })
+
+  it("does not let a stray price map entry give a flat option an amount", () => {
+    const state = priced(
+      baseState({}, [flatOption("so_flat", null)]),
+      { so_flat: 50000 },
+      [flatOption("so_flat", null)]
+    )
+
+    expect(selectShippingChoices(state)).toEqual([
+      { id: "so_flat", name: "so_flat", amount: null, selectable: false },
+    ])
+  })
+
+  it("refuses an option the warehouse cannot fulfil, even when it is priced", () => {
+    const unavailable = {
+      id: "so_std",
+      name: "so_std",
+      price_type: "calculated",
+      insufficient_inventory: true,
+    } as unknown as HttpTypes.StoreCartShippingOption
+
+    const state = priced(baseState({}, [unavailable]), { so_std: 12900 }, [
+      unavailable,
+    ])
+
+    expect(selectShippingChoices(state)).toEqual([
+      { id: "so_std", name: "so_std", amount: 12900, selectable: false },
+    ])
+  })
+
+  /**
+   * `typeof x === "number"` is not enough: `NaN` and `Infinity` are numbers, and
+   * `convertToLocale` would render one of them into the price column as literal
+   * text. Amounts arrive from two places this module does not control — a
+   * `Promise.allSettled` fan-out and the backend's own `amount` field — so the
+   * guard has to be about the VALUE, not about its type.
+   */
+  it("treats a non-finite amount as no price at all", () => {
+    const state = priced(baseState(), { so_std: Number.NaN })
+
+    expect(selectShippingChoices(state)).toEqual([
+      { id: "so_std", name: "so_std", amount: null, selectable: false },
+    ])
+  })
+
+  it("treats an infinite flat amount as no price at all", () => {
+    const wild = flatOption("so_flat", Number.POSITIVE_INFINITY)
+    const state = priced(baseState({}, [wild]), {}, [wild])
+
+    expect(selectShippingChoices(state)).toEqual([
+      { id: "so_flat", name: "so_flat", amount: null, selectable: false },
+    ])
+  })
+
+  it("falls back to an empty label rather than rendering undefined", () => {
+    const nameless = {
+      id: "so_std",
+      price_type: "calculated",
+    } as unknown as HttpTypes.StoreCartShippingOption
+
+    const state = priced(baseState({}, [nameless]), { so_std: 100 }, [nameless])
+
+    expect(selectShippingChoices(state)[0].name).toBe("")
+  })
+})
+
+/**
+ * PR2b / D4 step 3 — whether the summary is allowed to present its shipping line
+ * and grand total as final.
+ *
+ * This exists because of finding F2, not because of a UI preference. Per F1 the
+ * storefront cannot remove a shipping method, and per F2 `updateCartWorkflow`
+ * unconditionally re-runs `refreshCartShippingMethodsWorkflow`, which RE-PRICES
+ * the surviving method for the new destination. So the moment the customer
+ * changes their postal code, `cart.total` silently becomes a number they never
+ * agreed to — and the summary reads it straight off the cart.
+ *
+ * Marking it provisional is the whole mitigation. A boolean, and it decides how
+ * money is presented, so it is asserted rather than written into JSX.
+ */
+describe("selectShippingIsProvisional", () => {
+  const ordered = (overrides: Record<string, unknown> = {}) =>
+    baseState({
+      shipping_methods: [{ shipping_option_id: "so_std" }],
+      billing_address: { id: "baddr_01", ...CDMX },
+      ...overrides,
+    })
+
+  it("is false on a cart whose selection still belongs to the address on screen", () => {
+    const selected = run(ordered(), selectShipping("so_std"))
+
+    expect(selectShippingIsProvisional(selected)).toBe(false)
+  })
+
+  it("is true once the destination moves under a chosen method", () => {
+    const moved = run(
+      ordered(),
+      selectShipping("so_std"),
+      { type: "FIELD_BLUR", field: "postal_code", value: "44160" }
+    )
+
+    expect(selectShippingIsProvisional(moved)).toBe(true)
+  })
+
+  /**
+   * The street does not move a price (the signature is postal code, province,
+   * city and country only), so de-emphasising the total here would train the
+   * customer to ignore the one signal that means something.
+   */
+  it("is false after a street edit", () => {
+    const edited = run(
+      ordered(),
+      selectShipping("so_std"),
+      { type: "FIELD_BLUR", field: "address_1", value: "Otra calle 55" }
+    )
+
+    expect(selectShippingIsProvisional(edited)).toBe(false)
+  })
+
+  /**
+   * Nothing was ever chosen, so there is no price to re-price and nothing to
+   * warn about. The CTA already says `Elige un método de envío.` \u2014 saying
+   * "the shipping cost will be recalculated" on top of that describes a
+   * recalculation of a number that does not exist.
+   */
+  it("is false when no shipping method has been chosen at all", () => {
+    const untouched = run(baseState({ billing_address: null }), {
+      type: "FIELD_BLUR",
+      field: "postal_code",
+      value: "44160",
+    })
+
+    expect(selectShippingIsProvisional(untouched)).toBe(false)
+  })
+
+  /**
+   * The provisional note has to survive the write it describes. `setShippingMethod`
+   * and the autosave both return a cart, and per F1 that cart still carries the
+   * shipping-method row \u2014 re-priced. If applying it cleared the warning, the
+   * re-priced total would be presented as final at exactly the moment it changed.
+   */
+  it("survives a cart update carrying the re-priced method row", () => {
+    const moved = run(
+      ordered(),
+      selectShipping("so_std"),
+      { type: "FIELD_BLUR", field: "postal_code", value: "44160" }
+    )
+
+    const repriced = checkoutReducer(moved, {
+      type: "CART_UPDATED",
+      cart: cartWith({
+        shipping_methods: [{ shipping_option_id: "so_std", amount: 39900 }],
+        shipping_address: { id: "caaddr_01", ...CDMX, postal_code: "44160" },
+        total: 99900,
+      }),
+      sequence: 1,
+    })
+
+    expect(repriced.cart?.shipping_methods).toHaveLength(1)
+    expect(selectShippingIsProvisional(repriced)).toBe(true)
+  })
+
+  /**
+   * Re-picking is what clears it, and it is the only thing that does. This is the
+   * customer agreeing to the new number.
+   */
+  it("clears once the customer re-picks under the new destination", () => {
+    const repicked = run(
+      ordered(),
+      selectShipping("so_std"),
+      { type: "FIELD_BLUR", field: "postal_code", value: "44160" },
+      selectShipping("so_std")
+    )
+
+    expect(selectShippingIsProvisional(repicked)).toBe(false)
+  })
+
+  /**
+   * The two cases that tell "provisional is `shipping_method_stale`" apart from
+   * "provisional is `isShippingSelectionStale`". Both implementations agree on
+   * the ordinary A → B path, which is why a second derivation of the rule looks
+   * harmless right up until it disagrees with the button beside it.
+   */
+  it("is false when the selection is stale but the cart carries no method to re-price", () => {
+    // Reachable when the `setShippingMethod` response was superseded by a newer
+    // write: the client believes it chose, the cart has no row. There is no
+    // re-priced number to warn about, and the CTA already says `Elige un método
+    // de envío.` — adding "the shipping cost will be recalculated" on top
+    // describes the recalculation of a price that does not exist.
+    const orphan = run(
+      baseState({ billing_address: { id: "baddr_01", ...CDMX } }),
+      selectShipping("so_std"),
+      { type: "FIELD_BLUR", field: "postal_code", value: "44160" }
+    )
+
+    expect(orphan.cart?.shipping_methods).toEqual([])
+    expect(selectShippingIsProvisional(orphan)).toBe(false)
+  })
+
+  it("is false when the cart emptied under a stale selection", () => {
+    // `cart_empty` short-circuits the whole catalogue. A customer whose last line
+    // item was removed is told one thing to fix, not two.
+    const emptied = run(
+      ordered({ items: [] }),
+      selectShipping("so_std"),
+      { type: "FIELD_BLUR", field: "postal_code", value: "44160" }
+    )
+
+    expect(selectShippingIsProvisional(emptied)).toBe(false)
+  })
+
+  it("is false on an empty cart rather than warning about a total of zero", () => {
+    const empty = initFromServer({
+      cart: null,
+      customer: null,
+      shippingOptions: null,
+    })
+
+    expect(selectShippingIsProvisional(empty)).toBe(false)
+  })
+})
+
+/**
+ * 2b.6 — the seam PR1b opened deliberately, closed end to end.
+ *
+ * NOT a TDD cycle: no production code was written for these. The transitions
+ * already existed; what did not exist until PR2b is the PATH that reaches them —
+ * `setShippingMethod` returning a cart and the section dispatching `CART_UPDATED`
+ * with it. These pin the whole sequence a customer actually performs, because the
+ * dangerous half of this mechanism is invisible from any single transition:
+ *
+ * per finding F1 the POST is replace-all and there is no delete, so the cart that
+ * comes back from EVERY subsequent write still carries a shipping-method row. Any
+ * consumer that reads the checked radio off `cart.shipping_methods` instead of off
+ * `selectedShippingOptionId` re-ticks the option the reducer just invalidated, and
+ * the customer is silently re-committed to a price quoted for their old postal
+ * code. The old `shipping/index.tsx` seeded its selection exactly that way.
+ */
+describe("the stale-selection seam, from selection to re-pick (2b.6)", () => {
+  const quoted = (state: CheckoutState, prices: Record<string, number>) =>
+    checkoutReducer(state, {
+      type: "QUOTE_READY",
+      signature: state.quoteSignature!,
+      options: state.shippingOptions,
+      prices,
+    })
+
+  it("leaves no option checked after a postal-code change, while the cart still carries the row", () => {
+    const chosen = run(
+      quoted(baseState(), { so_std: 12900 }),
+      selectShipping("so_std"),
+      {
+        // What `setShippingMethod` returns: the method is now on the cart.
+        type: "CART_UPDATED",
+        cart: cartWith({
+          shipping_methods: [{ shipping_option_id: "so_std", amount: 12900 }],
+        }),
+        sequence: 1,
+      }
+    )
+
+    expect(chosen.selectedShippingOptionId).toBe("so_std")
+
+    const moved = checkoutReducer(chosen, {
+      type: "FIELD_BLUR",
+      field: "postal_code",
+      value: "44160",
+    })
+
+    // The row survives — F1 says it must — and the selection does not.
+    expect(moved.cart?.shipping_methods).toHaveLength(1)
+    expect(moved.selectedShippingOptionId).toBeNull()
+    expect(selectShippingChoices(moved)).toEqual([])
+    expect(selectShippingIsProvisional(moved)).toBe(true)
+  })
+
+  it("does not re-tick the radio when the next autosave returns the re-priced cart", () => {
+    const moved = run(
+      quoted(baseState(), { so_std: 12900 }),
+      selectShipping("so_std"),
+      {
+        type: "CART_UPDATED",
+        cart: cartWith({
+          shipping_methods: [{ shipping_option_id: "so_std", amount: 12900 }],
+        }),
+        sequence: 1,
+      },
+      { type: "FIELD_BLUR", field: "postal_code", value: "44160" },
+      {
+        // The autosave lands. Per F2 the backend has re-priced the surviving
+        // method to the new destination without being asked.
+        type: "CART_UPDATED",
+        cart: cartWith({
+          shipping_methods: [{ shipping_option_id: "so_std", amount: 38900 }],
+          shipping_address: { id: "caaddr_01", ...CDMX, postal_code: "44160" },
+        }),
+        sequence: 2,
+      }
+    )
+
+    expect(moved.selectedShippingOptionId).toBeNull()
+    expect(selectShippingIsProvisional(moved)).toBe(true)
+  })
+
+  it("survives a street edit, because a street cannot move a price", () => {
+    const chosen = run(
+      quoted(baseState(), { so_std: 12900 }),
+      selectShipping("so_std"),
+      {
+        type: "CART_UPDATED",
+        cart: cartWith({
+          shipping_methods: [{ shipping_option_id: "so_std", amount: 12900 }],
+        }),
+        sequence: 1,
+      },
+      { type: "FIELD_BLUR", field: "address_1", value: "Otra calle 55" }
+    )
+
+    expect(chosen.selectedShippingOptionId).toBe("so_std")
+    expect(selectShippingIsProvisional(chosen)).toBe(false)
+
+    /**
+     * The customer-visible half, and the half that was missing: the PRICES have
+     * to survive too, not just the selection and the flag.
+     *
+     * Dropping `calculatedPrices` on a non-quote-relevant edit leaves
+     * `selectQuoteStatus` reading `quoted` while every row renders "No
+     * disponible" and turns unselectable — so a customer who corrects a typo in
+     * their street loses the prices they were just shown, and cannot even
+     * re-pick the option they had. A reviewer's mutant did exactly that and
+     * survived the entire suite, because the two assertions above look like they
+     * cover this and do not.
+     */
+    expect(chosen.calculatedPrices).toEqual({ so_std: 12900 })
+
+    const choices = selectShippingChoices(chosen)
+    expect(choices).toHaveLength(1)
+    expect(choices[0]).toMatchObject({
+      id: "so_std",
+      amount: 12900,
+      selectable: true,
+    })
+  })
+
+  it("re-picking under the new destination restores a checked radio and a final total", () => {
+    const moved = run(
+      quoted(baseState(), { so_std: 12900 }),
+      selectShipping("so_std"),
+      { type: "FIELD_BLUR", field: "postal_code", value: "44160" }
+    )
+
+    const requoted = quoted(moved, { so_std: 38900 })
+    expect(selectShippingChoices(requoted)).toEqual([
+      { id: "so_std", name: "so_std", amount: 38900, selectable: true },
+    ])
+    expect(requoted.selectedShippingOptionId).toBeNull()
+
+    const repicked = checkoutReducer(requoted, selectShipping("so_std")(requoted))
+
+    expect(repicked.selectedShippingOptionId).toBe("so_std")
+    expect(selectShippingIsProvisional(repicked)).toBe(false)
   })
 })

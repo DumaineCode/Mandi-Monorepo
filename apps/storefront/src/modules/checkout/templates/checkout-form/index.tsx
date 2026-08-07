@@ -4,9 +4,8 @@ import { HttpTypes } from "@medusajs/types"
 import CheckoutUnavailable from "@modules/checkout/components/checkout-unavailable"
 import ContactAddressSection from "@modules/checkout/components/contact-address-section"
 import Payment from "@modules/checkout/components/payment"
-import QuoteRetryNotice from "@modules/checkout/components/quote-retry-notice"
 import Review from "@modules/checkout/components/review"
-import Shipping from "@modules/checkout/components/shipping"
+import ShippingSection from "@modules/checkout/components/shipping-section"
 import { useCheckoutCart } from "@modules/checkout/state/checkout-context"
 import { Text } from "@modules/common/components/ui"
 
@@ -42,34 +41,29 @@ const SectionUnavailable = ({
  *
  * ## Chain state, stated plainly
  *
- * *Datos* is the new single-page section. *Envío*, *Pago* and *Revisión* are
- * still the four-step components, and they are still driven by `?step=` — PR2b
- * and PR2c replace them with `ShippingSection` and `PaymentSection` reading
- * this same context. Until then they open through their own "Editar" buttons
- * rather than through a step the address form pushes, because the address form
- * no longer pushes one. That is an intermediate state on a chained branch; it
- * never reaches `main`, which is the reason the chain targets a tracker branch.
+ * *Datos* and *Envío* are now the single-page sections. *Pago* and *Revisión*
+ * are still the four-step components and are still driven by `?step=` — PR2c
+ * replaces them with `PaymentSection` and one final CTA reading this same
+ * context. Until then they open through their own "Editar" buttons rather than
+ * through a step the address form pushes, because nothing pushes one any more.
+ * That is an intermediate state on a chained branch; it never reaches `main`,
+ * which is the reason the chain targets a tracker branch.
  */
 export default function CheckoutForm({
   customer,
-  shippingOptionsFailed,
   availablePaymentMethods,
 }: {
   customer: HttpTypes.StoreCustomer | null
-  /** The options request failed. `[]` is a real answer and is not a failure. */
-  shippingOptionsFailed: boolean
   availablePaymentMethods: HttpTypes.StorePaymentProvider[] | null
 }) {
   /**
    * The CART slice, not the whole state (W6 / C3).
    *
    * Subscribing to the full state re-rendered this template on every keystroke,
-   * and through it `Shipping`, `Payment` and `Review`. `Shipping` re-rendering is
-   * not merely wasteful: its price effect keys on the options array IDENTITY, so
-   * the churn cost live Skydropx quotes. This context changes only when the cart
-   * or the option SET actually changes.
+   * and through it `Payment` and `Review`. This context changes only when the
+   * cart or the option SET actually changes.
    */
-  const { cart, shippingOptions } = useCheckoutCart()
+  const { cart } = useCheckoutCart()
 
   if (!cart) {
     return <CheckoutUnavailable reason="No pudimos cargar tu carrito." />
@@ -90,29 +84,27 @@ export default function CheckoutForm({
     >
       <ContactAddressSection customer={customer} />
 
-      {shippingOptionsFailed ? (
-        <SectionUnavailable
-          title="Envío"
-          reason="No pudimos obtener las opciones de envío. Recarga la página para intentarlo de nuevo."
-        />
-      ) : (
-        <>
-          {/**
-           * C4: the way out of a failed quote. Renders nothing unless the quote
-           * actually failed, and sits ABOVE the section whose prices are missing
-           * so the explanation precedes the gap it explains.
-           */}
-          <QuoteRetryNotice />
-          <Shipping cart={cart} availableShippingMethods={shippingOptions} />
-        </>
-      )}
+      {/**
+       * No `shippingOptionsFailed` branch any more, and its removal is a
+       * correction rather than a simplification.
+       *
+       * That branch replaced the whole section with "recarga la página" when the
+       * RSC-time `listCartShippingMethods` returned `null`. It made sense while
+       * `Shipping` had no way to ask again. `ShippingSection` does: the requote
+       * effect re-lists the options client-side as soon as the destination is
+       * quotable, so a failed server fetch resolves itself without a reload — and
+       * if the retry also fails, the section reports `failed` with a retry button
+       * that works. Telling a customer to reload a page that is already fixing
+       * itself is worse than saying nothing.
+       *
+       * The section reads its own options, prices and state out of the context,
+       * so it takes no props at all.
+       */}
+      <ShippingSection />
 
       {availablePaymentMethods ? (
         <>
-          <Payment
-            cart={cart}
-            availablePaymentMethods={availablePaymentMethods}
-          />
+          <Payment cart={cart} availablePaymentMethods={availablePaymentMethods} />
           <Review cart={cart} />
         </>
       ) : (

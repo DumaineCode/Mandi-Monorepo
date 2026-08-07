@@ -231,6 +231,102 @@ export function evaluateQuoteReadiness(
 }
 
 /**
+ * The shape `classifyQuoteResult` reads off an option. Structural rather than
+ * `HttpTypes.StoreCartShippingOption` so this module keeps depending on the two
+ * fields it actually looks at.
+ */
+export type QuotedOption = {
+  id: string
+  price_type?: string | null
+}
+
+/**
+ * What a completed quote round actually produced.
+ *
+ * `"priced"` — the result is presentable. `"unpriceable"` — the backend returned
+ * calculated options and not one of them came back with an amount.
+ */
+export type QuoteResultClass = "priced" | "unpriceable"
+
+/**
+ * Edge case 3: separates "we could not price this order" from "we do not ship
+ * there", which read identically on the wire and must never read identically to
+ * the customer.
+ *
+ * ## The two failures this tells apart, and why the difference is not cosmetic
+ *
+ * `buildParcel` throws `MissingDimensionsError` BEFORE any carrier call when any
+ * cart item has no weight or no L/W/H (`explore §4`, `parcel.ts:49-79`). That
+ * surfaces as `INVALID_DATA`, and `calculatePriceForShippingOption` swallows it
+ * and returns `null` (`lib/data/fulfillment.ts`). So the storefront sees a
+ * non-empty option list — the address IS serviceable, the backend said so by
+ * returning options for it — in which every calculated price is missing.
+ *
+ * That is a CATALOGUE data problem. The customer cannot fix it, and re-typing a
+ * postal code that was correct all along will never help. An empty option list
+ * is the opposite: the address is the answer, and it is `not_serviceable`
+ * (derived downstream from the option count — see `selectQuoteStatus`).
+ *
+ * Get this backwards and the storefront tells a customer their address is wrong
+ * when the product data is.
+ *
+ * ## Why it is here and not inline at its call site
+ *
+ * Its call site is the requote effect in `checkout-context.tsx`, and this repo's
+ * harness is node-only — no jsdom, no `@testing-library`, Playwright an explicit
+ * non-goal — so a rule left inside that `.tsx` is a rule nothing can contradict.
+ * It arrived there as a two-term boolean, which is exactly the size of expression
+ * that looks too small to extract right up until it is the thing deciding which
+ * of two contradictory sentences a customer reads.
+ *
+ * Flat-rate options are excluded from the judgement deliberately: they carry
+ * their amount on the option itself, are never routed through
+ * `calculatePriceForShippingOption`, and so an empty price map says nothing
+ * about them. Counting them would report a failure on a store that sells
+ * flat-rate shipping only.
+ *
+ * @see `modules/checkout/state/checkout-context.tsx` — dispatches `QUOTE_FAILED`
+ * on `"unpriceable"`.
+ * @see `modules/checkout/components/shipping-section/index.tsx` — renders the
+ * `failed` copy this decides on.
+ */
+export function classifyQuoteResult(input: {
+  options: readonly QuotedOption[]
+  /**
+   * `number | null | undefined` and not `number`, because a price that came back
+   * absent is the whole signal this function reads. An earlier revision typed it
+   * `number` and the call site satisfied that type with `amount ?? 0` — which
+   * laundered every missing price into free shipping one line before this
+   * function could ever see it, and made the `Number.isFinite` care below
+   * unreachable. The type now refuses that call site.
+   */
+  prices: Readonly<Record<string, number | null | undefined>>
+}): QuoteResultClass {
+  const calculated = input.options.filter(
+    (option) => option.price_type === "calculated"
+  )
+
+  if (calculated.length === 0) {
+    return "priced"
+  }
+
+  /**
+   * Matched per option rather than by counting the map. The map is built from a
+   * `Promise.allSettled` fan-out and a key left over from an earlier round would
+   * otherwise rescue a list none of whose options were priced.
+   *
+   * `Number.isFinite` and not truthiness: free shipping quotes `0`, and `0` is
+   * falsy. The component this was extracted from used a truthy check and
+   * therefore rendered a free option as having no price at all.
+   */
+  const anyPriced = calculated.some((option) =>
+    Number.isFinite(input.prices[option.id])
+  )
+
+  return anyPriced ? "priced" : "unpriceable"
+}
+
+/**
  * Settled decision 1: is a chosen shipping method bound to a destination the
  * customer has since moved away from?
  *
@@ -261,13 +357,21 @@ export function evaluateQuoteReadiness(
  * address stopped being quotable while a priced selection is still on screen,
  * so that price belongs to a destination that is no longer the destination.
  *
- * @see `modules/checkout/state/checkout-reducer.ts` — PR2a. The reducer clears
+ * ## The seam is closed as of PR2b
+ *
+ * This export shipped in PR1b with no callers at all, which was a recorded
+ * decision rather than an oversight. Both consumers now exist, and the sentence
+ * that used to say "it does not exist yet" is gone rather than left to rot — a
+ * docstring describing a state of the world that has moved on is how this change
+ * has already lost two review cycles.
+ *
+ * @see `modules/checkout/state/checkout-reducer.ts` — PR2a. Clears
  * `selectedShippingOptionId` in the same transition that recomputes
- * `quoteSignature`. It does not exist yet; this export is deliberately
- * unconsumed in PR1b (see the PR description, "Deliberately unconsumed in this
- * PR").
+ * `quoteSignature`, and `selectShippingIsProvisional` routes the summary's
+ * provisional state through the CTA catalogue rather than through a second call
+ * to this function.
  * @see `modules/checkout/components/shipping-section/index.tsx` — PR2b. Renders
- * the cleared radio group and the provisional-total state.
+ * the cleared radio group.
  */
 export function isShippingSelectionStale(
   selectionSignature: string | null,
