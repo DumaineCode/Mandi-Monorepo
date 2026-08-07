@@ -166,6 +166,22 @@ module.exports = {
           "0%": { transform: "translateY(-100%)" },
           "100%": { transform: "translateY(0)" },
         },
+        // Hero slider. The headline layer is a full-canvas transparent image, so
+        // translating it moves the words exactly as if they were real type.
+        "hero-media-in": {
+          "0%": { opacity: "0", transform: "scale(1.05)" },
+          "100%": { opacity: "1", transform: "scale(1)" },
+        },
+        "hero-text-in": {
+          "0%": {
+            opacity: "0",
+            transform: "translate3d(0, 28px, 0) scale(0.985)",
+          },
+          "100%": {
+            opacity: "1",
+            transform: "translate3d(0, 0, 0) scale(1)",
+          },
+        },
       },
       animation: {
         marquee: "scrollx 30s linear infinite",
@@ -182,6 +198,9 @@ module.exports = {
         enter: "enter 200ms ease-out",
         "slide-in": "slide-in 1.2s cubic-bezier(.41,.73,.51,1.02)",
         leave: "leave 150ms ease-in forwards",
+        "hero-media-in": "hero-media-in 1100ms cubic-bezier(.22,.61,.36,1) both",
+        "hero-text-in":
+          "hero-text-in 900ms cubic-bezier(.22,.61,.36,1) 260ms both",
       },
     },
   },

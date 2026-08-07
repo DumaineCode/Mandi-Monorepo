@@ -51,9 +51,15 @@ RUN pnpm --filter @dtc/backend run build
 #    an INDEPENDENT mirror (Alibaba CDN, own package copy) that is NOT blocking
 #    this IP — verified working via a direct alpine wget test on the exact
 #    package that was failing. --mount=type=cache persists downloads.
+#
+#    --omit=dev: `medusa build` copies package.json verbatim into the standalone
+#    output, devDependencies included. Without this flag the runtime image ships
+#    jest, typescript, vite, ts-node and the SWC toolchain — hundreds of MB of
+#    compilers in a public-facing container, none of it reachable at runtime
+#    because the code is already compiled.
 RUN --mount=type=cache,target=/root/.npm \
     cd apps/backend/.medusa/server && \
-    npm install --no-audit --no-fund \
+    npm install --no-audit --no-fund --omit=dev \
       --registry=https://registry.npmmirror.com \
       --fetch-retries=5 \
       --fetch-retry-factor=2 \
@@ -68,8 +74,26 @@ ENV NODE_ENV=production
 ENV PORT=9000
 WORKDIR /app
 
+# glibc shim, same as the builder stage. Native modules that reach the runtime
+# tree (sharp being the usual one) fail to load on musl without it.
+RUN apk add --no-cache libc6-compat
+
 # Copy the self-contained server (compiled code + node_modules + built admin)
 COPY --from=builder --chown=node:node /server/apps/backend/.medusa/server ./
+
+# Medusa registers no File module, so uploads fall back to @medusajs/file-local,
+# which writes to `<cwd>/static` — /app/static here.
+#
+# WORKDIR created /app as root:root, and the COPY above only chowns its
+# CONTENTS. Creating this directory from the unprivileged `node` user would fail
+# with EACCES on the first upload, so it is created and handed over here.
+#
+# Mount a persistent volume at /app/static in production. Without one the
+# directory lives on the container's writable layer and every image uploaded
+# through the admin is destroyed on the next deploy — the database keeps the URL,
+# the file stops existing, and the catalog renders broken images with no error.
+RUN mkdir -p /app/static && chown node:node /app/static
+VOLUME /app/static
 
 USER node
 EXPOSE 9000

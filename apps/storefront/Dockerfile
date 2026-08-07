@@ -1,0 +1,117 @@
+# syntax=docker/dockerfile:1
+
+# ---------------------------------------------------------------------------
+# Next.js 15 storefront — multi-stage build for a pnpm + turbo monorepo.
+#
+# IMPORTANT: the Docker build context MUST be the repository root (".")
+# because pnpm workspaces need the root lockfile + every member package.json.
+# Dockerfile path:        apps/storefront/Dockerfile
+# Docker context path:    .
+# Build stage (target):   runner
+#
+# Layer strategy (why the COPY order looks redundant):
+#   manifests -> install -> source -> build
+# Dependency installation is the slow layer and it only depends on the
+# manifests + lockfile. Copying the source AFTER the install means editing a
+# component reuses the cached install layer; copying it before would reinstall
+# every dependency on every commit.
+# ---------------------------------------------------------------------------
+
+############################
+# Base
+############################
+FROM node:22-alpine AS base
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+# libc6-compat: glibc shim so native modules (e.g. sharp) work on Alpine/musl
+RUN apk add --no-cache libc6-compat
+# Use the exact pnpm version pinned in package.json "packageManager"
+RUN corepack enable
+WORKDIR /app
+
+############################
+# Builder
+############################
+FROM base AS builder
+
+# 1) Install workspace deps first (cached until a manifest or the lockfile moves).
+#    Every workspace member's package.json must be present even though only the
+#    storefront gets installed: --frozen-lockfile verifies the lockfile against
+#    the FULL workspace graph and fails on a partial one.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json .npmrc ./
+COPY apps/backend/package.json ./apps/backend/
+COPY apps/storefront/package.json ./apps/storefront/
+# --filter @dtc/storefront... restricts installation to the storefront and its
+# workspace dependencies. Without it this pulls the entire Medusa backend
+# dependency tree (~1GB of server-side packages) into an image that never runs
+# a single line of it.
+RUN pnpm install --frozen-lockfile --filter @dtc/storefront...
+
+# 2) Build arguments.
+#    Next.js INLINES every NEXT_PUBLIC_* value into the client bundle at build
+#    time — they are not read from the environment at runtime. Changing any of
+#    them therefore requires a rebuild, not a restart. They arrive as build args
+#    (fed from Dokploy variables in docker-compose.prod.yml) and are promoted to
+#    env vars for the duration of the build only, so they never persist into the
+#    final image layers.
+ARG NEXT_PUBLIC_MEDUSA_BACKEND_URL
+ARG NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY
+ARG NEXT_PUBLIC_BASE_URL
+ARG NEXT_PUBLIC_DEFAULT_REGION=mx
+ARG MEDUSA_CLOUD_S3_HOSTNAME
+ARG MEDUSA_CLOUD_S3_PATHNAME
+
+ENV NEXT_PUBLIC_MEDUSA_BACKEND_URL=$NEXT_PUBLIC_MEDUSA_BACKEND_URL \
+    NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY=$NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY \
+    NEXT_PUBLIC_BASE_URL=$NEXT_PUBLIC_BASE_URL \
+    NEXT_PUBLIC_DEFAULT_REGION=$NEXT_PUBLIC_DEFAULT_REGION \
+    MEDUSA_CLOUD_S3_HOSTNAME=$MEDUSA_CLOUD_S3_HOSTNAME \
+    MEDUSA_CLOUD_S3_PATHNAME=$MEDUSA_CLOUD_S3_PATHNAME \
+    NEXT_TELEMETRY_DISABLED=1 \
+    NODE_ENV=production
+
+# 3) Build. next.config.js runs check-env-variables() first and hard-exits when
+#    NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY is missing, so a forgotten Dokploy
+#    variable fails here with a readable error instead of producing an image
+#    that 500s on first request.
+COPY apps/storefront ./apps/storefront
+RUN pnpm --filter @dtc/storefront run build
+
+############################
+# Runner
+############################
+FROM node:22-alpine AS runner
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=8000
+ENV HOSTNAME=0.0.0.0
+WORKDIR /app
+
+RUN apk add --no-cache libc6-compat wget
+
+# The `node` user (uid 1000) ships with the base image. Running as a non-root
+# user limits what a compromised render path can reach on the mounted filesystem.
+USER node
+
+# Three artifacts make up a standalone deployment, and Next emits them in
+# separate places on purpose:
+#   1. standalone/ — the traced server + its pruned node_modules.
+#   2. .next/static — hashed client assets, EXCLUDED from the trace because a CDN
+#      is expected to serve them. Nothing serves them here, so they must be
+#      copied back in or every page loads unstyled with no JS.
+#   3. public/ — same story for static files.
+# Paths keep the apps/storefront/ prefix because outputFileTracingRoot is the
+# monorepo root (see next.config.js).
+COPY --from=builder --chown=node:node /app/apps/storefront/.next/standalone ./
+COPY --from=builder --chown=node:node /app/apps/storefront/.next/static ./apps/storefront/.next/static
+COPY --from=builder --chown=node:node /app/apps/storefront/public ./apps/storefront/public
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD wget -qO- http://localhost:8000/ || exit 1
+
+# server.js is generated by the standalone build; `next start` is NOT available
+# here because the CLI is not part of the traced output.
+CMD ["node", "apps/storefront/server.js"]

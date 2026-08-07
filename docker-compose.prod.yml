@@ -1,0 +1,186 @@
+# ---------------------------------------------------------------------------
+# Production stack for Dokploy — Postgres + Redis + Medusa backend + storefront.
+#
+# This file is NOT for local development. `docker-compose.yml` stays as it is:
+# a bare Postgres you point your host-run `pnpm dev` at. This one builds and runs
+# all four services on the server.
+#
+# In Dokploy: Create > Compose, point it at this repository, set
+#   Compose Path: ./docker-compose.prod.yml
+# and define every variable below under the Environment tab. Values are read by
+# interpolation, so a missing variable expands to an empty string rather than
+# failing loudly — see .env.dokploy.template for the full required list.
+#
+# Two networks on purpose:
+#   dokploy-network — external, created by Dokploy. Only the services Traefik has
+#                     to reach join it. Postgres and Redis stay off it.
+#   internal        — private service-to-service traffic. Nothing is published to
+#                     the host, so the database is unreachable from the public
+#                     internet even if the server firewall is wide open.
+# ---------------------------------------------------------------------------
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-medusa}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-medusa}
+      # Postgres only applies this on FIRST init (empty volume). Setting the
+      # collation up front avoids an index-corrupting locale mismatch later, when
+      # a dump taken on a different libc gets restored into this instance.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      # Gates the backend's depends_on. Without it the backend races Postgres on
+      # every deploy, runs db:migrate against a socket that is not listening yet,
+      # and restart-loops until the database happens to win.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-medusa} -d ${POSTGRES_DB:-medusa}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # --appendonly yes  : flush to disk continuously, so a restart does not drop
+    #                     the workflow engine's in-flight state.
+    # --maxmemory-policy noeviction : Redis is a QUEUE here, not a cache. Under
+    #                     the default allkeys-lru it would silently evict pending
+    #                     workflow steps once memory filled, losing orders with no
+    #                     error anywhere. noeviction fails the write loudly instead.
+    command: redis-server --appendonly yes --maxmemory-policy noeviction
+    volumes:
+      - redisdata:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      # Context is the repository ROOT, not apps/backend: pnpm workspaces need the
+      # root lockfile plus every member package.json to resolve a frozen install.
+      context: .
+      dockerfile: apps/backend/Dockerfile
+      target: runner
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 9000
+
+      # Host is the compose SERVICE NAME, resolved by Docker's internal DNS on the
+      # `internal` network. Never a public hostname: that would route database
+      # traffic out through the proxy and back.
+      DATABASE_URL: postgres://${POSTGRES_USER:-medusa}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-medusa}
+      # This Postgres speaks plaintext on a private network. Left unset, Medusa
+      # would infer TLS from NODE_ENV=production and fail the handshake. Flip to
+      # "true" only if you move to managed Postgres (Neon, Supabase, RDS).
+      DATABASE_SSL: "false"
+
+      REDIS_URL: redis://redis:6379
+      # shared = one process serves the API, the admin and background jobs.
+      # Split into server/worker (two services, same image) when jobs start
+      # competing with request latency.
+      MEDUSA_WORKER_MODE: shared
+
+      # CORS is an allowlist of ORIGINS (scheme + host, no trailing slash, no
+      # path). A mismatch here surfaces in the browser as an opaque CORS failure
+      # with a perfectly healthy backend, so it is worth double-checking.
+      STORE_CORS: ${STORE_CORS}
+      ADMIN_CORS: ${ADMIN_CORS}
+      AUTH_CORS: ${AUTH_CORS}
+
+      # Rotating either secret invalidates every issued session and admin token.
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      COOKIE_SECRET: ${COOKIE_SECRET:?COOKIE_SECRET is required}
+
+      # Key-encryption key for provider credentials stored in the database.
+      # It must be the SAME value used in the environment the dump came from —
+      # a different key leaves every stored credential undecryptable and every
+      # payment/shipping provider silently unconfigured.
+      PROVIDER_SETTINGS_ENCRYPTION_KEY: ${PROVIDER_SETTINGS_ENCRYPTION_KEY:?PROVIDER_SETTINGS_ENCRYPTION_KEY is required}
+
+      # Public origin the backend advertises to providers building webhook URLs.
+      # Mercado Pago calls this back, so it must be reachable from the internet.
+      BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL}
+    networks:
+      - internal
+      - dokploy-network
+    labels:
+      - traefik.enable=true
+      # Pins which network Traefik dials the container on. With two networks
+      # attached, Traefik otherwise picks one arbitrarily and intermittently tries
+      # to reach the container over `internal`, where it has no interface.
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.${STACK_NAME:-mandi}-backend.rule=Host(`${BACKEND_DOMAIN}`)
+      - traefik.http.routers.${STACK_NAME:-mandi}-backend.entrypoints=websecure
+      - traefik.http.routers.${STACK_NAME:-mandi}-backend.tls.certresolver=letsencrypt
+      # Container-internal port. Nothing is published to the host; Traefik reaches
+      # it over the Docker network.
+      - traefik.http.services.${STACK_NAME:-mandi}-backend.loadbalancer.server.port=9000
+
+  storefront:
+    build:
+      context: .
+      dockerfile: apps/storefront/Dockerfile
+      target: runner
+      # BUILD-TIME, not runtime. Next.js inlines every NEXT_PUBLIC_* value into
+      # the JavaScript sent to the browser, so these are frozen into the image.
+      # Changing any of them in Dokploy requires a REBUILD; a restart will keep
+      # serving the old values.
+      args:
+        # Must be the PUBLIC backend URL, not http://backend:9000. The same value
+        # is used by server-side rendering and by the browser (see
+        # apps/storefront/src/lib/config.ts), and the browser cannot resolve
+        # Docker service names.
+        NEXT_PUBLIC_MEDUSA_BACKEND_URL: ${NEXT_PUBLIC_MEDUSA_BACKEND_URL}
+        NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY: ${NEXT_PUBLIC_MEDUSA_PUBLISHABLE_KEY}
+        NEXT_PUBLIC_BASE_URL: ${NEXT_PUBLIC_BASE_URL}
+        NEXT_PUBLIC_DEFAULT_REGION: ${NEXT_PUBLIC_DEFAULT_REGION:-mx}
+        MEDUSA_CLOUD_S3_HOSTNAME: ${MEDUSA_CLOUD_S3_HOSTNAME:-}
+        MEDUSA_CLOUD_S3_PATHNAME: ${MEDUSA_CLOUD_S3_PATHNAME:-}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      PORT: 8000
+    networks:
+      - dokploy-network
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dokploy-network
+      - traefik.http.routers.${STACK_NAME:-mandi}-storefront.rule=Host(`${STOREFRONT_DOMAIN}`)
+      - traefik.http.routers.${STACK_NAME:-mandi}-storefront.entrypoints=websecure
+      - traefik.http.routers.${STACK_NAME:-mandi}-storefront.tls.certresolver=letsencrypt
+      - traefik.http.services.${STACK_NAME:-mandi}-storefront.loadbalancer.server.port=8000
+
+volumes:
+  # Named volumes, so `docker compose down` and Dokploy redeploys keep the data.
+  # Only an explicit `docker volume rm` destroys it.
+  pgdata:
+  redisdata:
+
+networks:
+  internal:
+    driver: bridge
+  dokploy-network:
+    # Created by Dokploy at install time. `external: true` means compose expects
+    # it to exist rather than creating its own — that shared network is how
+    # Traefik sees these containers at all.
+    external: true
