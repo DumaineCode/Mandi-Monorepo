@@ -1283,5 +1283,12 @@ export function selectReadinessInput(
     currentQuoteSignature: state.quoteSignature,
     selectedPaymentProviderId: state.selectedPaymentProviderId,
     paymentDetailsComplete: state.paymentDetailsComplete,
+    /**
+     * Amendment A5. Billing readiness is answered from the CHECKBOX and the
+     * DRAFT, never from `state.cart.billing_address` — the column's only writer
+     * runs at CTA time, behind the gate this feeds. See `toReadinessInput`.
+     */
+    sameAsBilling: state.sameAsBilling,
+    billingDraft: state.billingDraft,
   })
 }

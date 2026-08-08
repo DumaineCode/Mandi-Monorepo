@@ -194,6 +194,12 @@ export type OrderReadinessInput = {
   itemCount: number
   email?: string | null
   shippingAddress?: ReadinessAddressSnapshot | null
+  /**
+   * Whether the customer has told us what to write into `billing_address`.
+   *
+   * A CLIENT fact, not a cart fact, and the distinction is the whole point.
+   * See {@link toReadinessInput} for the deadlock that made it one.
+   */
   hasBillingAddress: boolean
   /** Whether `cart.shipping_methods` carries a row. Server-side fact. */
   hasShippingMethod: boolean
@@ -226,6 +232,31 @@ export type OrderReadinessInput = {
  */
 const isAbsent = (value: string | null | undefined): boolean =>
   typeof value !== "string" || value.trim().length === 0
+
+/**
+ * Whether the customer has typed a usable SEPARATE billing address.
+ *
+ * Same field set as {@link REQUIRED_ADDRESS_FIELDS}, and the two exclusions are
+ * deliberate rather than inherited. `phone` and `address_2` are required on the
+ * SHIPPING address for fulfilment reasons — Skydropx rejects a quote with no
+ * `area_level3` and its origin/destination pre-flight needs a phone. Nothing is
+ * ever shipped to the billing address, and `buildOpenpaySessionData` already
+ * emits `phone_number: undefined` without complaint. Requiring them here would
+ * block a checkout over a field no downstream system asks for.
+ *
+ * Completeness rather than mere presence, because an all-empty billing form is
+ * exactly what the customer is looking at the moment they uncheck the "same as
+ * billing" box. Waving that through hands Openpay an empty `customer` object,
+ * which it refuses with API error 1001 — and the customer reads that as a
+ * decline on a card that is perfectly good.
+ */
+export function billingDraftIsComplete(
+  draft: ReadinessAddressSnapshot | null | undefined
+): boolean {
+  return (
+    !!draft && REQUIRED_ADDRESS_FIELDS.every((field) => !isAbsent(draft[field]))
+  )
+}
 
 /**
  * Returns the ordered list of everything preventing order placement.
@@ -462,6 +493,25 @@ export function canPlaceOrder(input: OrderReadinessInput): boolean {
 }
 
 /**
+ * The client-side half of {@link toReadinessInput}'s input.
+ *
+ * Named rather than inlined so the two halves are visibly two halves: what the
+ * SERVER has recorded on the cart, and what the CUSTOMER currently holds on
+ * screen. Every field here is reducer state.
+ */
+export type ReadinessClientInput = {
+  selectedShippingOptionId: string | null
+  selectionSignature: string | null
+  currentQuoteSignature: string | null
+  selectedPaymentProviderId: string | null
+  paymentDetailsComplete: boolean
+  /** The "misma dirección de facturación" checkbox. */
+  sameAsBilling: boolean
+  /** The separate billing form, as typed. Only read when `sameAsBilling` is false. */
+  billingDraft: ReadinessAddressSnapshot | null
+}
+
+/**
  * The one adapter from a Medusa cart to the readiness input.
  *
  * Kept in this file, per `design.md` D2, so the mapping is spec'd next to the
@@ -474,19 +524,42 @@ export function canPlaceOrder(input: OrderReadinessInput): boolean {
  */
 export function toReadinessInput(
   cart: HttpTypes.StoreCart | null | undefined,
-  client: {
-    selectedShippingOptionId: string | null
-    selectionSignature: string | null
-    currentQuoteSignature: string | null
-    selectedPaymentProviderId: string | null
-    paymentDetailsComplete: boolean
-  }
+  client: ReadinessClientInput
 ): OrderReadinessInput {
   return {
     itemCount: cart?.items?.length ?? 0,
     email: cart?.email,
     shippingAddress: cart?.shipping_address ?? null,
-    hasBillingAddress: Boolean(cart?.billing_address),
+    /**
+     * ## A CLIENT fact, and it has to be — Amendment A5
+     *
+     * This read `Boolean(cart?.billing_address)` and it DEADLOCKED the
+     * checkout. The only production writer of `cart.billing_address` left in
+     * the storefront is `syncCheckoutAddresses`, which runs at `design.md` D5
+     * step 2 — behind this gate. `persistCheckoutDraft` never writes billing by
+     * design (D3), and `setAddresses`, the historical writer, was deleted by
+     * PR2c. So a cart that had never had a billing address could never acquire
+     * one: `Falta tu dirección de facturación.`, forever. That is the same
+     * shape as the `?step=payment` deadlock this change exists to remove.
+     *
+     * The split is the one this file already makes twelve lines below for
+     * `hasShippingMethod` vs `hasSelectedShippingOption`, for the identical F1
+     * reason: the gate's question is not "has the backend been told" but "has
+     * the customer decided".
+     *
+     * `sameAsBilling` short-circuits WITHOUT re-checking the address, because
+     * the shipping address is already checked field by field by
+     * `shipping_address`, `colonia` and `phone`. A second copy of that rule
+     * here is the exact defect class this change is about.
+     *
+     * What is NOT weakened: the billing ROW still has to exist on the cart
+     * before Openpay is asked for a charge. D5 makes step 2 before step 4
+     * mandatory for precisely that reason, and `place-order-flow.spec.ts`
+     * asserts the ordering (mutations M11/M16). The row must exist before the
+     * charge; it no longer has to exist before the customer may try.
+     */
+    hasBillingAddress:
+      client.sameAsBilling || billingDraftIsComplete(client.billingDraft),
     /**
      * `?? 0` and not `!== 0`. The predicate this replaces used
      * `shipping_methods?.length === 0`, which is FALSE for an absent field, so a

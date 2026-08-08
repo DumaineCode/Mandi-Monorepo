@@ -2019,6 +2019,97 @@ describe("a selection made before any signature existed", () => {
   })
 })
 
+/**
+ * ---------------------------------------------------------------------------
+ * `selectReadinessInput` sources billing from the CLIENT — Amendment A5
+ * ---------------------------------------------------------------------------
+ *
+ * The adapter's own argument lives in `checkout-readiness.spec.ts`. This block
+ * covers the WIRING, which is the half that deadlocked: `hasBillingAddress`
+ * used to be read off `state.cart.billing_address`, whose only writer runs at
+ * CTA time behind the gate it feeds.
+ *
+ * Both directions are asserted, because a wiring that hard-codes either answer
+ * would satisfy one of them and nothing else.
+ */
+describe("selectReadinessInput — billing is a client fact (A5)", () => {
+  const noBillingRow = () =>
+    baseState({
+      shipping_methods: [{ shipping_option_id: "so_std" }],
+      billing_address: null,
+    })
+
+  const selectedProvider = {
+    type: "SELECT_PAYMENT_PROVIDER" as const,
+    providerId: "pp_mercadopago_mercadopago",
+  }
+
+  it("lets a cart with no billing row through while the box is checked", () => {
+    const state = run(noBillingRow(), selectShipping("so_std"), selectedProvider)
+
+    // `initFromServer` defaults `sameAsBilling` to true for a cart with no
+    // billing row, which is precisely the cohort that used to deadlock.
+    expect(state.sameAsBilling).toBe(true)
+    expect(state.cart?.billing_address).toBeNull()
+    expect(selectReadinessInput(state).hasBillingAddress).toBe(true)
+    expect(getMissingOrderRequirements(selectReadinessInput(state))).toEqual([])
+  })
+
+  it("blocks once the customer unchecks the box and has typed nothing", () => {
+    const state = run(
+      noBillingRow(),
+      selectShipping("so_std"),
+      selectedProvider,
+      { type: "TOGGLE_SAME_AS_BILLING" },
+      // W7 mirrors the shipping draft into the billing draft, so clear it the
+      // way a customer emptying the prefilled form would.
+      ...(
+        [
+          "first_name",
+          "last_name",
+          "address_1",
+          "postal_code",
+          "city",
+          "province",
+          "country_code",
+        ] as const
+      ).map((field) => ({
+        type: "BILLING_FIELD_CHANGE" as const,
+        field,
+        value: "",
+      }))
+    )
+
+    expect(state.sameAsBilling).toBe(false)
+    expect(selectReadinessInput(state).hasBillingAddress).toBe(false)
+    expect(
+      getMissingOrderRequirements(selectReadinessInput(state)).map((r) => r.code)
+    ).toEqual(["billing_address"])
+  })
+
+  /**
+   * And the customer can get out of it WITHOUT a round trip — which is the
+   * entire difference between a gate and a deadlock.
+   */
+  it("unblocks as soon as the separate billing form is complete", () => {
+    const state = run(
+      noBillingRow(),
+      selectShipping("so_std"),
+      selectedProvider,
+      { type: "TOGGLE_SAME_AS_BILLING" },
+      {
+        type: "BILLING_FIELD_CHANGE",
+        field: "postal_code",
+        value: "06500",
+      }
+    )
+
+    expect(state.cart?.billing_address).toBeNull()
+    expect(selectReadinessInput(state).hasBillingAddress).toBe(true)
+    expect(getMissingOrderRequirements(selectReadinessInput(state))).toEqual([])
+  })
+})
+
 describe("selectReadinessInput — the seam PR1b left open, now closed", () => {
   it("makes the CTA report a stale selection after a postal-code change", () => {
     const selected = run(

@@ -89,6 +89,20 @@ const ADDRESS = {
  * cardholder `customer` object — which Openpay matches on for anti-fraud. Wrong
  * invoice, raised decline rate.
  */
+/** What an untouched billing form holds the moment the box is unchecked. */
+const EMPTY_DRAFT = {
+  first_name: "",
+  last_name: "",
+  company: "",
+  address_1: "",
+  address_2: "",
+  postal_code: "",
+  city: "",
+  province: "",
+  country_code: "",
+  phone: "",
+}
+
 const BILLING_ADDRESS = {
   first_name: "Beatriz",
   last_name: "Salazar",
@@ -992,36 +1006,74 @@ describe("the payment session is built from the POST-write cart", () => {
 
 /**
  * ---------------------------------------------------------------------------
- * TRIPWIRE — a structural deadlock this slice found and did NOT fix
+ * The billing-address deadlock — CLOSED (Amendment A5)
  * ---------------------------------------------------------------------------
  *
- * `getMissingOrderRequirements` emits `billing_address` whenever
- * `cart.billing_address` is falsy (`checkout-readiness.ts:325`), and after the
- * single-page migration the ONLY production writer of `billing_address` left in
- * the storefront is `syncCheckoutAddresses` — which runs on the CTA click, i.e.
- * behind the very check that is blocking it. `persistCheckoutDraft` never
- * writes billing, by design (D3), and `setAddresses` — which used to write it at
- * the address step — was deleted by this slice.
+ * This block used to be a TRIPWIRE pinning a bug. `getMissingOrderRequirements`
+ * emitted `billing_address` whenever `cart.billing_address` was falsy, and
+ * after the single-page migration the ONLY production writer of that column
+ * left in the storefront is `syncCheckoutAddresses` — which runs at D5 step 2,
+ * i.e. BEHIND the very check that was blocking it. `persistCheckoutDraft` never
+ * writes billing by design (D3), and `setAddresses`, the historical writer, was
+ * deleted by this slice.
  *
- * So a cart that has never had a billing address can never place an order: the
- * CTA reports *"Falta tu dirección de facturación."* forever. That is the same
- * shape as the `?step=payment` deadlock PR2c exists to remove, in a different
- * place.
+ * A cart that had never had a billing address could therefore never place an
+ * order: `Falta tu dirección de facturación.`, forever. Same shape as the
+ * `?step=payment` deadlock PR2c exists to remove.
  *
- * It is NOT fixed here, deliberately. The fix belongs in
- * `toReadinessInput`, whose `hasBillingAddress` is currently a CART fact and
- * probably wants to be a CLIENT one — exactly the split `hasShippingMethod` vs
- * `hasSelectedShippingOption` already makes in that file, and for the same
- * reason. That is a change to the strictness floor, which `tasks.md` calls a
- * product decision rather than a refactor, and it is outside tasks 2c.7–2c.12.
- *
- * This test PINS the current behaviour so the trap is asserted rather than
- * latent. It is expected to FAIL the moment slice 2 addresses it — that failure
- * is the handoff working, not a regression.
+ * The gate is now a CLIENT fact — `sameAsBilling || billingDraftIsComplete(...)`
+ * — so the tests below assert the FIXED behaviour end to end, through the flow
+ * the customer actually clicks. The unit-level argument lives in
+ * `checkout-readiness.spec.ts`; this is the integration proof that the deadlock
+ * is gone from the path that deadlocked.
  */
-describe("TRIPWIRE: billing-address deadlock (open, for slice 2)", () => {
-  it("blocks the CTA on a cart that has never had a billing address", async () => {
-    const h = harness({ cart: readyCart({ billing_address: null }) })
+describe("the billing-address deadlock is closed (A5)", () => {
+  it("places an order on a cart that has never had a billing address", async () => {
+    const h = harness({
+      cart: readyCart({ billing_address: null }),
+      sameAsBilling: true,
+    })
+
+    const outcome = await h.flow.place()
+
+    // THE REGRESSION. Before A5 this was `blocked` with "Falta tu dirección de
+    // facturación." and NOTHING ran — including the one call that would have
+    // written the billing address and unblocked the check.
+    expect(outcome.status).toBe("placed")
+    expect(h.backendCalls()).toEqual([
+      "syncAddresses",
+      "initiatePaymentSession",
+      "placeOrder",
+    ])
+  })
+
+  /**
+   * The write is what closes the loop. The customer never had a billing row, so
+   * the CTA's own address write is the thing that creates it — and it can only
+   * do that if it is allowed to run.
+   */
+  it("writes the billing address the cart was missing", async () => {
+    const h = harness({
+      cart: readyCart({ billing_address: null }),
+      sameAsBilling: true,
+    })
+
+    await h.flow.place()
+
+    expect(h.sync.mock.calls[0][0].billing.postal_code).toBe("03940")
+  })
+
+  /**
+   * The gate did not simply disappear. A customer who unchecked the box and
+   * typed nothing is still blocked — but by a condition they can now satisfy
+   * without a round trip, which is the entire difference.
+   */
+  it("still blocks when the customer unchecked the box and typed nothing", async () => {
+    const h = harness({
+      cart: readyCart({ billing_address: null }),
+      sameAsBilling: false,
+      billingDraft: EMPTY_DRAFT,
+    })
 
     const outcome = await h.flow.place()
 
@@ -1029,10 +1081,6 @@ describe("TRIPWIRE: billing-address deadlock (open, for slice 2)", () => {
     expect("error" in outcome && outcome.error).toBe(
       "Falta tu dirección de facturación."
     )
-
-    // And nothing runs — including the one call that would have written the
-    // billing address and unblocked the check.
     expect(h.backendCalls()).toEqual([])
-    expect(h.sync).not.toHaveBeenCalled()
   })
 })

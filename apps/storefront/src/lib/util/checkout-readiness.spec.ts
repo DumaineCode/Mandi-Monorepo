@@ -2,6 +2,7 @@ import type { HttpTypes } from "@medusajs/types"
 import { describe, expect, it } from "vitest"
 
 import {
+  billingDraftIsComplete,
   canPlaceOrder,
   getMissingOrderRequirements,
   isOpenpayOffered,
@@ -10,6 +11,7 @@ import {
   toReadinessInput,
   type MissingRequirementCode,
   type OrderReadinessInput,
+  type ReadinessClientInput,
 } from "./checkout-readiness"
 
 const OPENPAY = "pp_openpay_openpay"
@@ -63,6 +65,41 @@ const withAddress = (
 
 const codes = (value: OrderReadinessInput): MissingRequirementCode[] =>
   getMissingOrderRequirements(value).map((requirement) => requirement.code)
+
+/**
+ * A complete billing address as the CUSTOMER typed it — the client-side draft,
+ * not a persisted `cart_address` row. See the deadlock block below for why the
+ * distinction is the whole point.
+ */
+const BILLING_DRAFT = {
+  first_name: "Ana",
+  last_name: "Ruiz",
+  address_1: "Río Lerma 232",
+  address_2: "Cuauhtémoc",
+  postal_code: "06500",
+  city: "Ciudad de México",
+  province: "CDMX",
+  country_code: "mx",
+  phone: "5598765432",
+}
+
+/**
+ * The CLIENT half of {@link toReadinessInput}, defaulted to the STRICTEST case:
+ * a customer who has unchecked "same as billing" and typed nothing into the
+ * billing form. Each call states only its own deviation.
+ */
+const client = (
+  overrides: Partial<ReadinessClientInput> = {}
+): ReadinessClientInput => ({
+  selectedShippingOptionId: "so_std",
+  selectionSignature: null,
+  currentQuoteSignature: null,
+  selectedPaymentProviderId: MANUAL,
+  paymentDetailsComplete: false,
+  sameAsBilling: false,
+  billingDraft: null,
+  ...overrides,
+})
 
 const messageFor = (
   value: OrderReadinessInput,
@@ -310,13 +347,10 @@ describe("getMissingOrderRequirements", () => {
   })
 
   it("does not throw and reports only cart_empty for a null cart", () => {
-    const readiness = toReadinessInput(null, {
-      selectedShippingOptionId: null,
-      selectionSignature: null,
-      currentQuoteSignature: null,
-      selectedPaymentProviderId: null,
-      paymentDetailsComplete: false,
-    })
+    const readiness = toReadinessInput(
+      null,
+      client({ selectedShippingOptionId: null, selectedPaymentProviderId: null })
+    )
 
     expect(() => getMissingOrderRequirements(readiness)).not.toThrow()
     expect(getMissingOrderRequirements(readiness)).toEqual([
@@ -755,13 +789,10 @@ describe("hasCompleteShippingContact port (D8)", () => {
     cart: HttpTypes.StoreCart | null | undefined
   ): MissingRequirementCode[] =>
     getMissingOrderRequirements(
-      toReadinessInput(cart, {
-        selectedShippingOptionId: "so_std",
-        selectionSignature: null,
-        currentQuoteSignature: null,
-        selectedPaymentProviderId: MANUAL,
-        paymentDetailsComplete: false,
-      })
+      // `sameAsBilling` because these carts model the four-step flow's default
+      // checkbox: this block is about the shipping contact rule (D8), and
+      // letting billing block here would test the wrong predicate.
+      toReadinessInput(cart, client({ sameAsBilling: true }))
     ).map((requirement) => requirement.code)
 
   it("blocks nothing when address, email and phone are all present", () => {
@@ -843,23 +874,14 @@ describe("hasCompleteShippingContact port (D8)", () => {
    * destination change. Collapsing either into the other re-opens the hole.
    */
   it("maps the client selection separately from the cart row", () => {
-    const withSelection = toReadinessInput(buildCart(), {
-      selectedShippingOptionId: "so_std",
-      selectionSignature: null,
-      currentQuoteSignature: null,
-      selectedPaymentProviderId: MANUAL,
-      paymentDetailsComplete: false,
-    })
+    const withSelection = toReadinessInput(buildCart(), client())
     expect(withSelection.hasShippingMethod).toBe(true)
     expect(withSelection.hasSelectedShippingOption).toBe(true)
 
-    const cleared = toReadinessInput(buildCart(), {
-      selectedShippingOptionId: null,
-      selectionSignature: null,
-      currentQuoteSignature: null,
-      selectedPaymentProviderId: MANUAL,
-      paymentDetailsComplete: false,
-    })
+    const cleared = toReadinessInput(
+      buildCart(),
+      client({ selectedShippingOptionId: null })
+    )
     // Same cart, same row — only the radio changed.
     expect(cleared.hasShippingMethod).toBe(true)
     expect(cleared.hasSelectedShippingOption).toBe(false)
@@ -880,6 +902,214 @@ describe("hasCompleteShippingContact port (D8)", () => {
  * must NOT hold — the new predicate is deliberately stricter (phone,
  * per-field address completeness, staleness, payment selection).
  */
+/**
+ * ---------------------------------------------------------------------------
+ * `hasBillingAddress` is a CLIENT fact — Amendment A5
+ * ---------------------------------------------------------------------------
+ *
+ * ## The deadlock this closes
+ *
+ * `hasBillingAddress` used to be `Boolean(cart.billing_address)`. After the
+ * single-page migration the ONLY production writer of `cart.billing_address`
+ * left in the storefront is `syncCheckoutAddresses`, and that runs at D5 step
+ * 2 — i.e. BEHIND this very gate. `persistCheckoutDraft` never writes billing
+ * by design (D3), and `setAddresses`, the historical writer, was deleted by
+ * PR2c slice 1.
+ *
+ * So a cart that never had a billing address could never acquire one: the CTA
+ * reported `Falta tu dirección de facturación.` forever. That is the exact
+ * shape of the `?step=payment` deadlock this whole change exists to remove — a
+ * requirement whose only writer sits behind the gate that guards it.
+ *
+ * ## The fix, and why it is the same fix this file already made once
+ *
+ * `hasShippingMethod` (a CART fact) and `hasSelectedShippingOption` (a CLIENT
+ * fact) are kept apart ~12 lines above for the identical F1 reason. Billing
+ * gets the same treatment: what the gate needs to know is not "does the cart
+ * carry a row yet" but "has the customer told us what to write" — and the
+ * answer to that is client state, available before any write.
+ *
+ * Two ways to answer yes:
+ *
+ * 1. `sameAsBilling` — the customer asserts billing IS the shipping address.
+ *    Nothing further is checked here BECAUSE the shipping address is already
+ *    checked, field by field, by `shipping_address`, `colonia` and `phone`.
+ *    Adding a second copy of that check is the defect class this change is
+ *    about.
+ * 2. A COMPLETE separate billing draft. Completeness matters: an all-empty
+ *    billing row satisfies "not null" and then makes Openpay reject the charge
+ *    with API error 1001, because `buildOpenpaySessionData` sources its
+ *    `customer` object from `cart.billing_address`.
+ *
+ * The guarantee the old cart-fact version bought is NOT lost. `design.md` D5
+ * makes step 2 before step 4 mandatory precisely so the billing row exists on
+ * the cart before the Openpay payload is built, and that ordering is asserted
+ * in `place-order-flow.spec.ts` (mutation M11/M16). The row still has to exist
+ * before the charge; it just no longer has to exist before the customer is
+ * allowed to try.
+ */
+describe("hasBillingAddress is a client fact (A5)", () => {
+  const readyCart = (overrides: Record<string, unknown> = {}) =>
+    ({
+      items: [{ id: "li_1" }],
+      email: "cliente@example.mx",
+      shipping_address: {
+        first_name: "Ana",
+        last_name: "Ruiz",
+        address_1: "Av. Insurgentes Sur 1602",
+        address_2: "Roma Norte",
+        postal_code: "06700",
+        city: "Cuauhtémoc",
+        province: "CDMX",
+        country_code: "mx",
+        phone: "5512345678",
+      },
+      shipping_methods: [{ id: "sm_1" }],
+      billing_address: null,
+      ...overrides,
+    } as unknown as HttpTypes.StoreCart)
+
+  /**
+   * THE REGRESSION TEST. This is the executable form of the deadlock: a cart
+   * that is complete in every other respect, with no billing row and no way to
+   * get one, must be placeable.
+   */
+  it("lets a cart with NO billing row through when the addresses are the same", () => {
+    const readiness = toReadinessInput(
+      readyCart(),
+      client({ sameAsBilling: true })
+    )
+
+    expect(readiness.hasBillingAddress).toBe(true)
+    expect(codes(readiness)).toEqual([])
+  })
+
+  it("accepts a complete separate billing draft with no billing row either", () => {
+    const readiness = toReadinessInput(
+      readyCart(),
+      client({ sameAsBilling: false, billingDraft: BILLING_DRAFT })
+    )
+
+    expect(readiness.hasBillingAddress).toBe(true)
+    expect(codes(readiness)).toEqual([])
+  })
+
+  /**
+   * The other half of the fix, and the reason it is `billingDraftIsComplete`
+   * rather than a null check. An all-empty billing form is what the customer
+   * sees the moment they uncheck the box on a cart that never had a separate
+   * billing address; waving it through produces Openpay API error 1001 at the
+   * charge, which the customer reads as a decline.
+   */
+  it("blocks an empty billing draft when the customer unchecked the box", () => {
+    const readiness = toReadinessInput(readyCart(), client())
+
+    expect(readiness.hasBillingAddress).toBe(false)
+    expect(codes(readiness)).toEqual(["billing_address"])
+  })
+
+  it.each([
+    ["a missing first name", { first_name: "" }],
+    ["a missing last name", { last_name: "   " }],
+    ["a missing street", { address_1: "" }],
+    ["a missing postal code", { postal_code: "" }],
+    ["a missing city", { city: "" }],
+    ["a missing province", { province: "" }],
+    ["a missing country", { country_code: "" }],
+  ])("blocks a separate billing draft with %s", (_label, overrides) => {
+    const readiness = toReadinessInput(
+      readyCart(),
+      client({ billingDraft: { ...BILLING_DRAFT, ...overrides } })
+    )
+
+    expect(readiness.hasBillingAddress).toBe(false)
+    expect(codes(readiness)).toEqual(["billing_address"])
+  })
+
+  /**
+   * The gate stops reading the cart entirely. Stated as its own case because
+   * "it happens to agree with the cart today" is exactly how a client fact
+   * silently reverts to a cart fact.
+   */
+  it("ignores a billing row the cart already has when the draft is empty", () => {
+    const readiness = toReadinessInput(
+      readyCart({ billing_address: { id: "caaddr_bill", first_name: "Ana" } }),
+      client()
+    )
+
+    // The cart carries a row, and it is still not enough: that row is
+    // incomplete, so it is the one that would produce Openpay error 1001.
+    expect(readiness.hasBillingAddress).toBe(false)
+  })
+
+  /**
+   * `sameAsBilling` short-circuits WITHOUT re-checking the address, and that is
+   * safe only because the shipping codes already fired. Pinned so a later
+   * "tidy-up" cannot collapse the two checks into one and lose the ordering.
+   */
+  it("does not re-check the shipping address under sameAsBilling", () => {
+    const readiness = toReadinessInput(
+      readyCart({ shipping_address: null }),
+      client({ sameAsBilling: true })
+    )
+
+    expect(readiness.hasBillingAddress).toBe(true)
+    // The shipping codes are what block this cart, and they say so precisely.
+    expect(codes(readiness)).toEqual(["phone", "shipping_address", "colonia"])
+  })
+})
+
+describe("billingDraftIsComplete", () => {
+  it("accepts a fully typed address", () => {
+    expect(billingDraftIsComplete(BILLING_DRAFT)).toBe(true)
+  })
+
+  it.each([
+    ["null", null],
+    ["undefined", undefined],
+  ])("rejects %s", (_label, value) => {
+    expect(billingDraftIsComplete(value)).toBe(false)
+  })
+
+  it("rejects an all-empty draft, which is what an untouched form holds", () => {
+    expect(
+      billingDraftIsComplete({
+        first_name: "",
+        last_name: "",
+        address_1: "",
+        address_2: "",
+        postal_code: "",
+        city: "",
+        province: "",
+        country_code: "",
+        phone: "",
+      })
+    ).toBe(false)
+  })
+
+  /**
+   * `phone` and `address_2` are deliberately NOT required, and the asymmetry
+   * with the shipping address is intentional rather than an oversight.
+   *
+   * Both shipping codes exist for a fulfilment reason: Skydropx rejects a quote
+   * with no `area_level3` (the colonia) and the origin/destination pre-flight
+   * needs a phone. Nothing is ever shipped to the BILLING address, and Openpay
+   * accepts a `customer` object with `phone_number: undefined` — which
+   * `buildOpenpaySessionData` already emits and `place-order.spec.ts` already
+   * pins. Requiring them here would block a checkout over a field no downstream
+   * system asks for.
+   */
+  it("does not require the phone or the colonia", () => {
+    expect(
+      billingDraftIsComplete({
+        ...BILLING_DRAFT,
+        phone: "",
+        address_2: "",
+      })
+    ).toBe(true)
+  })
+})
+
 describe("strictness floor", () => {
   const notReadyToday = (cart: HttpTypes.StoreCart | null): boolean =>
     !cart ||
@@ -933,14 +1163,27 @@ describe("strictness floor", () => {
     ["a null cart", null],
     ["no shipping address", cart({ shipping_address: null })],
     ["an undefined shipping address", cart({ shipping_address: undefined })],
-    ["no billing address", cart({ billing_address: null })],
     /**
-     * The row that kills `hasBillingAddress: cart?.billing_address !== null`.
-     * An unfetched `billing_address` relation is the normal shape of a cart
-     * read that did not ask for it, so this is the reachable case, not the
-     * exotic one.
+     * ## Amendment A5 — the ONE row where the floor moved, deliberately
+     *
+     * Today's `notReady` blocks any cart with no `billing_address`. The new
+     * predicate blocks it only while the CUSTOMER has not said what to write —
+     * because the only writer of that column now runs behind this gate, so the
+     * old rule was not a floor, it was a deadlock (see the `hasBillingAddress
+     * is a client fact (A5)` block above).
+     *
+     * The two rows below therefore keep asserting the floor for the case that
+     * is still genuinely unsafe: no billing row AND no billing claim from the
+     * customer. The relaxed case has its own coverage, above, where it is
+     * argued rather than smuggled through this table.
+     *
+     * Both shapes of absence stay, for the reason the docstring above gives.
      */
-    ["an undefined billing address", cart({ billing_address: undefined })],
+    ["no billing address and no billing claim", cart({ billing_address: null })],
+    [
+      "an undefined billing address and no billing claim",
+      cart({ billing_address: undefined }),
+    ],
     ["no email", cart({ email: null })],
     ["a blank email", cart({ email: "" })],
     /**
@@ -962,13 +1205,10 @@ describe("strictness floor", () => {
 
       expect(
         canPlaceOrder(
-          toReadinessInput(blockedCart, {
-            selectedShippingOptionId: "so_std",
-            selectionSignature: null,
-            currentQuoteSignature: null,
-            selectedPaymentProviderId: MANUAL,
-            paymentDetailsComplete: true,
-          })
+          toReadinessInput(
+            blockedCart,
+            client({ paymentDetailsComplete: true })
+          )
         )
       ).toBe(false)
     }
@@ -999,13 +1239,12 @@ describe("strictness floor", () => {
 
     expect(
       canPlaceOrder(
-        toReadinessInput(laxCart, {
-          selectedShippingOptionId: "so_std",
-          selectionSignature: null,
-          currentQuoteSignature: null,
-          selectedPaymentProviderId: MANUAL,
-          paymentDetailsComplete: true,
-        })
+        // `sameAsBilling` on purpose: each row must be blocked by the condition
+        // in its own label, not incidentally by billing.
+        toReadinessInput(
+          laxCart,
+          client({ sameAsBilling: true, paymentDetailsComplete: true })
+        )
       )
     ).toBe(false)
   })
@@ -1013,15 +1252,7 @@ describe("strictness floor", () => {
   it("lets a genuinely complete cart through", () => {
     expect(notReadyToday(cart())).toBe(false)
     expect(
-      canPlaceOrder(
-        toReadinessInput(cart(), {
-          selectedShippingOptionId: "so_std",
-          selectionSignature: null,
-          currentQuoteSignature: null,
-          selectedPaymentProviderId: MANUAL,
-          paymentDetailsComplete: false,
-        })
-      )
+      canPlaceOrder(toReadinessInput(cart(), client({ sameAsBilling: true })))
     ).toBe(true)
   })
 })
@@ -1231,13 +1462,7 @@ describe("paidByGiftCard", () => {
         items: [{ id: "li_1" }],
         ...overrides,
       } as unknown as HttpTypes.StoreCart,
-      {
-        selectedShippingOptionId: "so_std",
-        selectionSignature: null,
-        currentQuoteSignature: null,
-        selectedPaymentProviderId: null,
-        paymentDetailsComplete: false,
-      }
+      client({ selectedPaymentProviderId: null })
     )
 
     expect(derived.paidByGiftCard).toBe(expected)
