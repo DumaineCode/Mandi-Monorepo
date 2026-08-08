@@ -1,6 +1,10 @@
-# Local development database.
+# Local development infrastructure: Postgres + Redis.
 #
-# Why this exists: the project's DATABASE_URL points at a Neon instance in
+# Both mirror the services in docker-compose.prod.yml so a dev run exercises the
+# same infrastructure as a deploy. The backend itself is NOT containerised here —
+# it runs on the host via `pnpm dev`, which is why both services publish a port.
+#
+# Why Postgres exists here: the project's DATABASE_URL points at a Neon instance in
 # us-east-1. From a developer machine that is ~68ms of round-trip latency per
 # query, and Medusa's cart workflows issue tens of sequential queries per
 # request — a single add-to-cart was measured at 2.5s, degrading past 10s once
@@ -10,10 +14,16 @@
 # Pinned to 16 to match the Neon server major version (16.14), so dumps restore
 # cleanly in both directions.
 #
+# Why Redis exists: medusa-config.ts registers cache-redis, event-bus-redis and
+# workflow-engine-redis whenever REDIS_URL is set, and production always sets it.
+# Without Redis locally, dev either runs the in-memory modules — which behave
+# differently enough that a passing local test proves nothing about prod — or
+# fails to boot with ECONNREFUSED on 6379 if REDIS_URL is set anyway.
+#
 # Usage:
-#   docker compose up -d db
-#   docker compose down          # keeps data (named volume)
-#   docker compose down -v       # destroys data
+#   docker compose up -d          # starts db + redis
+#   docker compose down           # keeps data (named volumes)
+#   docker compose down -v        # destroys data
 
 services:
   db:
@@ -34,5 +44,29 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    container_name: mandi-redis
+    restart: unless-stopped
+    # Same flags as production (docker-compose.prod.yml) so the queue semantics
+    # match. See that file for the full rationale:
+    # --appendonly yes              : persist to disk, so a restart does not drop
+    #                                 the workflow engine's in-flight state.
+    # --maxmemory-policy noeviction : Redis is a QUEUE here, not a cache. The
+    #                                 default allkeys-lru would silently evict
+    #                                 pending workflow steps once memory filled.
+    command: redis-server --appendonly yes --maxmemory-policy noeviction
+    # Published because the backend runs on the host in dev, not in this network.
+    ports:
+      - "6379:6379"
+    volumes:
+      - mandi-redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   mandi-pgdata:
+  mandi-redisdata:
