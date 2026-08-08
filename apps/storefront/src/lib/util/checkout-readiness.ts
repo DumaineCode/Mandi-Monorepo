@@ -83,6 +83,7 @@ export type MissingRequirementCode =
   | "email"
   | "phone"
   | "shipping_address"
+  | "colonia"
   | "billing_address"
   | "shipping_method"
   | "shipping_method_stale"
@@ -111,6 +112,7 @@ const MESSAGES: Record<MissingRequirementCode, string> = {
   email: "Falta tu correo electrónico.",
   phone: "Falta tu teléfono.",
   shipping_address: "Completa tu dirección de envío.",
+  colonia: "Elige tu colonia.",
   billing_address: "Falta tu dirección de facturación.",
   shipping_method: "Elige un método de envío.",
   shipping_method_stale:
@@ -123,7 +125,10 @@ const MESSAGES: Record<MissingRequirementCode, string> = {
  * The address fields whose absence reports `shipping_address`.
  *
  * `phone` is deliberately NOT here — it gets its own code. See the incident
- * docstring on the phone rule below.
+ * docstring on the phone rule below. `address_2` (the colonia) is NOT here
+ * either, and for the same reason: it gets its own `colonia` code (S3) so the
+ * customer is told which single control to fix. Adding it here would fold it
+ * into the generic "complete your address" message.
  */
 const REQUIRED_ADDRESS_FIELDS = [
   "first_name",
@@ -139,6 +144,8 @@ export type ReadinessAddressSnapshot = {
   first_name?: string | null
   last_name?: string | null
   address_1?: string | null
+  /** The colonia. Its absence reports the `colonia` code (S3), not `shipping_address`. */
+  address_2?: string | null
   postal_code?: string | null
   city?: string | null
   province?: string | null
@@ -261,6 +268,27 @@ export function getMissingOrderRequirements(
     REQUIRED_ADDRESS_FIELDS.some((field) => isAbsent(address[field]))
   ) {
     codes.push("shipping_address")
+  }
+
+  /**
+   * ## The colonia rule (S3, position 3.5)
+   *
+   * Skydropx PRO maps `address_2` to `area_level3` and rejects a quote without
+   * it (`422 {"address_to":{"area_level3":["no puede estar en blanco"]}}`), so a
+   * cart reaching the CTA with no colonia produces an order that can never be
+   * labelled — the same after-the-sale failure the `phone` rule records. It gets
+   * its OWN code rather than folding into `shipping_address` so the customer is
+   * told which single control to fix, and it sits immediately after the generic
+   * address item because the colonia control lives inside the address block: a
+   * customer missing the whole address should read "complete your address"
+   * before "pick your colonia".
+   *
+   * This is intentionally STRICTER than before S3 — a mid-checkout cart with no
+   * colonia is now blocked. Absence is trim-based, consistently with every other
+   * field.
+   */
+  if (isAbsent(address?.address_2)) {
+    codes.push("colonia")
   }
 
   if (!input.hasBillingAddress) {

@@ -34,6 +34,7 @@ const READY: OrderReadinessInput = {
     first_name: "Ana",
     last_name: "Ruiz",
     address_1: "Av. Insurgentes Sur 1602",
+    address_2: "Roma Norte",
     postal_code: "06700",
     city: "Cuauhtémoc",
     province: "CDMX",
@@ -422,6 +423,7 @@ describe("getMissingOrderRequirements", () => {
     expect(messageFor(bare, "shipping_address")).toBe(
       "Completa tu dirección de envío."
     )
+    expect(messageFor(bare, "colonia")).toBe("Elige tu colonia.")
     expect(messageFor(bare, "billing_address")).toBe(
       "Falta tu dirección de facturación."
     )
@@ -465,11 +467,11 @@ describe("getMissingOrderRequirements", () => {
       ),
     ]
 
-    // Every one of the nine codes has to be represented, or this guard is
+    // Every one of the ten codes has to be represented, or this guard is
     // asserting over a subset and the untested message is the one that drifts.
     expect(
       new Set(everything.map((requirement) => requirement.code)).size
-    ).toBe(9)
+    ).toBe(10)
 
     for (const { message } of everything) {
       expect(message).not.toMatch(VOSEO_IMPERATIVES)
@@ -487,6 +489,66 @@ describe("getMissingOrderRequirements", () => {
     expect("Volvé a elegir el método de envío").toMatch(VOSEO_IMPERATIVES)
     expect("Elige un método de envío.").not.toMatch(VOSEO_IMPERATIVES)
     expect("Completa tu dirección de envío.").not.toMatch(VOSEO_IMPERATIVES)
+  })
+
+  /**
+   * ## `colonia` — the tenth code (S3, Amendment A4)
+   *
+   * Skydropx PRO rejects a quote whose destination has no `area_level3`, so a
+   * cart reaching the CTA without a colonia produces an order that can never be
+   * labelled — the exact class of failure the `phone` rule was added for, and it
+   * gets the same single-field treatment. It sits at position 3.5, immediately
+   * after `shipping_address`, and is deliberately NOT part of the field set that
+   * `shipping_address` checks (`REQUIRED_ADDRESS_FIELDS`): each code names a
+   * different control the customer must fix.
+   *
+   * This makes readiness STRICTER: a mid-checkout cart with no colonia now finds
+   * the CTA newly blocked.
+   */
+  describe("colonia (S3, position 3.5)", () => {
+    it("reports exactly colonia for a cart that is otherwise ready", () => {
+      const list = getMissingOrderRequirements(
+        withAddress({ address_2: null })
+      )
+
+      expect(list).toHaveLength(1)
+      expect(list[0].code).toBe("colonia")
+      expect(list[0].message).toBe("Elige tu colonia.")
+    })
+
+    it("blocks placement when the colonia is missing", () => {
+      expect(canPlaceOrder(withAddress({ address_2: null }))).toBe(false)
+    })
+
+    it.each([
+      ["missing", null],
+      ["undefined", undefined],
+      ["blank", "  "],
+    ])("treats a %s colonia as absent", (_label, value) => {
+      expect(codes(withAddress({ address_2: value }))).toContain("colonia")
+    })
+
+    it("does not report colonia when a real colonia is present", () => {
+      expect(codes(withAddress({ address_2: "Condesa" }))).not.toContain(
+        "colonia"
+      )
+    })
+
+    it("reports colonia AFTER the generic shipping_address item", () => {
+      const emitted = codes(
+        input({ shippingAddress: null, hasBillingAddress: false })
+      )
+
+      expect(emitted).toContain("shipping_address")
+      expect(emitted).toContain("colonia")
+      expect(emitted).toContain("billing_address")
+      expect(emitted.indexOf("colonia")).toBeGreaterThan(
+        emitted.indexOf("shipping_address")
+      )
+      expect(emitted.indexOf("colonia")).toBeLessThan(
+        emitted.indexOf("billing_address")
+      )
+    })
   })
 })
 
@@ -678,6 +740,7 @@ describe("hasCompleteShippingContact port (D8)", () => {
               first_name: "Ana",
               last_name: "Ruiz",
               address_1,
+              address_2: "Roma Norte",
               postal_code: "06700",
               city: "Cuauhtémoc",
               province: "CDMX",
@@ -716,6 +779,7 @@ describe("hasCompleteShippingContact port (D8)", () => {
     expect(cartCodes(buildCart({ shipping_address: null }))).toEqual([
       "phone",
       "shipping_address",
+      "colonia",
     ])
   })
 
@@ -828,6 +892,7 @@ describe("strictness floor", () => {
     first_name: "Ana",
     last_name: "Ruiz",
     address_1: "Av. Insurgentes Sur 1602",
+    address_2: "Roma Norte",
     postal_code: "06700",
     city: "Cuauhtémoc",
     province: "CDMX",
@@ -988,6 +1053,7 @@ describe("full catalogue ordering", () => {
       "email",
       "phone",
       "shipping_address",
+      "colonia",
       "billing_address",
       "shipping_method",
       "payment_method",
@@ -1011,6 +1077,7 @@ describe("full catalogue ordering", () => {
       "email",
       "phone",
       "shipping_address",
+      "colonia",
       "billing_address",
       "shipping_method_stale",
       "card_details",
@@ -1130,6 +1197,7 @@ describe("paidByGiftCard", () => {
       "email",
       "phone",
       "shipping_address",
+      "colonia",
       "billing_address",
       "shipping_method",
     ])
