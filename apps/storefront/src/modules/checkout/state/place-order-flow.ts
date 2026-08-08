@@ -331,10 +331,15 @@ export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
     // Step 5 — the provider tail.
     // ---------------------------------------------------------------------
     if (tail === "mercadopago") {
+      /**
+       * From THIS attempt's response only. `synced.cart` used to be passed as a
+       * fallback, and on a retry it carries the previous attempt's session and
+       * its `init_point` — minted for the previous total, on a provider where
+       * the webhook is the source of truth. See `selectMercadoPagoInitPoint`.
+       */
       const initPoint = selectMercadoPagoInitPoint(
         (initiated as { payment_collection?: unknown } | null)
-          ?.payment_collection,
-        synced.cart
+          ?.payment_collection
       )
 
       // Navigating to `undefined` is forbidden: it coerces to the string

@@ -95,38 +95,45 @@ const asUsableUrl = (value: unknown): string | null =>
   typeof value === "string" && value.trim().length > 0 ? value : null
 
 /**
- * The Mercado Pago hosted-checkout URL, from the CTA's own response.
+ * The Mercado Pago hosted-checkout URL, from the CTA's own response and from
+ * nowhere else.
  *
- * Under R5 no session exists until the CTA runs, so the value has to come out
- * of what `initiatePaymentSession` just returned; the cart is a fallback for
- * the case where the response carried the collection without the session.
+ * Under R5 no session exists until the CTA runs, so the value comes out of what
+ * `initiatePaymentSession` just returned.
+ *
+ * ## Why there is no cart fallback
+ *
+ * There was one, and it took the cart that D5 step 2 returned — i.e. a cart
+ * read BEFORE any session existed on this attempt. `design.md` D5 names the
+ * fallback as the cart read AFTER initiation, which is a different cart.
+ *
+ * That is not a hypothetical distinction. Medusa's default store cart
+ * projection includes `*payment_collection.payment_sessions`, and
+ * `syncCheckoutAddresses` uses that default projection. So on a RETRY — the
+ * customer went to Mercado Pago, returned through the failure route with
+ * `?error=payment_failed`, and clicked again — that cart carries the PREVIOUS
+ * attempt's session and its previous `init_point`, minted for the PREVIOUS
+ * total. `placeOrder` is never called for this provider and the webhook is the
+ * source of truth, so following that link charges an amount the customer was
+ * never quoted and creates an order from it.
+ *
+ * Refusing is cheap precisely because of R5: the customer clicks again and the
+ * next attempt mints a fresh preference. A wrong charge is not recoverable that
+ * way.
  *
  * Matching on the PROVIDER rather than taking `payment_sessions[0]` is not
- * defensive padding. A cart accumulates sessions across retries and across
- * providers — a customer who tried Openpay first and switched has two — and
- * index zero is whichever the backend happened to serialise first.
+ * defensive padding either. A collection accumulates sessions across retries
+ * and across providers — a customer who tried Openpay first and switched has
+ * two — and index zero is whichever the backend happened to serialise first.
  */
 export function selectMercadoPagoInitPoint(
-  paymentCollection: unknown,
-  cart: unknown
+  paymentCollection: unknown
 ): string | null {
-  const fromCollection = readSessions(paymentCollection).find((session) =>
-    isMercadopagoProviderId(session.provider_id as string | undefined)
+  const session = readSessions(paymentCollection).find((candidate) =>
+    isMercadopagoProviderId(candidate.provider_id as string | undefined)
   )
 
-  const direct = asUsableUrl(readSessionData(fromCollection, "init_point"))
-
-  if (direct) {
-    return direct
-  }
-
-  const fromCart = readSessions(
-    (cart as { payment_collection?: unknown } | null)?.payment_collection
-  ).find((session) =>
-    isMercadopagoProviderId(session.provider_id as string | undefined)
-  )
-
-  return asUsableUrl(readSessionData(fromCart, "init_point"))
+  return asUsableUrl(readSessionData(session, "init_point"))
 }
 
 /**

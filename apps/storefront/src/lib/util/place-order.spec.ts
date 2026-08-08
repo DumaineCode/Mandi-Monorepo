@@ -74,8 +74,7 @@ describe("selectMercadoPagoInitPoint", () => {
 
   it("reads init_point off the Mercado Pago session in the response", () => {
     const initPoint = selectMercadoPagoInitPoint(
-      collectionWith({ init_point: "https://mp.example/checkout/abc" }),
-      null
+      collectionWith({ init_point: "https://mp.example/checkout/abc" })
     )
 
     expect(initPoint).toBe("https://mp.example/checkout/abc")
@@ -88,30 +87,42 @@ describe("selectMercadoPagoInitPoint", () => {
    * them to a stale preference or to Openpay's own session data.
    */
   it("picks the Mercado Pago session, not merely the first one", () => {
-    const initPoint = selectMercadoPagoInitPoint(
-      {
-        payment_sessions: [
-          { provider_id: OPENPAY, data: { redirect_url: "https://3ds.bank" } },
-          {
-            provider_id: MERCADOPAGO,
-            data: { init_point: "https://mp.example/checkout/right" },
-          },
-        ],
-      },
-      null
-    )
+    const initPoint = selectMercadoPagoInitPoint({
+      payment_sessions: [
+        { provider_id: OPENPAY, data: { redirect_url: "https://3ds.bank" } },
+        {
+          provider_id: MERCADOPAGO,
+          data: { init_point: "https://mp.example/checkout/right" },
+        },
+      ],
+    })
 
     expect(initPoint).toBe("https://mp.example/checkout/right")
   })
 
-  it("falls back to the cart when the collection did not carry the session", () => {
-    const initPoint = selectMercadoPagoInitPoint(null, {
-      payment_collection: collectionWith({
-        init_point: "https://mp.example/checkout/from-cart",
-      }),
-    })
-
-    expect(initPoint).toBe("https://mp.example/checkout/from-cart")
+  /**
+   * ## The cart fallback is GONE, and this test is what says so
+   *
+   * It used to read "falls back to the cart when the collection did not carry
+   * the session", and it blessed the defect. The cart the caller had to hand
+   * was the one D5 step 2 returned — read BEFORE any session existed on this
+   * attempt — while `design.md` D5 names the fallback as the cart read AFTER
+   * initiation.
+   *
+   * Medusa's default store cart projection includes
+   * `*payment_collection.payment_sessions` and `syncCheckoutAddresses` uses
+   * that projection, so on a retry that cart carries the PREVIOUS attempt's
+   * `init_point`, minted for the PREVIOUS total. `placeOrder` is never called
+   * for this provider and the webhook is the source of truth, so following it
+   * charges an amount the customer was never quoted.
+   *
+   * The parameter is removed rather than merely unused at the call site: a
+   * dangerous argument left in the signature is an invitation to pass the
+   * wrong cart back in, and this change treats a rule with two homes as the
+   * defect.
+   */
+  it("takes exactly one argument, so no cart can be offered as a fallback", () => {
+    expect(selectMercadoPagoInitPoint).toHaveLength(1)
   })
 
   /**
@@ -131,12 +142,12 @@ describe("selectMercadoPagoInitPoint", () => {
     ["a collection with no sessions", { payment_sessions: [] }],
     ["a collection with no session key", {}],
   ])("returns null for %s", (_label, collection) => {
-    expect(selectMercadoPagoInitPoint(collection, null)).toBeNull()
+    expect(selectMercadoPagoInitPoint(collection)).toBeNull()
   })
 
-  it("returns null when neither source carries anything at all", () => {
-    expect(selectMercadoPagoInitPoint(null, null)).toBeNull()
-    expect(selectMercadoPagoInitPoint(undefined, undefined)).toBeNull()
+  it("returns null when the response carries nothing at all", () => {
+    expect(selectMercadoPagoInitPoint(null)).toBeNull()
+    expect(selectMercadoPagoInitPoint(undefined)).toBeNull()
   })
 })
 

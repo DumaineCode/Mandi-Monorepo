@@ -874,6 +874,68 @@ describe("the Mercado Pago tail", () => {
    * undefined` coerces to the string `"undefined"` and the browser navigates to
    * `/undefined` — a 404, with the customer unable to tell whether they paid.
    */
+  /**
+   * ## The retry, and why the cart is not a fallback
+   *
+   * The tail used to pass `synced.cart` to `selectMercadoPagoInitPoint` as a
+   * fallback source. `synced.cart` is what STEP 2 returned — read before any
+   * payment session existed on this attempt. `design.md` D5 specifies the
+   * fallback as the cart read AFTER initiation, which is a different cart.
+   *
+   * This is not dead code. Medusa's default store cart projection includes
+   * `*payment_collection.payment_sessions`, and `syncCheckoutAddresses` uses
+   * that default projection. So on a RETRY — the customer went to Mercado
+   * Pago, came back through `payment/mercadopago/failure/route.ts` with
+   * `?error=payment_failed`, and clicked again — `synced.cart` carries the
+   * PREVIOUS attempt's session and its previous `init_point`, minted for the
+   * PREVIOUS total.
+   *
+   * `placeOrder` is never called for Mercado Pago and the webhook is the source
+   * of truth, so following that link charges the customer an amount they were
+   * never quoted and creates an order from it.
+   *
+   * Same defect class as mutation M16, which this slice already caught and
+   * fixed on the Openpay side: a payload built from the pre-sync cart. Caught
+   * on one side, shipped on the other.
+   */
+  it("does NOT follow a stale init_point left on the cart by a previous attempt", async () => {
+    const staleSession = {
+      provider_id: MERCADOPAGO,
+      data: { init_point: "https://mp.example/checkout/PREVIOUS-ATTEMPT" },
+    }
+
+    const h = harness({
+      providerId: MERCADOPAGO,
+      // Step 2's response, on Medusa's default projection, which carries
+      // `payment_collection.payment_sessions`.
+      syncAddresses: async () => ({
+        ok: true as const,
+        cart: readyCart({
+          payment_collection: { payment_sessions: [staleSession] },
+        }),
+      }),
+      // This attempt's initiation answered without a usable link.
+      initiatePaymentSession: async () => ({
+        payment_collection: {
+          payment_sessions: [{ provider_id: MERCADOPAGO, data: {} }],
+        },
+      }),
+    })
+
+    const outcome = await h.flow.place()
+
+    // THE CLAIM. A preference minted for a total the customer is no longer
+    // being shown is not a fallback, it is a wrong charge.
+    expect(h.navigate).not.toHaveBeenCalled()
+    expect(outcome.status).toBe("failed")
+    expect(outcome.status === "failed" && outcome.error).toBe(
+      PLACE_ORDER_MESSAGES.mercadoPagoUnavailable
+    )
+    // The customer retries, and the retry mints a fresh preference. That is
+    // what R5 buys and what makes refusing here cheap.
+    expect(h.readState().placingOrder).toBe(false)
+  })
+
   it.each([
     ["undefined", undefined],
     ["null", null],
