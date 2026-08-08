@@ -11,7 +11,10 @@ export default function CheckoutLayout({
   const year = new Date().getFullYear()
 
   return (
-    <div className="relative min-h-screen w-full bg-paper">
+    // Surface colour comes from <body>; repainting it here would cover the brand
+    // watermark, which is drawn by a fixed `z-index: -1` pseudo-element and so
+    // sits *behind* any opaque background painted by a descendant.
+    <div className="relative min-h-screen w-full">
       {/* Reduced branded checkout header — mirrors the store Nav (bg-ink). */}
       <div className="sticky top-0 inset-x-0 z-50">
         <header className="relative h-16 mx-auto border-b border-cream/10 bg-ink">
@@ -77,8 +80,12 @@ export default function CheckoutLayout({
         {children}
       </div>
 
-      {/* Minimal branded footer (replaces MedusaCTA). */}
-      <div className="w-full border-t border-line bg-cream py-6">
+      {/*
+        Minimal branded footer (replaces MedusaCTA). No background of its own: the
+        cream already comes from <body>, and repainting it would punch an opaque
+        watermark-free stripe across the bottom of the page.
+      */}
+      <div className="w-full border-t border-line py-6">
         <div className="content-container flex flex-col items-center gap-5">
           <PaymentBadges
             labelClassName="text-ink-muted"

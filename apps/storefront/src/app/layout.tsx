@@ -61,8 +61,9 @@ export default function RootLayout(props: { children: React.ReactNode }) {
     >
       {/*
           The cream surface and its brand watermark live on <body> so every route
-          inherits them; surfaces that must stay clean (checkout) just paint their
-          own background on top.
+          inherits them. The watermark is a fixed `z-index: -1` pseudo-element, so
+          any route that repaints an opaque background hides it — a route that
+          wants a clean surface opts out that way, on purpose.
         */}
         <body className="brand-watermark bg-cream font-hanken text-ink">
         <main className="relative">{props.children}</main>
