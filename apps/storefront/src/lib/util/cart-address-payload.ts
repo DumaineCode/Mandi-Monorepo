@@ -42,11 +42,14 @@ export const PERSISTABLE_ADDRESS_FIELDS = [
 ] as const satisfies readonly (keyof HttpTypes.StoreCartAddress)[]
 
 /**
- * The shipping-address shape the checkout draft persists.
+ * The address shape the checkout persists.
  *
- * `billing_address` is NOT part of this on purpose. Billing is written at CTA
- * time by a function that does not exist yet — it is planned for PR2c — and it
- * is exposed to the identical replacement hazard described below.
+ * Shared by BOTH addresses as of PR2c. The autosave (`persistCheckoutDraft`)
+ * writes only `shipping_address` with a partial patch of these fields; the
+ * CTA-time write (`syncCheckoutAddresses`) writes both addresses in full. One
+ * field list, because the two payloads are validated by the same `.strict()`
+ * zod object and a set that could drift between them is a 400 waiting to
+ * happen on whichever path was not updated.
  */
 export type CheckoutDraftAddress = Pick<
   HttpTypes.StoreCartAddress,
@@ -150,6 +153,85 @@ export function buildPartialShippingAddressPayload(
   }
 }
 
+export type CheckoutAddressesPayload = {
+  shipping_address: Record<string, unknown>
+  billing_address: Record<string, unknown>
+}
+
+/**
+ * The ids of the two `cart_address` rows a cart currently owns, `null` when the
+ * row does not exist.
+ *
+ * Resolved SERVER-SIDE from a fresh read and passed in, never taken from a
+ * caller. See {@link buildCheckoutAddressesPayload} for why that boundary is
+ * not negotiable.
+ */
+export type CartAddressIds = {
+  shipping: string | null
+  billing: string | null
+}
+
+/**
+ * Builds the CTA-time payload that writes BOTH addresses, each carrying its own
+ * existing row id (task 2c.12, `design.md` D5 step 2).
+ *
+ * ## Billing is exposed to the identical hazard, and the reason is not the one
+ * you would guess
+ *
+ * `buildPartialShippingAddressPayload`'s docstring above has the full
+ * `EntityAssigner` mechanism; it applies here unchanged, for `billing_address`
+ * as much as for `shipping_address`. What differs is the CONSEQUENCE, and the
+ * difference is exactly the argument that would wave this through review:
+ *
+ * > "this write sends every field, so `em.create` destroys nothing."
+ *
+ * That is true about field VALUES and false about the row. An id-less write
+ * still mints a NEW `cart_address` row and repoints the cart FK at it, so the
+ * row id CHURNS on every submit. `persistCheckoutDraft`'s docstring records
+ * precisely this as the reason a client-held id hint could not be trusted —
+ * "`setAddresses` sends `shipping_address` WITHOUT an id, so every form submit
+ * churns the address row id and any hint the client had captured went stale".
+ * That was a description of the function this one replaces. Repeating its
+ * mistake would re-create the staleness the id resolution exists to remove,
+ * and it would do so at the CTA, where an autosave fires again the moment the
+ * total-change guard sends the customer back for one more confirmation.
+ *
+ * ## The ids come from the cart, never from the payload
+ *
+ * Same invariant as the autosave path and for the same reason: `cart.ts` is
+ * `"use server"`, so every argument crossing into it is client-controlled, and
+ * an id taken from there is an unauthenticated claim about which row to write.
+ *
+ * The guard is the FIELD SET, and only the field set: `id` is absent from
+ * {@link PERSISTABLE_ADDRESS_FIELDS}, so `pickPatchedFields` never emits the
+ * key and an `id` smuggled inside either address object cannot reach the wire.
+ *
+ * Applying the resolved id after the spread is belt and braces on top of that,
+ * and it is worth naming as such rather than claiming it as protection: a
+ * mutation that swapped the two orderings survived the whole suite, because
+ * with the filter in place both orderings emit byte-identical payloads. The
+ * spec pins the field set directly for that reason — if the filter is ever
+ * loosened, THAT is the test that fails, not this ordering.
+ */
+export function buildCheckoutAddressesPayload(
+  ids: CartAddressIds,
+  addresses: {
+    shipping: Partial<CheckoutDraftAddress>
+    billing: Partial<CheckoutDraftAddress>
+  }
+): CheckoutAddressesPayload {
+  return {
+    shipping_address: {
+      ...pickPatchedFields(addresses.shipping),
+      ...(ids.shipping ? { id: ids.shipping } : {}),
+    },
+    billing_address: {
+      ...pickPatchedFields(addresses.billing),
+      ...(ids.billing ? { id: ids.billing } : {}),
+    },
+  }
+}
+
 /**
  * The one place that knows where a shipping-address id lives on a cart.
  *
@@ -162,7 +244,45 @@ export function buildPartialShippingAddressPayload(
  */
 const readShippingAddressId = (
   cart: HttpTypes.StoreCart | null | undefined
-): string | null => cart?.shipping_address?.id || null
+): string | null => readRelationId(cart, "shipping_address")
+
+/**
+ * The generic form of the two readers below, so shipping and billing cannot
+ * disagree about what "has an id" means.
+ *
+ * Typed through an index probe rather than the published `StoreCart` keys
+ * because the FK scalars are not in the type at all (`common.d.ts:40` declares
+ * only the relations) even though both are in Medusa's default store
+ * projection.
+ */
+const readRelationId = (
+  cart: HttpTypes.StoreCart | null | undefined,
+  relation: AddressRelation
+): string | null => {
+  const address = probe(cart, relation) as { id?: unknown } | null | undefined
+
+  return typeof address?.id === "string" && address.id.length > 0
+    ? address.id
+    : null
+}
+
+export type AddressRelation = "shipping_address" | "billing_address"
+
+/**
+ * Reads a key off a cart that the published type does not declare.
+ *
+ * The FK scalars are genuinely absent from `StoreCart` (`common.d.ts:40`
+ * declares only the relations) even though both are in Medusa's default store
+ * projection, and the relation names are read dynamically so shipping and
+ * billing can share one resolver. `unknown` is the honest intermediate: casting
+ * a nominal type straight to an index signature is the thing TypeScript is
+ * right to reject, and widening through `unknown` states that the shape is
+ * being PROBED rather than asserted — which is exactly what is happening.
+ */
+const probe = (
+  cart: HttpTypes.StoreCart | null | undefined,
+  key: string
+): unknown => (cart as unknown as Record<string, unknown> | null | undefined)?.[key]
 
 /**
  * Reads the `shipping_address_id` FK SCALAR off a cart.
@@ -178,14 +298,15 @@ const readShippingAddressId = (
  * `"missing"` (the key never arrived), `null` (positively no address row), or
  * the id of the row that exists.
  */
-const readShippingAddressFk = (
-  cart: HttpTypes.StoreCart
+const readAddressFk = (
+  cart: HttpTypes.StoreCart,
+  fkKey: "shipping_address_id" | "billing_address_id"
 ): string | null | "missing" => {
-  if (!("shipping_address_id" in cart)) {
+  if (!(fkKey in cart)) {
     return "missing"
   }
 
-  const fk = (cart as { shipping_address_id?: unknown }).shipping_address_id
+  const fk = probe(cart, fkKey)
 
   return typeof fk === "string" && fk.length > 0 ? fk : null
 }
@@ -231,7 +352,31 @@ export type ShippingAddressIdResolution =
  */
 export const resolveShippingAddressId = (
   read: FreshCartRead
+): ShippingAddressIdResolution => resolveCartAddressId(read, "shipping_address")
+
+/**
+ * The billing half of the same rule (task 2c.12).
+ *
+ * A separate export rather than a second implementation: `billing_address_id`
+ * sits in Medusa's default store cart projection
+ * (`query-config.js:115`) one line below the shipping block, so BOTH pieces of
+ * evidence the shipping resolver relies on are available on identical terms and
+ * there is no reason for the two to reach different conclusions from the same
+ * cart. Sharing the body is what guarantees they cannot.
+ *
+ * @see resolveShippingAddressId for the full argument about why absence must be
+ * positively established rather than assumed.
+ */
+export const resolveBillingAddressId = (
+  read: FreshCartRead
+): ShippingAddressIdResolution => resolveCartAddressId(read, "billing_address")
+
+const resolveCartAddressId = (
+  read: FreshCartRead,
+  relation: AddressRelation
 ): ShippingAddressIdResolution => {
+  const fkKey = `${relation}_id` as const
+
   if (!read.ok) {
     return { status: "unresolved", error: read.error }
   }
@@ -253,7 +398,7 @@ export const resolveShippingAddressId = (
   // list which strips the scalar but keeps `shipping_address.id` cannot break
   // the resolver: neither signal is permitted to become a single point of
   // failure, which is the entire lesson of this finding.
-  const id = readShippingAddressId(read.cart)
+  const id = readRelationId(read.cart, relation)
 
   if (id) {
     return { status: "resolved", id }
@@ -270,7 +415,7 @@ export const resolveShippingAddressId = (
   // bought with a safety property. `shipping_address_id` is a scalar column, so
   // a selected key is always present and its value answers the question
   // outright.
-  const fk = readShippingAddressFk(read.cart)
+  const fk = readAddressFk(read.cart, fkKey)
 
   if (fk !== "missing") {
     // `null` FK is a FACT about the cart: there is no address row. `em.create`
@@ -281,8 +426,7 @@ export const resolveShippingAddressId = (
       ? { status: "absent" }
       : {
           status: "unresolved",
-          error:
-            "Cart has a shipping address row but the read did not return its id",
+          error: `Cart has a ${relation} row but the read did not return its id`,
         }
   }
 
@@ -300,14 +444,14 @@ export const resolveShippingAddressId = (
   // disarmed because no id was sent. Every layer silent, and the customer's
   // `first_name`, `last_name`, `company`, `phone`, `address_1` and `address_2`
   // gone.
-  if (!("shipping_address" in read.cart)) {
+  if (!(relation in read.cart)) {
     return {
       status: "unresolved",
-      error: "Cart read returned neither shipping_address nor its id",
+      error: `Cart read returned neither ${relation} nor its id`,
     }
   }
 
-  const address = read.cart.shipping_address
+  const address = probe(read.cart, relation)
 
   if (address === null || address === undefined) {
     return { status: "absent" }
@@ -318,6 +462,6 @@ export const resolveShippingAddressId = (
   // `assignReference` -> `em.create` and destroy that row.
   return {
     status: "unresolved",
-    error: "Cart shipping address arrived without an id",
+    error: `Cart ${relation} arrived without an id`,
   }
 }

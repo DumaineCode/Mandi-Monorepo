@@ -57,7 +57,7 @@ vi.mock("@lib/util/medusa-error", () => ({ default: vi.fn() }))
 // loaded by a node-environment data-layer test.
 vi.mock("@lib/constants", () => ({ isOpenpay: () => false }))
 
-import { persistCheckoutDraft } from "./cart"
+import { persistCheckoutDraft, syncCheckoutAddresses } from "./cart"
 
 const CART_ID = "cart_01JQZ8V3K7NB2XW9RTPY4C6HDM"
 const ADDRESS_ID = "caaddr_01JQZ8V3K7NB2XW9RTPY4C6HDM"
@@ -403,5 +403,258 @@ describe("persistCheckoutDraft", () => {
 
       expect(console.error).toHaveBeenCalled()
     })
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * `syncCheckoutAddresses` — the CTA-time write (task 2c.12)
+ * ---------------------------------------------------------------------------
+ *
+ * Replaces `setAddresses`, which took a `FormData` from a submit button that no
+ * longer exists (PR2a deleted `addresses/index.tsx`, its only caller) and sent
+ * BOTH addresses with NO ids.
+ *
+ * That id-less write is the same `EntityAssigner` -> `em.create` path PR1a
+ * closed for the autosave, and `persistCheckoutDraft`'s own docstring cites
+ * this function BY NAME as the reason a client-held address id could never be
+ * trusted: every submit minted new rows, so any id the client had captured was
+ * already stale. Closing the autosave half while leaving this one open would
+ * have meant the CTA re-opened the hole the autosave had just been hardened
+ * against — on the one request per checkout that the customer cannot retry
+ * without consequences.
+ *
+ * The tests below assert against the ARGUMENTS `sdk.store.cart.update` was
+ * called with, not against a stub's return value, for the reason stated at the
+ * top of this file.
+ */
+describe("syncCheckoutAddresses", () => {
+  const BILLING_ID = "caaddr_01JQZ8V3K7NB2XW9RTPY4C6HBB"
+
+  const SHIPPING = {
+    first_name: "Ana",
+    last_name: "Ruiz",
+    company: "",
+    address_1: "Av. Insurgentes Sur 1602",
+    address_2: "Crédito Constructor",
+    postal_code: "03940",
+    city: "Ciudad de México",
+    province: "CDMX",
+    country_code: "mx",
+    phone: "5512345678",
+  }
+
+  const BILLING = {
+    ...SHIPPING,
+    address_1: "Av. Constitución 300",
+    address_2: "Centro",
+    postal_code: "64000",
+    city: "Monterrey",
+    province: "Nuevo León",
+  }
+
+  /** A cart that owns BOTH address rows. */
+  const cartWithBothAddresses = () => ({
+    cart: {
+      id: CART_ID,
+      shipping_address_id: ADDRESS_ID,
+      shipping_address: { id: ADDRESS_ID },
+      billing_address_id: BILLING_ID,
+      billing_address: { id: BILLING_ID },
+    },
+  })
+
+  const sentPayload = () =>
+    updateMock.mock.calls[0][1] as {
+      shipping_address?: Record<string, unknown>
+      billing_address?: Record<string, unknown>
+      email?: string
+    }
+
+  it("sends BOTH addresses carrying their own row ids", async () => {
+    fetchMock.mockResolvedValue(cartWithBothAddresses())
+
+    const result = await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: "ana@example.com",
+    })
+
+    expect(result.ok).toBe(true)
+
+    const payload = sentPayload()
+    expect(payload.shipping_address?.id).toBe(ADDRESS_ID)
+    expect(payload.billing_address?.id).toBe(BILLING_ID)
+    expect(payload.shipping_address?.city).toBe("Ciudad de México")
+    expect(payload.billing_address?.city).toBe("Monterrey")
+    expect(payload.email).toBe("ana@example.com")
+  })
+
+  /**
+   * The `absent` path. A cart that has never had a billing row has no id to
+   * send, `em.create` is correct, and there is nothing to churn. The key must
+   * be OMITTED — a falsy id yields `pk === undefined` at `EntityAssigner.js:81`
+   * and buys nothing.
+   */
+  it("omits the billing id on a cart that has no billing row", async () => {
+    fetchMock.mockResolvedValue({
+      cart: {
+        id: CART_ID,
+        shipping_address_id: ADDRESS_ID,
+        shipping_address: { id: ADDRESS_ID },
+        billing_address_id: null,
+        billing_address: null,
+      },
+    })
+
+    await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    const payload = sentPayload()
+    expect(payload.shipping_address?.id).toBe(ADDRESS_ID)
+    expect("id" in (payload.billing_address ?? {})).toBe(false)
+  })
+
+  /**
+   * THE ABORT GUARANTEE, inherited from `persistCheckoutDraft`.
+   *
+   * A read that did not positively establish an answer must produce ZERO calls
+   * to `sdk.store.cart.update`. The assertion is on the write NOT happening: a
+   * returned `{ ok: false }` beside a write that already went out is the worst
+   * of both worlds, and only this assertion can tell the difference.
+   */
+  it("performs NO write when the fresh read rejects", async () => {
+    fetchMock.mockRejectedValue(new Error("ECONNREFUSED"))
+
+    const result = await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    expect(result.ok).toBe(false)
+    expect(updateMock).not.toHaveBeenCalled()
+  })
+
+  it("performs NO write when a row exists but its id did not arrive", async () => {
+    // The dangerous shape: the FK says a row is there and the projection did
+    // not deliver its key. Writing id-less would churn that row.
+    fetchMock.mockResolvedValue({
+      cart: {
+        id: CART_ID,
+        shipping_address_id: ADDRESS_ID,
+        shipping_address: { first_name: "Ana" },
+        billing_address_id: null,
+        billing_address: null,
+      },
+    })
+
+    const result = await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    expect(result.ok).toBe(false)
+    expect(updateMock).not.toHaveBeenCalled()
+  })
+
+  it("performs NO write when the BILLING id cannot be established", async () => {
+    fetchMock.mockResolvedValue({
+      cart: {
+        id: CART_ID,
+        shipping_address_id: ADDRESS_ID,
+        shipping_address: { id: ADDRESS_ID },
+        billing_address_id: BILLING_ID,
+        billing_address: { first_name: "Ana" },
+      },
+    })
+
+    const result = await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    expect(result.ok).toBe(false)
+    expect(updateMock).not.toHaveBeenCalled()
+  })
+
+  it("performs NO write when there is no cart at all", async () => {
+    getCartIdMock.mockResolvedValue(undefined)
+
+    const result = await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    expect(result.ok).toBe(false)
+    expect(updateMock).not.toHaveBeenCalled()
+  })
+
+  /**
+   * `cart.ts` is `"use server"`, so every string this function returns is
+   * shipped to the browser. The backend's own response body echoes cart ids and
+   * address content; `persistCheckoutDraft` already withholds it and returns a
+   * generic string instead, and this function must not undo that decision on a
+   * different route.
+   */
+  it("never returns the backend's own error text to the browser", async () => {
+    fetchMock.mockResolvedValue(cartWithBothAddresses())
+    updateMock.mockRejectedValue(
+      new Error(`Cart ${CART_ID} address ${ADDRESS_ID} is invalid`)
+    )
+
+    const result = await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error).not.toContain(CART_ID)
+      expect(result.error).not.toContain(ADDRESS_ID)
+    }
+  })
+
+  /**
+   * The returned cart is what the total-change guard (2c.8) compares against
+   * `totalAtRender`, so it has to be the cart the write produced and not the
+   * one the pre-flight read returned. Handing back the stale read would make
+   * the guard compare a number to itself and never fire.
+   */
+  it("returns the cart the WRITE produced, not the one the read returned", async () => {
+    fetchMock.mockResolvedValue(cartWithBothAddresses())
+    updateMock.mockResolvedValue({
+      cart: { id: CART_ID, total: 1450, shipping_address: { id: ADDRESS_ID } },
+    })
+
+    const result = await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.cart.total).toBe(1450)
+    }
+  })
+
+  it("omits email entirely when the caller supplies null", async () => {
+    fetchMock.mockResolvedValue(cartWithBothAddresses())
+
+    await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    expect("email" in sentPayload()).toBe(false)
   })
 })

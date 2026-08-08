@@ -2,8 +2,10 @@ import { HttpTypes } from "@medusajs/types"
 import { describe, expect, it } from "vitest"
 
 import {
+  buildCheckoutAddressesPayload,
   buildPartialShippingAddressPayload,
   PERSISTABLE_ADDRESS_FIELDS,
+  resolveBillingAddressId,
   resolveShippingAddressId,
   type CheckoutDraftAddress,
   type FreshCartRead,
@@ -571,5 +573,439 @@ describe("resolveShippingAddressId", () => {
         expect(resolution.status).toBe("unresolved")
       }
     )
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * PR2c — the CTA-time write (task 2c.12)
+ * ---------------------------------------------------------------------------
+ *
+ * `syncCheckoutAddresses` writes BOTH addresses at once, and `design.md` D5 is
+ * explicit that billing is exposed to the IDENTICAL `EntityAssigner`
+ * replacement hazard as shipping: a nested `billing_address` with no `id` takes
+ * `assignReference` -> `em.create` and repoints the cart FK at a brand-new row.
+ *
+ * The consequence differs from the autosave case and is worth stating, because
+ * "the payload is complete so nothing is lost" is the reasoning that would let
+ * this through review. A full write does not destroy field VALUES — it churns
+ * the row ID. That is what made the deleted `setAddresses` self-staling and is
+ * quoted verbatim in `persistCheckoutDraft`'s own docstring as the reason a
+ * client-held id hint could not be trusted. Every submit minted a new
+ * `cart_address` row, so any id captured earlier was already wrong. Carrying
+ * the id keeps the row stable, which is what the autosave that runs after the
+ * CTA aborts (total-change guard) depends on.
+ */
+describe("buildCheckoutAddressesPayload", () => {
+  const CDMX: CheckoutDraftAddress = {
+    first_name: "Ana",
+    last_name: "Ruiz",
+    company: "",
+    address_1: "Av. Álvaro Obregón 100",
+    address_2: "Roma Norte",
+    postal_code: "06700",
+    city: "Ciudad de México",
+    province: "CDMX",
+    country_code: "mx",
+    phone: "5512345678",
+  }
+
+  const MONTERREY: CheckoutDraftAddress = {
+    ...CDMX,
+    address_1: "Av. Constitución 300",
+    address_2: "Centro",
+    postal_code: "64000",
+    city: "Monterrey",
+    province: "Nuevo León",
+  }
+
+  it("carries both address ids when the cart has both rows", () => {
+    const payload = buildCheckoutAddressesPayload(
+      { shipping: "caaddr_ship", billing: "caaddr_bill" },
+      { shipping: CDMX, billing: MONTERREY }
+    )
+
+    expect(payload.shipping_address.id).toBe("caaddr_ship")
+    expect(payload.billing_address.id).toBe("caaddr_bill")
+    expect(payload.shipping_address.city).toBe("Ciudad de México")
+    expect(payload.billing_address.city).toBe("Monterrey")
+  })
+
+  /**
+   * The `absent` path, and the one moment an id-less write is legitimate: there
+   * is no row, so `em.create` is correct and there is nothing to churn.
+   *
+   * The key must be OMITTED, never sent as `null` or `""`. A falsy id still
+   * yields `pk === undefined` at `EntityAssigner.js:81`, so it buys exactly
+   * nothing while reading like an intent that was never expressed.
+   */
+  it("omits the id key entirely when the cart has no billing row", () => {
+    const payload = buildCheckoutAddressesPayload(
+      { shipping: "caaddr_ship", billing: null },
+      { shipping: CDMX, billing: MONTERREY }
+    )
+
+    expect("id" in payload.billing_address).toBe(false)
+    expect(payload.shipping_address.id).toBe("caaddr_ship")
+  })
+
+  it("omits the shipping id key entirely when the cart has no shipping row", () => {
+    const payload = buildCheckoutAddressesPayload(
+      { shipping: null, billing: "caaddr_bill" },
+      { shipping: CDMX, billing: MONTERREY }
+    )
+
+    expect("id" in payload.shipping_address).toBe(false)
+    expect(payload.billing_address.id).toBe("caaddr_bill")
+  })
+
+  /**
+   * Same `.strict()` zod constraint as the autosave path
+   * (`common-validators/common.js:6-20`): an unexpected key fails the WHOLE
+   * write with a 400. At CTA time that is an order that cannot be placed, so
+   * the filter matters more here than it does on a skippable autosave.
+   */
+  it("sends only the persistable fields, dropping anything else", () => {
+    const payload = buildCheckoutAddressesPayload(
+      { shipping: null, billing: null },
+      {
+        shipping: {
+          ...CDMX,
+          id: "caaddr_forged",
+          metadata: { spoofed: true },
+        } as unknown as CheckoutDraftAddress,
+        billing: CDMX,
+      }
+    )
+
+    expect(Object.keys(payload.shipping_address).sort()).toEqual(
+      [...EXPECTED_PERSISTABLE_FIELDS].sort()
+    )
+  })
+
+  /**
+   * The security invariant from D3, restated for the CTA write. A caller-held
+   * id is an unauthenticated claim about which `cart_address` row to write, and
+   * a WRONG id is worse than none: `sameTarget` fails on a mismatched pk and
+   * execution falls through to the same destructive `assignReference` path,
+   * now with a misleading id in the payload making the postmortem harder.
+   */
+  it("never lets an id in the address payload override the resolved id", () => {
+    const payload = buildCheckoutAddressesPayload(
+      { shipping: "caaddr_real", billing: "caaddr_real_bill" },
+      {
+        shipping: { ...CDMX, id: "caaddr_forged" } as unknown as CheckoutDraftAddress,
+        billing: { ...CDMX, id: "caaddr_forged" } as unknown as CheckoutDraftAddress,
+      }
+    )
+
+    expect(payload.shipping_address.id).toBe("caaddr_real")
+    expect(payload.billing_address.id).toBe("caaddr_real_bill")
+  })
+
+  /**
+   * `""` is a CLEAR, not an absence — `AddressPayload` declares every field
+   * `nullish()`. Deleting a company name or an apartment number has to be
+   * saveable, and collapsing `""` into "absent" is a data-loss bug pointing the
+   * other way.
+   */
+  it("sends empty strings, because clearing a field is legitimate", () => {
+    const payload = buildCheckoutAddressesPayload(
+      { shipping: null, billing: null },
+      {
+        shipping: { ...CDMX, company: "", address_2: "" },
+        billing: CDMX,
+      }
+    )
+
+    expect(payload.shipping_address.company).toBe("")
+    expect(payload.shipping_address.address_2).toBe("")
+  })
+})
+
+/**
+ * `billing_address_id` is part of Medusa's OWN default store cart projection
+ * (`@medusajs/medusa/dist/api/store/carts/query-config.js:115`), one line below
+ * the `shipping_address` block, so the two-signal resolution `resolveShipping
+ * AddressId` performs is available for billing on exactly the same terms.
+ *
+ * The asymmetry that matters is preserved: absence must be POSITIVELY
+ * ESTABLISHED. "The read failed" and "the cart has no billing row" are opposite
+ * situations and a single `null` cannot tell them apart.
+ */
+describe("resolveBillingAddressId", () => {
+  const cartWith = (fields: Record<string, unknown>): HttpTypes.StoreCart =>
+    ({ id: "cart_01", ...fields } as unknown as HttpTypes.StoreCart)
+
+  it("resolves the id off the relation when it is there", () => {
+    const resolution = resolveBillingAddressId({
+      ok: true,
+      cart: cartWith({ billing_address: { id: "caaddr_bill" } }),
+    })
+
+    expect(resolution).toEqual({ status: "resolved", id: "caaddr_bill" })
+  })
+
+  it("reports absent when the FK scalar is positively null", () => {
+    const resolution = resolveBillingAddressId({
+      ok: true,
+      cart: cartWith({ billing_address_id: null, billing_address: null }),
+    })
+
+    expect(resolution).toEqual({ status: "absent" })
+  })
+
+  /**
+   * The dangerous shape: a row EXISTS and we do not have its key. Writing
+   * id-less here churns the row, so it aborts.
+   */
+  it("refuses to resolve when a row exists but its id did not arrive", () => {
+    const resolution = resolveBillingAddressId({
+      ok: true,
+      cart: cartWith({
+        billing_address_id: "caaddr_bill",
+        billing_address: { first_name: "Ana" },
+      }),
+    })
+
+    expect(resolution.status).toBe("unresolved")
+  })
+
+  it("refuses to resolve a failed read", () => {
+    const resolution = resolveBillingAddressId({
+      ok: false,
+      error: "TimeoutError",
+    })
+
+    expect(resolution.status).toBe("unresolved")
+  })
+
+  /**
+   * A projection that stopped materialising the relation returns a clean 200, a
+   * cart, and no relation. Resolving that to `absent` is exactly the silent
+   * destructive path the shipping resolver was hardened against, so the billing
+   * one must not reintroduce it.
+   */
+  it("refuses to resolve when neither the relation nor the FK arrived", () => {
+    const resolution = resolveBillingAddressId({
+      ok: true,
+      cart: cartWith({}),
+    })
+
+    expect(resolution.status).toBe("unresolved")
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * Triangulation — the mutants a shared implementation invites
+ * ---------------------------------------------------------------------------
+ *
+ * `resolveBillingAddressId` and `resolveShippingAddressId` share a body
+ * parameterised by the relation name. That removes the drift risk two copies
+ * would have carried, and introduces exactly one new one in its place: a key
+ * that is threaded WRONG, or not threaded at all, reads the other address's
+ * row. Every test above passes under that bug whenever both rows happen to
+ * exist, because both answers are then non-null and plausible.
+ *
+ * These cases separate the two addresses so the wrong key cannot look right.
+ */
+describe("the two address resolvers never read each other's row", () => {
+  const cartWith = (fields: Record<string, unknown>): HttpTypes.StoreCart =>
+    ({ id: "cart_01", ...fields } as unknown as HttpTypes.StoreCart)
+
+  it("resolves billing as absent on a cart that HAS a shipping row", () => {
+    const read: FreshCartRead = {
+      ok: true,
+      cart: cartWith({
+        shipping_address_id: "caaddr_ship",
+        shipping_address: { id: "caaddr_ship" },
+        billing_address_id: null,
+        billing_address: null,
+      }),
+    }
+
+    // The bug this pins: reading `shipping_address` for the billing question
+    // returns `caaddr_ship`, and the CTA write would then send the SHIPPING
+    // row's id as the billing id. `sameTarget` fails on the mismatched pk,
+    // execution falls to `assignReference` -> `em.create`, and the shipping
+    // row is now referenced by a billing payload. Worse than no id.
+    expect(resolveBillingAddressId(read)).toEqual({ status: "absent" })
+    expect(resolveShippingAddressId(read)).toEqual({
+      status: "resolved",
+      id: "caaddr_ship",
+    })
+  })
+
+  it("resolves shipping as absent on a cart that HAS a billing row", () => {
+    const read: FreshCartRead = {
+      ok: true,
+      cart: cartWith({
+        shipping_address_id: null,
+        shipping_address: null,
+        billing_address_id: "caaddr_bill",
+        billing_address: { id: "caaddr_bill" },
+      }),
+    }
+
+    expect(resolveShippingAddressId(read)).toEqual({ status: "absent" })
+    expect(resolveBillingAddressId(read)).toEqual({
+      status: "resolved",
+      id: "caaddr_bill",
+    })
+  })
+
+  it("gives the two rows their own distinct ids", () => {
+    const read: FreshCartRead = {
+      ok: true,
+      cart: cartWith({
+        shipping_address: { id: "caaddr_ship" },
+        billing_address: { id: "caaddr_bill" },
+      }),
+    }
+
+    expect(resolveShippingAddressId(read)).toEqual({
+      status: "resolved",
+      id: "caaddr_ship",
+    })
+    expect(resolveBillingAddressId(read)).toEqual({
+      status: "resolved",
+      id: "caaddr_bill",
+    })
+  })
+
+  /**
+   * EVIDENCE 3 for billing: no FK scalar in the response at all, relation key
+   * present and nullish. `absent` is correct here and it must not be reached by
+   * accident — the companion case one line below proves the same shape WITHOUT
+   * the key aborts instead.
+   */
+  it("falls back to the relation key alone when no billing FK arrived", () => {
+    expect(
+      resolveBillingAddressId({
+        ok: true,
+        cart: cartWith({ billing_address: null }),
+      })
+    ).toEqual({ status: "absent" })
+
+    expect(
+      resolveBillingAddressId({
+        ok: true,
+        cart: cartWith({ shipping_address: null }),
+      }).status
+    ).toBe("unresolved")
+  })
+
+  it("aborts on a billing object that arrived without an id and without a FK", () => {
+    const resolution = resolveBillingAddressId({
+      ok: true,
+      cart: cartWith({ billing_address: { first_name: "Ana" } }),
+    })
+
+    expect(resolution.status).toBe("unresolved")
+    expect(resolution).toHaveProperty(
+      "error",
+      "Cart billing_address arrived without an id"
+    )
+  })
+
+  /**
+   * The error text has to name the address it is about. Both resolvers used to
+   * be one function hard-coded to "shipping"; a log line that says "shipping"
+   * while the billing write aborted sends the next person reading it to the
+   * wrong half of the flow.
+   */
+  it("names the failing relation in the error, per address", () => {
+    const bodilessRead: FreshCartRead = { ok: true, cart: {} as HttpTypes.StoreCart }
+
+    expect(resolveShippingAddressId(bodilessRead)).toHaveProperty(
+      "error",
+      "Cart read returned neither shipping_address nor its id"
+    )
+    expect(resolveBillingAddressId(bodilessRead)).toHaveProperty(
+      "error",
+      "Cart read returned neither billing_address nor its id"
+    )
+  })
+})
+
+describe("buildCheckoutAddressesPayload — absent fields", () => {
+  it("omits a field the caller did not supply, rather than sending undefined", () => {
+    const payload = buildCheckoutAddressesPayload(
+      { shipping: "caaddr_ship", billing: "caaddr_bill" },
+      {
+        shipping: { city: "Ciudad de México", phone: undefined },
+        billing: { postal_code: "64000" },
+      }
+    )
+
+    expect("phone" in payload.shipping_address).toBe(false)
+    expect(Object.keys(payload.shipping_address).sort()).toEqual([
+      "city",
+      "id",
+    ])
+    expect(Object.keys(payload.billing_address).sort()).toEqual([
+      "id",
+      "postal_code",
+    ])
+  })
+
+  /**
+   * The two halves are built independently. A builder that computed one payload
+   * and reused it for both would pass every test above that supplies identical
+   * addresses — which is the `sameAsBilling` case, i.e. the common one.
+   */
+  it("does not let one address leak into the other", () => {
+    const payload = buildCheckoutAddressesPayload(
+      { shipping: "caaddr_ship", billing: "caaddr_bill" },
+      {
+        shipping: { city: "Ciudad de México" },
+        billing: { city: "Monterrey" },
+      }
+    )
+
+    expect(payload.shipping_address).toEqual({
+      city: "Ciudad de México",
+      id: "caaddr_ship",
+    })
+    expect(payload.billing_address).toEqual({
+      city: "Monterrey",
+      id: "caaddr_bill",
+    })
+  })
+})
+
+/**
+ * The layer that ACTUALLY rejects a forged id, pinned on its own.
+ *
+ * Mutation M3 — moving the resolved id BEFORE the field spread in
+ * `buildCheckoutAddressesPayload`, so a caller-supplied `id` would win —
+ * survived a green suite. It is an EQUIVALENT mutant, and finding out why is
+ * the point: `id` is absent from `PERSISTABLE_ADDRESS_FIELDS`, so
+ * `pickPatchedFields` never emits the key and the two orderings produce
+ * byte-identical payloads.
+ *
+ * So the spread order is defence in depth, not the guard. The guard is this
+ * field set, and it was previously asserted only as a side effect of a test
+ * about something else. Asserting it directly is what makes the builder's
+ * docstring claim ("an `id` smuggled inside either address object cannot reach
+ * the wire") a checked statement rather than a confident one — which is a
+ * distinction this change has already had to learn three separate times.
+ */
+describe("the persistable field set is the guard against a forged id", () => {
+  it("excludes id, so no caller-supplied primary key can ever be emitted", () => {
+    expect(PERSISTABLE_ADDRESS_FIELDS).not.toContain("id")
+  })
+
+  it("drops id from both halves of the CTA payload", () => {
+    const forged = { id: "caaddr_forged", city: "Monterrey" } as unknown as Partial<CheckoutDraftAddress>
+
+    const payload = buildCheckoutAddressesPayload(
+      { shipping: null, billing: null },
+      { shipping: forged, billing: forged }
+    )
+
+    expect("id" in payload.shipping_address).toBe(false)
+    expect("id" in payload.billing_address).toBe(false)
   })
 })

@@ -3,7 +3,9 @@
 import { sdk } from "@lib/config"
 import { isOpenpay } from "@lib/constants"
 import {
+  buildCheckoutAddressesPayload,
   buildPartialShippingAddressPayload,
+  resolveBillingAddressId,
   resolveShippingAddressId,
   type CheckoutDraftAddress,
   type FreshCartRead,
@@ -243,10 +245,12 @@ const PERSIST_DRAFT_GENERIC_ERROR = "Could not persist the checkout draft"
  * shipping_address update is safe" — that was true only of `billing_address`,
  * and flatly wrong about the shipping address itself.
  *
- * Today the damage is masked by the `address_1 && address_2` prefetch gate and
- * by `setAddresses` re-sending the full payload on submit. R4 + R6 remove both
- * masks, so without this fix autosave becomes a PII shredder that fires on
- * every blur. See `buildPartialShippingAddressPayload` for the full mechanism.
+ * Before this change the damage was masked by the `address_1 && address_2`
+ * prefetch gate and by `setAddresses` re-sending the full payload on submit. R4
+ * and R6 removed both masks — and `setAddresses` itself is now gone, replaced
+ * by `syncCheckoutAddresses` — so without this fix autosave would be a PII
+ * shredder firing on every blur. See `buildPartialShippingAddressPayload` for
+ * the full mechanism.
  *
  * ## One write path, not two
  *
@@ -257,9 +261,9 @@ const PERSIST_DRAFT_GENERIC_ERROR = "Could not persist the checkout draft"
  * are a strict subset of the autosave payload, so the second write buys nothing.
  *
  * NEVER writes `billing_address`, promo codes or region. Billing is written at
- * CTA time (D5) by a function that DOES NOT EXIST YET — it is planned for PR2c.
- * The reference is kept because the exclusion needs a reason, not because the
- * callee is there to be found.
+ * CTA time (D5 step 2) by {@link syncCheckoutAddresses}, which resolves the
+ * billing row id server-side on the same terms this function resolves the
+ * shipping one.
  *
  * ## No id may come from the caller
  *
@@ -269,7 +273,7 @@ const PERSIST_DRAFT_GENERIC_ERROR = "Could not persist the checkout draft"
  * key with no check that the row belonged to `cartId`. That defeated this
  * module's own invariant ("the cart is the only id authority") by entering
  * through a different door, and it was self-staling as well: `setAddresses`
- * sends `shipping_address` WITHOUT an id, so every form submit churns the
+ * sent `shipping_address` WITHOUT an id, so every form submit churned the
  * address row id and any hint the client had captured went stale — and a stale
  * id is as destructive as no id, taking the same `assignReference` path, while
  * a colliding one risks a primary-key 500. The id is always resolved
@@ -742,73 +746,192 @@ export async function submitPromotionForm(
   }
 }
 
-// TODO: Pass a POJO instead of a form entity here
-export type SetAddressesResult = string | { ok: true }
+export type SyncCheckoutAddressesResult =
+  | { ok: true; cart: HttpTypes.StoreCart }
+  | { ok: false; error: string }
 
-export async function setAddresses(
-  currentState: unknown,
-  formData: FormData
-): Promise<SetAddressesResult> {
-  try {
-    if (!formData) {
-      throw new Error("No form data found when setting addresses")
-    }
-    const cartId = getCartId()
-    if (!cartId) {
-      throw new Error("No existing cart found when setting addresses")
-    }
+/**
+ * The generic failure text, for the same reason
+ * {@link PERSIST_DRAFT_GENERIC_ERROR} exists: this module is `"use server"`, so
+ * every string returned from here is shipped to the browser, and the backend's
+ * own response body echoes cart ids and address content.
+ */
+const SYNC_ADDRESSES_GENERIC_ERROR =
+  "No pudimos guardar tus datos. Inténtalo de nuevo."
 
-    const data = {
-      shipping_address: {
-        first_name: formData.get("shipping_address.first_name"),
-        last_name: formData.get("shipping_address.last_name"),
-        address_1: formData.get("shipping_address.address_1"),
-        address_2: formData.get("shipping_address.address_2"),
-        company: formData.get("shipping_address.company"),
-        postal_code: formData.get("shipping_address.postal_code"),
-        city: formData.get("shipping_address.city"),
-        country_code: formData.get("shipping_address.country_code"),
-        province: formData.get("shipping_address.province"),
-        phone: formData.get("shipping_address.phone"),
-      },
-      email: formData.get("email"),
-    } as any
+/**
+ * Writes BOTH checkout addresses at CTA time (task 2c.12, `design.md` D5 step
+ * 2). Replaces `setAddresses`.
+ *
+ * ## What it replaces, and why the replacement is not cosmetic
+ *
+ * `setAddresses` took a `FormData` from a submit button and sent both nested
+ * addresses with NO `id` on either. That is the exact `EntityAssigner` ->
+ * `assignReference` -> `em.create` path PR1a closed for the autosave: each call
+ * minted fresh `cart_address` rows and repointed the cart FKs at them.
+ *
+ * `persistCheckoutDraft`'s docstring cites that behaviour BY NAME as the reason
+ * a client-held address id could never be trusted — "every form submit churns
+ * the address row id and any hint the client had captured went stale". Leaving
+ * this writer id-less while hardening the autosave would have meant the CTA
+ * re-opened the hole the autosave had just been closed against, on the one
+ * request per checkout the customer cannot casually retry.
+ *
+ * The values are not at risk here the way they are on a partial autosave — this
+ * payload is complete. The ROW IDENTITY is. And the total-change guard (2c.8)
+ * routinely sends the customer back for one more confirmation, after which the
+ * autosave runs again against whatever rows this call left behind.
+ *
+ * ## Ids are resolved server-side, always
+ *
+ * Same invariant as D3, and it is not weaker here because the caller happens to
+ * hold `shippingAddressId` and `billingAddressId` in the reducer. This function
+ * is a publicly reachable POST endpoint with client-controlled arguments; an id
+ * accepted from that boundary is an unauthenticated claim about which
+ * `cart_address` row to write, and nothing downstream checks the row belongs to
+ * the cart. One fresh read answers for both addresses.
+ *
+ * ## Absence must be positively established, for BOTH addresses
+ *
+ * A read that did not settle the question ABORTS without writing. The
+ * asymmetry is the same one `resolveShippingAddressId` documents: a skipped
+ * write costs the customer one more click on a CTA that tells them what
+ * happened; a churned or replaced row costs data and cannot be undone. The
+ * customer-facing consequence of the abort is an inline Spanish error and a
+ * re-enabled button, which is a path `placeOrderFlow` already has to handle for
+ * every other failure.
+ */
+export async function syncCheckoutAddresses({
+  shipping,
+  billing,
+  email,
+}: {
+  shipping: Partial<CheckoutDraftAddress>
+  billing: Partial<CheckoutDraftAddress>
+  email: string | null
+}): Promise<SyncCheckoutAddressesResult> {
+  const cartId = await getCartId()
 
-    const sameAsBilling = formData.get("same_as_billing")
-    if (sameAsBilling === "on") data.billing_address = data.shipping_address
-
-    if (sameAsBilling !== "on")
-      data.billing_address = {
-        first_name: formData.get("billing_address.first_name"),
-        last_name: formData.get("billing_address.last_name"),
-        address_1: formData.get("billing_address.address_1"),
-        address_2: formData.get("billing_address.address_2"),
-        company: formData.get("billing_address.company"),
-        postal_code: formData.get("billing_address.postal_code"),
-        city: formData.get("billing_address.city"),
-        country_code: formData.get("billing_address.country_code"),
-        province: formData.get("billing_address.province"),
-        phone: formData.get("billing_address.phone"),
-      }
-    await updateCart(data)
-  } catch (e: any) {
-    return e.message
+  if (!cartId) {
+    return { ok: false, error: SYNC_ADDRESSES_GENERIC_ERROR }
   }
 
-  // Navigation moved to the client: `Addresses` performs a soft
-  // `router.push('?step=delivery', { scroll: false })` on success so prefetched
-  // shipping prices and client state survive. A server redirect here would
-  // full-remount the checkout tree, wiping the prefetch and causing a layout
-  // jump.
-  //
-  // Return a fresh `{ ok: true }` object (NOT bare `null`) so every successful
-  // submit yields a new reference. `useActionState` starts at `null`, so the
-  // first success transitions `null` -> `{ ok: true }`, and each later success
-  // returns a distinct object. This guarantees the navigation effect's
-  // dependency changes on every success (Object.is), firing deterministically —
-  // a bare `null` would not change across the initial-state/happy-path submit
-  // and the effect would never re-run.
-  return { ok: true }
+  const requestHeaders = {
+    ...(await getAuthHeaders()),
+  }
+
+  try {
+    // Medusa's own default store projection carries all four fields
+    // (`query-config.js:102-103` and `:115-116`), so both addresses get the
+    // same two-signal resolution — the relation id, corroborated by the FK
+    // scalar — from ONE read. See `persistCheckoutDraft` for why this
+    // projection is deliberately Medusa's rather than a starred shorthand.
+    const read = await retrieveCartFresh(
+      cartId,
+      "id,shipping_address_id,shipping_address.id,billing_address_id,billing_address.id"
+    )
+
+    const shippingResolution = resolveShippingAddressId(read)
+    const billingResolution = resolveBillingAddressId(read)
+
+    if (
+      shippingResolution.status === "unresolved" ||
+      billingResolution.status === "unresolved"
+    ) {
+      console.error("syncCheckoutAddresses aborted: an id was unresolved", {
+        cart: toLogReference(cartId),
+        shipping:
+          shippingResolution.status === "unresolved"
+            ? redactIds(shippingResolution.error)
+            : shippingResolution.status,
+        billing:
+          billingResolution.status === "unresolved"
+            ? redactIds(billingResolution.error)
+            : billingResolution.status,
+      })
+
+      return { ok: false, error: SYNC_ADDRESSES_GENERIC_ERROR }
+    }
+
+    const payload = buildCheckoutAddressesPayload(
+      {
+        shipping:
+          shippingResolution.status === "resolved"
+            ? shippingResolution.id
+            : null,
+        billing:
+          billingResolution.status === "resolved" ? billingResolution.id : null,
+      },
+      { shipping, billing }
+    )
+
+    const { cart } = await sdk.store.cart.update(
+      cartId,
+      {
+        ...(email !== null ? { email } : {}),
+        ...payload,
+      } as HttpTypes.StoreUpdateCart,
+      {},
+      requestHeaders
+    )
+
+    // The same S7 tripwire as the autosave, on both rows. It does not throw:
+    // the write already happened, and there is nothing left to guard — this is
+    // an observation point so a broken merge is visible the moment it starts
+    // rather than a week later in a support ticket.
+    reportAddressRowReplacement(cartId, cart, {
+      shipping:
+        shippingResolution.status === "resolved" ? shippingResolution.id : null,
+      billing:
+        billingResolution.status === "resolved" ? billingResolution.id : null,
+    })
+
+    // Options are address-filtered, so they are stale by definition now. The
+    // `carts` tag is deliberately NOT revalidated: client state is
+    // authoritative after mount (D1) and the returned cart is the channel.
+    const fulfillmentCacheTag = await getCacheTag("fulfillment")
+    revalidateTag(fulfillmentCacheTag)
+
+    return { ok: true, cart }
+  } catch (error) {
+    console.error("syncCheckoutAddresses failed", {
+      cart: toLogReference(cartId),
+      ...describeError(error),
+    })
+
+    return { ok: false, error: SYNC_ADDRESSES_GENERIC_ERROR }
+  }
+}
+
+/**
+ * The S7 tripwire for a two-address write.
+ *
+ * Extracted rather than inlined twice: an id that goes out and a different one
+ * that comes back means the row was REPLACED rather than merged, and the
+ * comparison is identical for both addresses. Every id is logged through
+ * `toLogReference` because a cart id is a bearer credential on these routes and
+ * a log stream is not an authorised audience.
+ */
+function reportAddressRowReplacement(
+  cartId: string,
+  cart: HttpTypes.StoreCart | null | undefined,
+  sent: { shipping: string | null; billing: string | null }
+): void {
+  const checks = [
+    { relation: "shipping_address", sent: sent.shipping, got: cart?.shipping_address?.id },
+    { relation: "billing_address", sent: sent.billing, got: cart?.billing_address?.id },
+  ] as const
+
+  for (const check of checks) {
+    if (check.sent && check.got !== check.sent) {
+      console.error("cart_address row was REPLACED, not merged", {
+        relation: check.relation,
+        cart: toLogReference(cartId),
+        sent: toLogReference(check.sent),
+        got: toLogReference(check.got),
+      })
+    }
+  }
 }
 
 /**

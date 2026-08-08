@@ -22,8 +22,9 @@ import CountrySelect from "../country-select"
  * `persistCheckoutDraft` NEVER writes `billing_address` (D3). It is a partial
  * writer against a nested entity, and the whole reason PR1a exists is that
  * running two of those against one cart is how the shipping address got
- * shredded. Billing is written once, whole, at the CTA — so until PR2c lands,
- * this draft lives in client state only.
+ * shredded. Billing is written once, whole, at the CTA, by
+ * `syncCheckoutAddresses` (PR2c, task 2c.12) — which carries the billing row id
+ * for exactly the same reason the autosave carries the shipping one.
  *
  * ## Labels
  *
