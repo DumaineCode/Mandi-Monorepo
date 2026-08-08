@@ -755,6 +755,46 @@ describe("the Openpay tail", () => {
     })
   })
 
+  /**
+   * ## `buildSessionData` used to FAIL OPEN
+   *
+   * The guard read `if (tail === "openpay" && context.tokenId &&
+   * context.deviceSessionId)`. An empty-string token makes that false, and
+   * execution fell THROUGH the Mercado Pago branch to `return undefined` — so
+   * the flow initiated an Openpay session with no `token_id` and no
+   * `device_session_id` at all.
+   *
+   * That is what 2c.9 forbids outright ("fail with an inline Spanish error
+   * rather than initiating with `device_session_id: null`"), reached through a
+   * side door no spec covered. Openpay would take the charge with neither the
+   * card nor the fraud signal.
+   *
+   * `openpay.js` returning an empty token is not something this code can rule
+   * out — `tokenize` is a third-party callback shaped `(response) =>
+   * response.data.id`, and every layer between here and it is untyped.
+   */
+  it.each([
+    ["an empty token", ""],
+    ["a whitespace token", "   "],
+  ])("refuses to initiate on %s rather than dropping the payload", async (
+    _label,
+    token
+  ) => {
+    const h = harness({ tokenize: async () => token })
+
+    const outcome = await h.flow.place()
+
+    expect(h.initiate).not.toHaveBeenCalled()
+    expect(h.placeOrder).not.toHaveBeenCalled()
+    expect(outcome.status).toBe("failed")
+    expect(outcome.status === "failed" && outcome.error).toBe(
+      PLACE_ORDER_MESSAGES.generic
+    )
+    // The button comes back: the customer can retry, and the retry mints a new
+    // token.
+    expect(h.readState().placingOrder).toBe(false)
+  })
+
   it("completes the order after the session exists", async () => {
     const h = harness()
 

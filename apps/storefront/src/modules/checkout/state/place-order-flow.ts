@@ -341,6 +341,25 @@ export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
       } catch (error) {
         return settleFailed(messageFrom(error))
       }
+
+      /**
+       * A token that RESOLVED but is empty is a failure too, and it has to be
+       * caught HERE rather than in `buildSessionData`.
+       *
+       * That function's guard was `tail === "openpay" && tokenId &&
+       * deviceSessionId`, which for an empty token is false — so execution fell
+       * through to `return undefined` and the flow initiated an Openpay session
+       * with no `token_id` and no `device_session_id`. That is exactly what
+       * 2c.9 forbids, reached through a side door: Openpay would take the
+       * charge with neither the card nor the fraud signal.
+       *
+       * `tokenize` is a third-party callback (`(response) => response.data.id`)
+       * and every layer between here and it is untyped, so this cannot be ruled
+       * out by construction.
+       */
+      if (!tokenId.trim()) {
+        return settleFailed(PLACE_ORDER_MESSAGES.generic)
+      }
     }
 
     // ---------------------------------------------------------------------
@@ -501,7 +520,27 @@ export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
       cart: HttpTypes.StoreCart
     }
   ): Record<string, unknown> | undefined => {
-    if (tail === "openpay" && context.tokenId && context.deviceSessionId) {
+    /**
+     * The Openpay branch REFUSES when its inputs are missing; it does not fall
+     * through.
+     *
+     * It used to read `if (tail === "openpay" && tokenId && deviceSessionId)`,
+     * so an absent input dropped past the Mercado Pago branch to `return
+     * undefined` — initiating an Openpay session with no `token_id` and no
+     * `device_session_id`, which 2c.9 forbids outright. Both inputs are
+     * established by step 1 before this is reached, and the caller already
+     * refuses an empty token with a customer-facing message. This throw is the
+     * backstop for the case where that stops being true: a thrown error is
+     * caught by step 4's own try/catch and shown as a failure, which is
+     * strictly better than a blind charge.
+     */
+    if (tail === "openpay") {
+      if (!context.tokenId || !context.deviceSessionId) {
+        throw new Error(
+          "openpay session data requires a token and a device session"
+        )
+      }
+
       return buildOpenpaySessionData({
         tokenId: context.tokenId,
         deviceSessionId: context.deviceSessionId,

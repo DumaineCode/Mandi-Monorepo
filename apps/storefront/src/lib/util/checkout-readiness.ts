@@ -138,7 +138,10 @@ export type MissingRequirement = {
  * it, because a voseo string reads as perfectly good Spanish in review and only
  * the customer notices it is the wrong country's.
  */
-const MESSAGES: Record<MissingRequirementCode, string> = {
+export const MISSING_REQUIREMENT_MESSAGES: Record<
+  MissingRequirementCode,
+  string
+> = {
   cart_empty: "Tu carrito está vacío.",
   email: "Falta tu correo electrónico.",
   phone: "Falta tu teléfono.",
@@ -476,7 +479,7 @@ export function getMissingOrderRequirements(
 
 const toRequirement = (code: MissingRequirementCode): MissingRequirement => ({
   code,
-  message: MESSAGES[code],
+  message: MISSING_REQUIREMENT_MESSAGES[code],
 })
 
 /**

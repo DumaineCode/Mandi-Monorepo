@@ -4,6 +4,7 @@ import {
   isManualProviderId,
   isMercadopagoProviderId,
   isOpenpayProviderId,
+  MISSING_REQUIREMENT_MESSAGES,
 } from "./checkout-readiness"
 
 /**
@@ -82,7 +83,7 @@ const readSessionData = (session: SessionLike | undefined, key: string): unknown
   (session?.data as Record<string, unknown> | null | undefined)?.[key]
 
 /**
- * A URL is only usable if it is a non-empty string.
+ * A URL is only usable if it is an absolute `https://` URL.
  *
  * The cast-as-string this replaces (`data?.init_point as string | undefined`)
  * asserted the shape instead of checking it, and the consequence is not a
@@ -90,9 +91,26 @@ const readSessionData = (session: SessionLike | undefined, key: string): unknown
  * coerces to the string `"undefined"`, a perfectly valid relative URL. The
  * customer lands on a 404 with their cart intact and no way to tell whether
  * they were charged.
+ *
+ * ## Why non-emptiness was not enough
+ *
+ * The first version of this check tested `trim().length > 0`, which is a check
+ * on the STRING and not on the URL. Every value below is non-empty and every
+ * one of them is a different way for a `location.href` assignment on a payment
+ * path to go wrong: `"undefined"` and `"/checkout/abc"` are relative
+ * navigations to a 404, `"//mp.example/x"` inherits the current scheme,
+ * `"javascript:alert(1)"` EXECUTES, and `"http://…"` downgrades a payment
+ * redirect off TLS.
+ *
+ * Both callers feed this from an untyped third-party payment response — a
+ * Mercado Pago preference and an Openpay 3DS challenge — and both destinations
+ * are external hosted pages that are `https` by definition. So the narrow
+ * check costs nothing real and closes the whole class.
  */
+const HTTPS_URL = /^https:\/\/[^\s]+$/
+
 const asUsableUrl = (value: unknown): string | null =>
-  typeof value === "string" && value.trim().length > 0 ? value : null
+  typeof value === "string" && HTTPS_URL.test(value) ? value : null
 
 /**
  * The Mercado Pago hosted-checkout URL, from the CTA's own response and from
@@ -313,7 +331,15 @@ export const PLACE_ORDER_MESSAGES = {
     "Todavía estamos preparando el pago seguro. Recarga la página e inténtalo de nuevo.",
   mercadoPagoUnavailable:
     "No pudimos abrir Mercado Pago. Inténtalo de nuevo en un momento.",
-  providerUnsupported: "Elige un método de pago para continuar.",
+  /**
+   * DELEGATED, not copied. This read "Elige un método de pago para continuar."
+   * while `checkout-readiness.ts` said "Elige un método de pago." for the same
+   * customer-visible condition — the customer has not picked a payment method.
+   * Two strings for one condition is the defect class this whole change is
+   * about, and it is how the itemized list under the CTA and the CTA's own
+   * refusal come to disagree in front of the customer.
+   */
+  providerUnsupported: MISSING_REQUIREMENT_MESSAGES.payment_method,
   addressSyncFailed: "No pudimos guardar tus datos. Inténtalo de nuevo.",
   generic: "No pudimos completar tu pedido. Inténtalo de nuevo.",
 } as const

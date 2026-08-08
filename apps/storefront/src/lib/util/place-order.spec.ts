@@ -1,6 +1,7 @@
 import type { HttpTypes } from "@medusajs/types"
 import { describe, expect, it } from "vitest"
 
+import { MISSING_REQUIREMENT_MESSAGES } from "./checkout-readiness"
 import {
   buildOpenpaySessionData,
   hasTotalChanged,
@@ -142,6 +143,33 @@ describe("selectMercadoPagoInitPoint", () => {
     ["a non-string init_point", collectionWith({ init_point: 42 })],
     ["a collection with no sessions", { payment_sessions: [] }],
     ["a collection with no session key", {}],
+    /**
+     * Non-emptiness was never the check this needed. `window.location.href =
+     * "javascript:…"` executes; `= "/undefined"` is a 404 the customer cannot
+     * interpret; `= "not a url"` is a relative navigation. The only value that
+     * is safe to hand a raw `location.href` assignment on a payment path is an
+     * absolute `https://` URL, and this value crosses an untyped boundary out
+     * of a third-party payment response.
+     */
+    ["a relative path", collectionWith({ init_point: "/checkout/abc" })],
+    ["a bare word", collectionWith({ init_point: "undefined" })],
+    [
+      "a javascript: URL",
+      collectionWith({ init_point: "javascript:alert(1)" }),
+    ],
+    ["a data: URL", collectionWith({ init_point: "data:text/html,x" })],
+    [
+      "a protocol-relative URL",
+      collectionWith({ init_point: "//mp.example/checkout/abc" }),
+    ],
+    [
+      "plain http",
+      collectionWith({ init_point: "http://mp.example/checkout/abc" }),
+    ],
+    [
+      "a leading-whitespace https URL",
+      collectionWith({ init_point: "  https://mp.example/abc" }),
+    ],
   ])("returns null for %s", (_label, collection) => {
     expect(selectMercadoPagoInitPoint(collection)).toBeNull()
   })
@@ -220,10 +248,29 @@ describe("selectOpenpayRedirectUrl", () => {
     expect(url).toBeNull()
   })
 
+  /**
+   * The same URL-shape floor as the Mercado Pago link, and it matters more
+   * here: this value comes back from a BANK's challenge response and is handed
+   * straight to `window.location.href`. A relative or `javascript:` value is
+   * not a challenge, it is a navigation the customer cannot interpret while
+   * they believe a charge is in flight.
+   */
   it.each([
     ["no redirect_url", { status: "requires_more", data: {} }],
     ["an empty redirect_url", { status: "requires_more", data: { redirect_url: "" } }],
     ["a non-string redirect_url", { status: "requires_more", data: { redirect_url: 7 } }],
+    [
+      "a relative redirect_url",
+      { status: "requires_more", data: { redirect_url: "/3ds/challenge" } },
+    ],
+    [
+      "a javascript: redirect_url",
+      { status: "requires_more", data: { redirect_url: "javascript:alert(1)" } },
+    ],
+    [
+      "an http redirect_url",
+      { status: "requires_more", data: { redirect_url: "http://3ds.bank/c" } },
+    ],
   ])("returns null for a challenge with %s", (_label, session) => {
     const url = selectOpenpayRedirectUrl(
       cartWith({
@@ -450,6 +497,25 @@ describe("place-order copy", () => {
   it("uses the exact total-change wording the spec mandates", () => {
     expect(PLACE_ORDER_MESSAGES.totalChanged).toBe(
       "El costo de envío cambió. Revisa el total y confirma de nuevo."
+    )
+  })
+
+  /**
+   * ONE string for one customer-visible condition.
+   *
+   * These shipped as two — "Elige un método de pago para continuar." here and
+   * "Elige un método de pago." in the readiness catalogue — for the same
+   * situation: the customer has not picked a payment method. The flow's refusal
+   * and the itemized list under the CTA are read side by side, so two wordings
+   * is how they come to disagree in front of the customer, and a duplicated
+   * rule is the defect class this whole change is about.
+   *
+   * Identity, not equality: a copied literal would satisfy `toBe` today and
+   * drift on the next edit.
+   */
+  it("delegates the payment-method refusal to the readiness catalogue", () => {
+    expect(PLACE_ORDER_MESSAGES.providerUnsupported).toBe(
+      MISSING_REQUIREMENT_MESSAGES.payment_method
     )
   })
 
