@@ -274,6 +274,10 @@ const harness = (
     calls.push(`navigate:${url}`)
   })
 
+  const cancelAutosave = vi.fn(() => {
+    calls.push("cancelAutosave")
+  })
+
   const syncSpy = vi.fn(syncAddresses)
   const initiateSpy = vi.fn(initiatePaymentSession)
   const placeOrderSpy = vi.fn(placeOrder)
@@ -285,6 +289,7 @@ const harness = (
     initiatePaymentSession: initiateSpy,
     placeOrder: placeOrderSpy,
     retrieveCart: options.retrieveCart ?? (async () => null),
+    cancelAutosave,
     navigate,
     countryCode: "mx",
     baseUrl: "https://shop.example",
@@ -309,6 +314,7 @@ const harness = (
     calls,
     actions,
     tokenize,
+    cancelAutosave,
     navigate,
     sync: syncSpy,
     initiate: initiateSpy,
@@ -316,7 +322,12 @@ const harness = (
     readState: () => state,
     /** Every call that reaches the backend, in order. */
     backendCalls: () =>
-      calls.filter((call) => call !== "tokenize" && !call.startsWith("navigate")),
+      calls.filter(
+        (call) =>
+          call !== "tokenize" &&
+          call !== "cancelAutosave" &&
+          !call.startsWith("navigate")
+      ),
   }
 }
 
@@ -367,13 +378,106 @@ describe("step 0 — canPlaceOrder re-check", () => {
  *
  * This is the ordering claim, and it is the reason this file exists.
  */
+/**
+ * ---------------------------------------------------------------------------
+ * The armed autosave is disarmed FIRST, before anything else runs
+ * ---------------------------------------------------------------------------
+ *
+ * `runExclusive` cancels the armed autosave — but it is not reached until step
+ * 2, i.e. AFTER `await openpay.tokenize(...)`, which is a live network round
+ * trip of one to three seconds.
+ *
+ * The scenario is ordinary, not an edge case. The customer tabs out of the last
+ * address field (`FIELD_BLUR` arms the 400 ms autosave), clicks the CTA ~200 ms
+ * later (total 1000 is snapshotted), tokenize runs 1.5 s, and at the 400 ms mark
+ * the autosave fires. Per F2 `updateCartWorkflow` re-prices shipping through a
+ * live Skydropx quote, so the total moves to 1250. Step 2 returns 1250 and the
+ * guard aborts with *"El costo de envío cambió…"* — when nothing the customer
+ * did changed the total. The flow's OWN autosave did, in the window the flow's
+ * own cancel was supposed to close.
+ *
+ * The fix is to close the window, not to widen the guard: re-snapshotting the
+ * total just before step 2 would ALSO stop the spurious abort, and would do it
+ * by charging the customer a number that changed after they clicked. That is
+ * the exact harm the guard exists to prevent. See the block below the tails.
+ */
+describe("the autosave window", () => {
+  it("disarms the autosave before the provider pre-flight", async () => {
+    const h = harness()
+
+    await h.flow.place()
+
+    // FIRST, not merely eventually. Anything between the click and this call is
+    // a window in which the debounce can fire.
+    expect(h.calls[0]).toBe("cancelAutosave")
+    expect(h.calls.indexOf("cancelAutosave")).toBeLessThan(
+      h.calls.indexOf("tokenize")
+    )
+  })
+
+  /**
+   * Tokenize is the long pole — one to three seconds against Openpay — so it is
+   * specifically the call the cancel has to precede, not just the address
+   * write that `runExclusive` already covers.
+   */
+  it("disarms it even for providers with no pre-flight at all", async () => {
+    for (const providerId of [MERCADOPAGO, MANUAL]) {
+      const h = harness({ providerId })
+
+      await h.flow.place()
+
+      expect(h.cancelAutosave).toHaveBeenCalledTimes(1)
+      expect(h.calls[0]).toBe("cancelAutosave")
+    }
+  })
+
+  /**
+   * Step 0 refusing is not a reason to leave a write armed: the customer is
+   * about to be told what to fix, and a debounce firing underneath that is the
+   * same concurrent writer at a slightly different moment.
+   */
+  it("disarms it even when step 0 refuses the order", async () => {
+    const h = harness({ cart: readyCart({ items: [] }) })
+
+    const outcome = await h.flow.place()
+
+    expect(outcome.status).toBe("blocked")
+    expect(h.cancelAutosave).toHaveBeenCalledTimes(1)
+    expect(h.backendCalls()).toEqual([])
+  })
+
+  /**
+   * The guard is NOT relaxed to compensate. A total that genuinely moves
+   * between the render and step 2 still aborts, because the alternative is
+   * charging a figure the customer never agreed to — which is the whole reason
+   * step 3 exists. Pinned here so a later "fix" for the spurious abort cannot
+   * quietly take the other route.
+   */
+  it("still aborts on a total that moved for a reason other than the autosave", async () => {
+    const h = harness({
+      syncAddresses: async () => ({
+        ok: true as const,
+        cart: readyCart({ total: 1250 }),
+      }),
+    })
+
+    const outcome = await h.flow.place()
+
+    expect(outcome.status).toBe("aborted")
+  })
+})
+
 describe("step 1 — provider pre-flight precedes every backend write", () => {
   it("tokenizes BEFORE the address write", async () => {
     const h = harness()
 
     await h.flow.place()
 
-    expect(h.calls[0]).toBe("tokenize")
+    // The first thing that leaves the browser. `cancelAutosave` runs ahead of
+    // it but is purely local — it disarms a timer, it does not call anything.
+    expect(h.calls.filter((call) => call !== "cancelAutosave")[0]).toBe(
+      "tokenize"
+    )
     expect(h.calls.indexOf("tokenize")).toBeLessThan(
       h.calls.indexOf("syncAddresses")
     )

@@ -320,6 +320,12 @@ export function CheckoutProvider({
       placeOrder,
       retrieveCart: () => retrieveCart(),
       /**
+       * Disarmed at the very top of the flow, not just by `runExclusive` at
+       * step 2 — the tokenize round trip in between is longer than the 400 ms
+       * debounce. See `place-order-flow.ts`.
+       */
+      cancelAutosave: () => scheduler.cancelAutosave(),
+      /**
        * A full page load, deliberately, for both destinations this reaches: an
        * external Mercado Pago checkout and a bank's 3DS challenge. Neither is a
        * Next route, so `router.push` has nothing to do with them.

@@ -43,6 +43,7 @@ import {
  * ## The order, and why step 1 comes before step 2
  *
  * ```
+ * -  cancelAutosave             — close the window before the total is snapshotted
  * 0  canPlaceOrder re-check     — a disabled button is an affordance, not a lock
  * 1  provider pre-flight        — tokenize in the browser; assert deviceSessionId
  * 2  syncCheckoutAddresses      — both addresses, both row ids, via the scheduler
@@ -111,6 +112,24 @@ export type PlaceOrderDeps = {
   ) => Promise<unknown>
   placeOrder: () => Promise<unknown>
   retrieveCart: () => Promise<HttpTypes.StoreCart | null>
+  /**
+   * `checkout-write-scheduler.cancelAutosave`, called FIRST — before the
+   * readiness re-check, before the pre-flight, before anything.
+   *
+   * `runExclusive` cancels the armed autosave too, but it is not reached until
+   * step 2, i.e. after `openpay.tokenize(...)` — a live network round trip of
+   * one to three seconds. That gap is longer than the 400 ms debounce, so the
+   * ordinary sequence "tab out of the last field, click the button" lets the
+   * autosave fire in the middle of tokenization. Per F2 that write re-prices
+   * shipping through a live carrier quote, so the total moves, and step 3 then
+   * aborts the order with "El costo de envío cambió" over a change the flow
+   * itself caused.
+   *
+   * Closing the window is the fix. Re-snapshotting the total just before step 2
+   * would also stop the spurious abort — by charging the customer a figure that
+   * moved after they clicked, which is precisely what step 3 exists to prevent.
+   */
+  cancelAutosave: () => void
   /** `window.location.href = url`, injected so the redirect is assertable. */
   navigate: (url: string) => void
   countryCode: string
@@ -173,6 +192,17 @@ export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
   }
 
   const run = async (openpay: OpenpayGateway): Promise<PlaceOrderOutcome> => {
+    /**
+     * Before the snapshot, and before anything else.
+     *
+     * The snapshot below is what step 3 compares against, and it is only
+     * trustworthy while nothing else can move the cart underneath it. The one
+     * writer that can is the flow's own armed autosave — 400 ms out, against a
+     * tokenize call that takes one to three seconds. `runExclusive` disarms it
+     * too, but not until step 2, which is on the far side of that window.
+     */
+    deps.cancelAutosave()
+
     const state = deps.readState()
 
     // ---------------------------------------------------------------------
