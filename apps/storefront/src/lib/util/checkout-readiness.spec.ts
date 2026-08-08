@@ -476,7 +476,7 @@ describe("getMissingOrderRequirements", () => {
    * string would otherwise sail through review looking like Spanish.
    */
   const VOSEO_IMPERATIVES =
-    /(Elegí|Completá|Volvé|Ingresá|Seleccioná|Revisá|Confirmá|Verificá|Probá)/i
+    /(Podés|Tenés|Querés|Hacé|Andá|Elegí|Completá|Volvé|Ingresá|Seleccioná|Revisá|Confirmá|Verificá|Probá)/i
 
   it("uses the Mexican tú imperative, never voseo", () => {
     const everything = [
@@ -521,8 +521,18 @@ describe("getMissingOrderRequirements", () => {
   it("has a voseo guard that recognises actual voseo", () => {
     expect("Elegí un método de envío").toMatch(VOSEO_IMPERATIVES)
     expect("Volvé a elegir el método de envío").toMatch(VOSEO_IMPERATIVES)
+    /**
+     * The form this guard used to miss. `lib/data/cart.ts` shipped *"Podés
+     * intentar de nuevo o con otra tarjeta."* — a voseo PRESENT rather than an
+     * imperative — past both catalogue guards, and it is the most-shown decline
+     * string in the whole checkout.
+     */
+    expect("Podés intentar de nuevo o con otra tarjeta.").toMatch(
+      VOSEO_IMPERATIVES
+    )
     expect("Elige un método de envío.").not.toMatch(VOSEO_IMPERATIVES)
     expect("Completa tu dirección de envío.").not.toMatch(VOSEO_IMPERATIVES)
+    expect("Puedes intentar de nuevo.").not.toMatch(VOSEO_IMPERATIVES)
   })
 
   /**

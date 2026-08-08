@@ -382,8 +382,14 @@ describe("buildOpenpaySessionData", () => {
  * the same flow, read by the same customer.
  */
 describe("place-order copy", () => {
+  /**
+   * Widened after `lib/data/cart.ts` shipped *"Podés intentar de nuevo o con
+   * otra tarjeta."* — the most-shown decline string in the checkout — straight
+   * past both of this repo's voseo guards. Neither covered `Podés`, because
+   * both enumerated imperatives only and that is a voseo PRESENT tense.
+   */
   const VOSEO_IMPERATIVES =
-    /(Elegí|Completá|Volvé|Ingresá|Seleccioná|Revisá|Confirmá|Verificá|Probá|Intentá|Recargá)/i
+    /(Podés|Tenés|Querés|Hacé|Andá|Elegí|Completá|Volvé|Ingresá|Seleccioná|Revisá|Confirmá|Verificá|Probá|Intentá|Recargá)/i
 
   it("uses the exact total-change wording the spec mandates", () => {
     expect(PLACE_ORDER_MESSAGES.totalChanged).toBe(
@@ -404,7 +410,15 @@ describe("place-order copy", () => {
   it("has a voseo guard that recognises actual voseo", () => {
     expect("Revisá el total y confirmá de nuevo.").toMatch(VOSEO_IMPERATIVES)
     expect("Recargá la página").toMatch(VOSEO_IMPERATIVES)
+    // The one that got through. A voseo PRESENT, not an imperative.
+    expect("Podés intentar de nuevo o con otra tarjeta.").toMatch(
+      VOSEO_IMPERATIVES
+    )
+    expect("Tenés que elegir un método").toMatch(VOSEO_IMPERATIVES)
     expect("Revisa el total y confirma de nuevo.").not.toMatch(
+      VOSEO_IMPERATIVES
+    )
+    expect("Puedes intentar de nuevo o con otra tarjeta.").not.toMatch(
       VOSEO_IMPERATIVES
     )
   })

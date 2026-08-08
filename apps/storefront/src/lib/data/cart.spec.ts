@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
+
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 /**
@@ -25,16 +28,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
  * called with, never against a stub's return value. That is the difference
  * between testing the write and testing the test.
  */
-const { fetchMock, updateMock, getCartIdMock } = vi.hoisted(() => ({
-  fetchMock: vi.fn(),
-  updateMock: vi.fn(),
-  getCartIdMock: vi.fn(),
-}))
+const { fetchMock, updateMock, completeMock, getCartIdMock } = vi.hoisted(
+  () => ({
+    fetchMock: vi.fn(),
+    updateMock: vi.fn(),
+    completeMock: vi.fn(),
+    getCartIdMock: vi.fn(),
+  })
+)
 
 vi.mock("@lib/config", () => ({
   sdk: {
     client: { fetch: fetchMock },
-    store: { cart: { update: updateMock, create: vi.fn() } },
+    store: {
+      cart: { update: updateMock, create: vi.fn(), complete: completeMock },
+    },
   },
 }))
 
@@ -57,7 +65,11 @@ vi.mock("@lib/util/medusa-error", () => ({ default: vi.fn() }))
 // loaded by a node-environment data-layer test.
 vi.mock("@lib/constants", () => ({ isOpenpay: () => false }))
 
-import { persistCheckoutDraft, syncCheckoutAddresses } from "./cart"
+import {
+  persistCheckoutDraft,
+  placeOrder,
+  syncCheckoutAddresses,
+} from "./cart"
 
 const CART_ID = "cart_01JQZ8V3K7NB2XW9RTPY4C6HDM"
 const ADDRESS_ID = "caaddr_01JQZ8V3K7NB2XW9RTPY4C6HDM"
@@ -92,6 +104,7 @@ const sentShippingAddress = () =>
 beforeEach(() => {
   fetchMock.mockReset()
   updateMock.mockReset()
+  completeMock.mockReset()
   getCartIdMock.mockReset()
   getCartIdMock.mockResolvedValue(CART_ID)
   updateMock.mockResolvedValue({
@@ -656,5 +669,125 @@ describe("syncCheckoutAddresses", () => {
     })
 
     expect("email" in sentPayload()).toBe(false)
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * Copy register: Mexican `tú`, never voseo
+ * ---------------------------------------------------------------------------
+ *
+ * ## Why the guard is pointed at the SOURCE FILE and not at a constant
+ *
+ * `placeOrder`'s default decline copy shipped as *"…Podés intentar de nuevo o
+ * con otra tarjeta."* `Podés` is Rioplatense voseo; this store is Mexican and
+ * the register is `tú`. It is the single most common failure string in the
+ * whole checkout, and `place-order-flow.ts`'s `messageFrom` passes backend
+ * messages through VERBATIM to the customer.
+ *
+ * It got through because the two existing voseo guards each cover a different
+ * catalogue — `PLACE_ORDER_MESSAGES` and the readiness `MESSAGES` — and this
+ * string belongs to neither. It is an inline literal in a `"use server"`
+ * module, and a `"use server"` module may not export a constant object, so
+ * there is nothing to point an `Object.values()` guard at.
+ *
+ * So the guard reads the file. Every Spanish string literal `cart.ts` can
+ * return to the browser is swept, including the two module-private generic
+ * errors, and a literal added tomorrow is covered on the day it is written
+ * rather than on the day someone remembers to register it.
+ */
+describe("customer-facing copy in cart.ts", () => {
+  /**
+   * Wider than the two existing guards, which between them missed `Podés`.
+   * Every form here is a Rioplatense second-person imperative or present.
+   */
+  const VOSEO =
+    /(Podés|Tenés|Querés|Hacé|Andá|Elegí|Completá|Volvé|Ingresá|Seleccioná|Revisá|Confirmá|Verificá|Probá|Intentá|Recargá|Escribí|Mandá|Poné|Buscá|Guardá|Esperá)/
+
+  const source = readFileSync(
+    fileURLToPath(new URL("./cart.ts", import.meta.url)),
+    "utf8"
+  )
+
+  /**
+   * Double-quoted literals only, which is every string in this file — the repo
+   * has no single-quote or template-literal Spanish copy in the data layer, and
+   * the sweep below asserts it found a representative sample rather than
+   * trusting the regex silently matched nothing.
+   */
+  const literals = (source.match(/"[^"\n]*"/g) ?? []).map((raw) =>
+    raw.slice(1, -1)
+  )
+
+  /** A literal is customer copy if it reads as Spanish prose. */
+  const spanishCopy = literals.filter((value) =>
+    /(?:^|\s)(tu|tus|no|de|la|el|los|las|un|una|pudimos|inténtalo)(?:\s|$)/i.test(
+      value
+    )
+  )
+
+  it("finds the strings it claims to be guarding", () => {
+    // If the extraction ever stops matching, this guard silently passes over an
+    // empty list — the exact failure mode that let `Podés` ship.
+    expect(spanishCopy.length).toBeGreaterThanOrEqual(3)
+    expect(spanishCopy).toContain("No pudimos guardar tus datos. Inténtalo de nuevo.")
+  })
+
+  it("uses Mexican tú in every customer-facing string, never voseo", () => {
+    for (const value of spanishCopy) {
+      expect(value).not.toMatch(VOSEO)
+    }
+  })
+
+  /**
+   * The guard is only worth anything if it can fail. The first version of the
+   * readiness guard used `Complet[áa]`, which matched the CORRECT Mexican form
+   * and would have flagged good copy while a real voseo string was
+   * indistinguishable from a false positive.
+   */
+  it("has a voseo guard that recognises actual voseo", () => {
+    expect(
+      "Podés intentar de nuevo o con otra tarjeta."
+    ).toMatch(VOSEO)
+    expect("Tenés que elegir un método").toMatch(VOSEO)
+    expect("Querés reintentar").toMatch(VOSEO)
+    expect(
+      "Puedes intentar de nuevo o con otra tarjeta."
+    ).not.toMatch(VOSEO)
+    expect("No pudimos guardar tus datos. Inténtalo de nuevo.").not.toMatch(
+      VOSEO
+    )
+  })
+})
+
+/**
+ * The behavioural half of the same fix.
+ *
+ * Medusa returns `type: "cart"` with HTTP 200 when completion FAILED — a
+ * declined card, most often. `placeOrder` throws so the CTA surfaces the
+ * reason, and `placeOrderFlow`'s `messageFrom` passes an `Error.message`
+ * through verbatim. So this literal is not internal: it is read by more
+ * customers than any other string in the checkout.
+ */
+describe("placeOrder's decline copy", () => {
+  const DECLINE =
+    "No pudimos completar tu pago. Tu tarjeta fue rechazada o el pago no se autorizó. Puedes intentar de nuevo o con otra tarjeta."
+
+  it("throws the Mexican tú decline when the backend gives no reason", async () => {
+    completeMock.mockResolvedValue({ type: "cart", cart: { id: CART_ID } })
+
+    await expect(placeOrder()).rejects.toThrow(DECLINE)
+  })
+
+  it("prefers the backend's own reason when there is one", async () => {
+    completeMock.mockResolvedValue({
+      type: "cart",
+      cart: { id: CART_ID },
+      error: { message: "Tu tarjeta no tiene fondos suficientes." },
+    })
+
+    await expect(placeOrder()).rejects.toThrow(
+      "Tu tarjeta no tiene fondos suficientes."
+    )
   })
 })

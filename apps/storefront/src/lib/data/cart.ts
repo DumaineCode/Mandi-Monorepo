@@ -975,9 +975,13 @@ export async function placeOrder(cartId?: string) {
   // and the payment is already rolled back by Medusa. We MUST throw here so the
   // payment button's catch surfaces the message and stops its loading state;
   // returning the cart silently leaves the button spinning forever.
+  // Mexican `tú`, never voseo. This shipped as `Podés intentar de nuevo` —
+  // Rioplatense, and the single most-read failure string in the checkout, since
+  // `placeOrderFlow`'s `messageFrom` passes an `Error.message` through to the
+  // customer verbatim. `cart.spec.ts` now sweeps every literal in this file.
   throw new Error(
     cartRes?.error?.message ||
-      "No pudimos completar tu pago. Tu tarjeta fue rechazada o el pago no se autorizó. Podés intentar de nuevo o con otra tarjeta."
+      "No pudimos completar tu pago. Tu tarjeta fue rechazada o el pago no se autorizó. Puedes intentar de nuevo o con otra tarjeta."
   )
 }
 
