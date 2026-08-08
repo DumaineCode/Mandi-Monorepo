@@ -2179,3 +2179,288 @@ for the maintainer, not one taken here.**
    the branch has a window with no way to place an order. Slice 1 left `payment/index.tsx` and
    `review/index.tsx` fully intact and working for exactly this reason.
 5. The billing-address deadlock above must be resolved or the CTA cannot enable on a fresh cart.
+
+---
+
+# PART 11 — PR2c SLICE 1 REMEDIATION. Judgment-day findings.
+
+**Appended, not overwriting.** PARTs 1–10 are the record as it stood; this part records what two
+independent blind adversarial reviews found in PART 10's output and what was done about it. Both
+returned **NOT SAFE TO MERGE** and converged on the same eight findings.
+
+Branch `feat/checkout-place-order-flow`, ten remediation commits on top of `7196b44`.
+
+## What both reviewers praised, and what was therefore NOT touched
+
+D5 ordering is correct and provably enforced. Openpay token single-use discipline holds. The
+two-address row-id resolution is the strongest part of the diff. The pure-module extraction boundary
+was drawn honestly (11 of 12 injected mutants died). **This was remediation, not a rewrite.** No
+structure was changed that either reviewer endorsed.
+
+## Gates
+
+| Gate | PART 10 | After remediation |
+|---|---|---|
+| `pnpm --filter @dtc/storefront test` | 774 / 13 files | **846 / 13 files** (+72) |
+| `npx tsc --noEmit` | 0 | **0** |
+| `pnpm build` | ✓ Compiled | **✓ Compiled successfully in 7.3s** |
+| `next lint` | 10 pre-existing errors | **10** — no net-new (measured both ways) |
+
+Diff vs PART 10: **2 009 insertions / 214 deletions across 15 files.** Production ≈ 330 lines;
+the rest is specs, which is the same 70/30 split PART 10 recorded and for the same reason.
+
+## Strict TDD — every fix landed RED first
+
+Nine RED cycles, each watched failing before the fix. Recorded per finding below with the failure
+count and the reason it failed. No fix was accepted without a test that could have caught it — which
+is the whole point, because **finding 3 exists precisely because a test looked like coverage and was
+vacuous.**
+
+---
+
+## R1 — CRITICAL. The `billing_address` deadlock. **CLOSED.**
+
+`checkout-readiness.ts` · `checkout-reducer.ts` · commit `6e2b95c`
+
+Step 0 blocked when `!cart.billing_address`. The only production writer of that column left in the
+storefront is `syncCheckoutAddresses`, at D5 step 2 — behind the gate. Reviewer B proved it
+executably: a cart complete in every other respect yields exactly
+`[{"code":"billing_address","message":"Falta tu dirección de facturación."}]` forever.
+
+PART 10 deferred this to slice 2. **That deferral was wrong and both reviewers said so on the same
+ground:** the gate and the writer are BOTH in slice 1, slice 2 contributes nothing to the cycle, and
+deferring meant merging a second half-finished migration to `main` on the strength of a progress
+note — the same bet that produced the bug.
+
+**Fix.** `hasBillingAddress` becomes a CLIENT fact:
+
+```ts
+hasBillingAddress: client.sameAsBilling || billingDraftIsComplete(client.billingDraft)
+```
+
+the same CART-fact / CLIENT-fact split `toReadinessInput` already makes for `hasShippingMethod` vs
+`hasSelectedShippingOption`, twelve lines below, for the identical F1 reason.
+
+Two judgement calls, both recorded rather than absorbed:
+
+1. **`sameAsBilling` short-circuits without re-checking the address.** Safe because the shipping
+   address is already checked field by field by `shipping_address`, `colonia` and `phone`. A second
+   copy of that rule here is the defect class this change is about. Pinned by a test.
+2. **Completeness, not presence.** `billingDraftIsComplete` requires the same
+   `REQUIRED_ADDRESS_FIELDS` as shipping, deliberately EXCLUDING `phone` and `address_2`: both are
+   required on shipping for fulfilment reasons (Skydropx `area_level3`, the origin/destination
+   pre-flight) and nothing is ever shipped to the billing address. This closes the MINOR about an
+   all-empty billing row producing Openpay API error 1001.
+
+**The strictness floor moved by exactly one row, recorded as Amendment A5** in
+`checkout-readiness.spec.ts` rather than smuggled through the `BLOCKED_TODAY` table. The two billing
+rows now read "no billing address **and no billing claim**" and still assert the floor for the case
+that is genuinely unsafe. What is NOT weakened: D5 still makes step 2 before step 4 mandatory, so the
+row exists on the cart before the Openpay payload is built — asserted by the M11/M16 test. The row
+must exist before the CHARGE; it no longer has to exist before the customer may TRY.
+
+The tripwire test now asserts the fixed behaviour end to end, including that the CTA's own write is
+what creates the missing row.
+
+**Fully closed.**
+
+## R2 — CRITICAL. `runExclusive` had no write deadline. **CLOSED.**
+
+`checkout-write-scheduler.ts` · commit `e59ba2f` · RED: 6 failures
+
+`performWrite` raced its await against `CHECKOUT_WRITE_TIMEOUT_MS`; `performExclusiveWrite` — added
+by PART 10 for the CTA — did a bare `await write(sequence)`, breaking the rule the module's own
+docstring states.
+
+The exclusive write is the MORE exposed one: `syncCheckoutAddresses` bounds only its fresh read
+(5 s); the `sdk.store.cart.update` behind it is deliberately unbounded.
+
+A "never settles" block mirrors the existing `persistNow` one, plus the two consequences unique to
+this writer: an autosave queued behind it must still go out, and the outcome must RESOLVE rather than
+reject, because that is what lets `placeOrderFlow` reach `settleFailed` and give the button back.
+
+**Fully closed.**
+
+## R3 — MAJOR. The surviving mutant. **CLOSED, and re-confirmed.**
+
+`place-order-flow.spec.ts` · commit `a8d0809`
+
+The separate-billing test asserted `expect(input.billing).not.toBe(input.shipping)` — reference
+identity. The flow spreads BOTH operands, so they are always distinct objects; and `initFromServer`
+mirrors the shipping draft into `billingDraft`, so the contents matched too. Deleting the branch
+(`const billingSource = state.draft`) left all 774 tests green. **The only survivor of twelve.**
+
+Fixed by giving the fixture a billing draft that shares NOT ONE field with the shipping one, and
+asserting on VALUES. The INVERSE mutant (always reading `state.billingDraft`) got its own test.
+
+**Re-injected on the final tree and confirmed dead:**
+
+```
+$ perl -pi -e 's/state.sameAsBilling \? state.draft : state.billingDraft/state.draft/'
+$ pnpm --filter @dtc/storefront test
+  FAIL  place-order-flow.spec.ts > step 2 > sends the separate billing draft when the customer unchecked the box
+  Tests  1 failed | 844 passed (845)
+```
+
+**Fully closed.**
+
+## R4 — MAJOR. Voseo in the most-shown error string. **CLOSED.**
+
+`lib/data/cart.ts` · commit `e7cad84` · RED: 2 failures
+
+*"Podés intentar de nuevo o con otra tarjeta."* → *"Puedes…"*. It is the default decline copy, and
+`messageFrom` passes backend messages to the customer VERBATIM.
+
+**Why it got through, and the guard-gap fix.** Both existing voseo guards enumerate IMPERATIVES only
+(`Elegí|Completá|Volvé|…`), and each covers a different catalogue. `Podés` is a voseo PRESENT, and
+the string belongs to neither catalogue.
+
+- Both guards widened to `Podés|Tenés|Querés|Hacé|Andá|…`, each with a can-actually-fail case pinning
+  the exact form that escaped.
+- A THIRD guard added in `cart.spec.ts` that reads the SOURCE FILE and sweeps every Spanish string
+  literal `cart.ts` can return, including the module-private `SYNC_ADDRESSES_GENERIC_ERROR` and
+  `PERSIST_DRAFT_GENERIC_ERROR`. It reads the file rather than a catalogue because `cart.ts` is
+  `"use server"` and such a module may not export a constant object — there is nothing for an
+  `Object.values()` guard to point at. It also asserts it FOUND strings, so it cannot silently pass
+  over an empty list, which is the exact failure mode that let this ship.
+- `placeOrder`'s throw is now covered behaviourally, both branches.
+
+**Fully closed.**
+
+## R5 — MAJOR. The autosave fires during tokenization. **CLOSED — by the other of the two fixes.**
+
+`place-order-flow.ts` · `checkout-context.tsx` · commit `cd929e2` · RED: 3 failures
+
+`runExclusive` cancels the armed autosave but is not reached until step 2, on the far side of a
+1–3 s tokenize. So the ordinary sequence "tab out of the last field, click 200 ms later" lets the
+debounce fire mid-tokenize, F2 re-prices shipping, and step 3 aborts over a change the flow itself
+caused.
+
+**The flow now calls `deps.cancelAutosave()` first — before the snapshot, before step 0.**
+
+**Deliberately NOT the re-snapshot.** The finding offered either "cancel the autosave" or "re-read
+`deps.readState().cart?.total` immediately before step 2". The second also stops the spurious abort,
+and it does so **by charging the customer a figure that moved after they clicked** — which is exactly
+the harm step 3 exists to prevent. A test pins that the guard still fires for a total that moved for
+any other reason, so a later "fix" cannot quietly take that route.
+
+The requested spec — dispatch `CART_UPDATED` from inside the tokenize stub, assert no abort — was
+therefore NOT written in that form: under the correct fix that dispatch cannot happen from the
+autosave, and if it happens from anything else the abort is CORRECT. What is asserted instead is the
+ordering (`cancelAutosave` strictly before `tokenize`, for every provider, including when step 0
+refuses), which combined with the scheduler's existing "cancels a pending autosave outright" test
+covers the chain. The `.tsx` wiring itself remains unprovable by this runner, as all wiring in this
+change is.
+
+**Fully closed on the described scenario; the wiring line is manual-QA owed.**
+
+## R6 — MAJOR. Stale Mercado Pago `init_point`. **CLOSED.**
+
+`place-order.ts` · `place-order-flow.ts` · commit `b5ddfe7` · RED: 1 failure
+
+`selectMercadoPagoInitPoint(collection, synced.cart)` — `synced.cart` is read BEFORE any session
+existed. D5 names the fallback as the cart read AFTER initiation. Not dead code: Medusa's default
+store projection carries `*payment_collection.payment_sessions` and `syncCheckoutAddresses` uses that
+projection, so on a retry that cart holds the PREVIOUS attempt's `init_point`, minted for the
+PREVIOUS total — and `placeOrder` is never called for MP, the webhook is the source of truth.
+
+Same defect class as **M16**, which PART 10 caught and fixed on the Openpay side. Caught on one side,
+shipped on the other.
+
+**The fallback is removed from the SIGNATURE**, not merely from the call site: a dangerous argument
+left in place is an invitation to pass the wrong cart back in, and this change treats a rule with two
+homes as the defect. Refusing is cheap because of R5 — the next click mints a fresh preference. The
+spec that blessed the fallback is replaced by an arity assertion plus a flow-level test driving the
+exact retry shape.
+
+**Fully closed.**
+
+## R7 — MAJOR. 3DS detection read through a cacheable path. **CLOSED, and hardened.**
+
+`place-order-flow.ts` · `checkout-context.tsx` · commits `6e16d3d`, `627cca0` · RED: 1 failure
+
+Right rule, wrong function. `retrieveCart` is `force-cache` on a `carts` tag;
+`initiatePaymentSession` calls `revalidateTag("carts")`, which in App Router also re-runs
+`checkout/page.tsx` and REPOPULATES the entry with a pre-authorization cart.
+
+Rather than a one-word swap in the `.tsx`, the dependency now takes `retrieveCartFresh`'s
+**discriminated** `FreshCartRead` directly. That keeps "the cart says no challenge" and "the read did
+not settle the question" as different branches, and — more importantly — puts the mapping inside the
+module a spec can load instead of in an untestable `.tsx` adapter.
+
+**A mutation follow-up was needed.** A mutant dropping the `read.ok` check survived, because the only
+failure fixture was `{ ok: false, error }` — no `cart` key, so the selector answered `null` anyway.
+Equivalent by accident. The failure fixture now carries a cart with a live `requires_more` session,
+and the mutant dies. Same argument `resolveShippingAddressId` makes: a read that did not settle the
+question is not absence AND it is not data.
+
+**Fully closed.**
+
+## R8 — MAJOR. `placingOrder` latched with no escape. **CLOSED.**
+
+`place-order-flow.ts` · `place-order.ts` · `checkout-context.tsx` · commit `0b6dd20` · RED: 12 failures
+
+The docstring's contract — *"`placingOrder` … is the affordance; this is the lock"* — was inverted on
+the redirect paths: `finally` released `running` while `placingOrder` stayed true.
+
+- The lock now survives a `redirected` outcome **and nothing else**. A decline, an aborted address
+  write and a moved total all still release, each with its own test.
+- A throw escaping `run` releases too. Nothing in `run` is supposed to throw, but a lock that depends
+  on that staying true is one refactor away from a checkout nobody can use.
+- Consequence (c) is now asserted directly: **exactly one Mercado Pago preference across a double
+  click** (S8).
+- `release()` is the escape, called from a `pageshow` listener. WHETHER to release is
+  `shouldReleasePlaceOrderLock` — a pure rule in `lib/util`, because `persisted` arrives off a DOM
+  event and only a literal `true` may unlock a checkout mid-navigation. Seven cases, including the
+  truthy-non-boolean.
+- Two docstrings corrected: the redirect comment named the wrong flag, and `stateRef`'s claim that
+  "every reader is a debounced timer at least 400 ms out" stopped being true the moment
+  `placeOrderFlow` started reading it synchronously from a click handler.
+
+**Fully closed in code. The bfcache escape itself is manual-QA owed** (2c.34) — a `pageshow` listener
+is not reachable by a node-only runner.
+
+---
+
+## MINORs — five fixed, one carried
+
+Commit `2941dd0`, except where noted.
+
+| MINOR | Disposition |
+|---|---|
+| `buildSessionData` fails open on `""` token | **FIXED.** The flow settles failed on an empty token; the branch now THROWS rather than falling through to `return undefined`. Initiating Openpay with no `token_id` is what 2c.9 forbids, and it was reachable through a side door no spec covered. |
+| `asUsableUrl` checks non-emptiness, not URL-ness | **FIXED**, wider than requested: `^https://`. `"undefined"`, `"/checkout/abc"`, `"//host/x"`, `"javascript:alert(1)"` and `"http://…"` are all non-empty and all different ways for a raw `location.href` on a payment path to go wrong. Negative tables added for BOTH callers. |
+| Two strings for "pick a payment method" | **FIXED.** `PLACE_ORDER_MESSAGES.providerUnsupported` delegates to `MISSING_REQUIREMENT_MESSAGES.payment_method`, pinned by IDENTITY so a copied literal cannot pass. |
+| `checkout-context.tsx` `stateRef` docstring is false | **FIXED** (in `0b6dd20`). Corrected, and the narrower reason it is still safe is stated: the lag is one COMMIT, and a click is dispatched after the commit that rendered the button it landed on. |
+| `getBaseURL()` silently defaults to localhost | **FIXED.** `NEXT_PUBLIC_BASE_URL` joins `check-env-variables.js`, the build-time gate `next.config.js` already runs and which the Dockerfile already documents as the "forgotten Dokploy variable" guard. `NEXT_PUBLIC_*` is INLINED at build time, so this is the last place it is cheap. |
+| Billing field-level validation | **CARRIED** → `tasks.md` **2c.33**, blocking slice 2, with `file:line`. R1 blocks the all-empty draft (closing the 1001 path) but cannot say WHICH field is wrong; the dedicated code needs the billing form slice 2 renders. |
+
+## Mutation — 13 injected on the remediated lines, 13 killed
+
+M-A cancelAutosave dropped (3) · M-B always release (3) · M-C no deadline (6) · M-D billing always
+true (13) · M-E ignore `read.ok` (**SURVIVED first pass**, killed after hardening, 1) · M-F loose
+`persisted` (2) · M-G url non-empty (10) · M-H no empty-token guard (2) · M-I `every`→`some` (7) ·
+M-J reducer hardcodes `sameAsBilling` (2) · M-K reducer drops `billingDraft` (2) · M-L
+`providerUnsupported` re-copied (1) · reviewer B's `billingSource = state.draft` (1), plus its
+inverse (1).
+
+**M-E is the honest one.** It survived because the fixture happened to make it equivalent, exactly
+like M16 and exactly like the finding-3 mutant. Third time in this change a test's apparent coverage
+came from the fixture rather than the assertion. Recorded, not smoothed over.
+
+## Disagreement recorded
+
+**Finding 5, second half — rejected with reason.** See R5. Cancelling the autosave and re-snapshotting
+the total are NOT interchangeable: the second trades a spurious abort for a silent charge at a figure
+the customer did not agree to. Only the first was implemented.
+
+Everything else in findings 1–8 was accepted as stated.
+
+## Manual QA owed — unchanged from PART 10, plus two
+
+- [ ] Everything in PART 10's list still stands.
+- [ ] **NEW (2c.34).** Mercado Pago → press **Back** → the CTA must be usable again with no reload.
+      This is the bfcache escape from the redirect lock, and it is the one path the node runner
+      cannot reach.
+- [ ] **NEW.** Confirm a hung CTA write surfaces the failure and re-enables the button after
+      `CHECKOUT_WRITE_TIMEOUT_MS` rather than spinning forever (R2, over a throttled connection).

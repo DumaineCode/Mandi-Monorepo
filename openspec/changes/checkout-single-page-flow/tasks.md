@@ -451,25 +451,28 @@ Floor is the CTA: `payment-section`, `payment-button` and `place-order-bar` are 
 > node-tested module. `constants.tsx` delegates, so each prefix still has one definition. RC-4 respected
 > — `isStripeLike` and the `pp_stripe_*` entries are untouched.
 >
-> ### ⚠️ BLOCKER FOUND, NOT FIXED — the billing-address deadlock (owner: slice 2)
+> ### ~~⚠️ BLOCKER FOUND, NOT FIXED — the billing-address deadlock~~ — **CLOSED in remediation**
 >
-> `getMissingOrderRequirements` emits `billing_address` whenever `cart.billing_address` is falsy
-> (`checkout-readiness.ts:325`). After the single-page migration the **only** production writer of
-> `billing_address` in the entire storefront is `syncCheckoutAddresses` — which runs on the CTA click,
-> behind the very check blocking it. `persistCheckoutDraft` never writes billing by design (D3), and
-> `setAddresses`, which used to write it at the address step, was deleted by this slice.
+> `getMissingOrderRequirements` emitted `billing_address` whenever `cart.billing_address` was falsy.
+> After the single-page migration the **only** production writer of `billing_address` in the entire
+> storefront is `syncCheckoutAddresses` — which runs on the CTA click, behind the very check blocking
+> it. `persistCheckoutDraft` never writes billing by design (D3), and `setAddresses`, which used to
+> write it at the address step, was deleted by this slice.
 >
-> **A cart that has never had a billing address can therefore never place an order.** The CTA reports
-> `Falta tu dirección de facturación.` forever. This is the same shape as the `?step=payment` deadlock
-> PR2c exists to remove. Verified by grep: `billing_address:` has exactly one production writer.
+> **A cart that had never had a billing address could therefore never place an order.** Same shape as
+> the `?step=payment` deadlock PR2c exists to remove.
 >
-> Not fixed here because the fix is in `toReadinessInput`, whose `hasBillingAddress` is a CART fact and
-> probably wants to be a CLIENT one — precisely the `hasShippingMethod` vs `hasSelectedShippingOption`
-> split that file already makes, for the identical F1 reason. That is a strictness-floor change, which
-> this file calls a product decision rather than a refactor, and it is outside 2c.7–2c.12.
->
-> **Pinned by a tripwire test** in `place-order-flow.spec.ts` ("TRIPWIRE: billing-address deadlock").
-> It is EXPECTED to fail the moment slice 2 addresses it — that failure is the handoff working.
+> Slice 1 deferred this to slice 2. Both blind reviewers rejected the deferral on the same ground: the
+> gate (`toReadinessInput`) and the writer (`syncCheckoutAddresses`) are BOTH in slice 1, so slice 2
+> contributes nothing to the cycle, and deferring means merging a second half-finished migration to
+> `main` on the strength of a progress note. **Fixed here** — see remediation R1 in `apply-progress.md`
+> and Amendment A5. The tripwire test now asserts the fixed behaviour.
+
+### PR2c slice 2 — blocking items carried over from the remediation
+
+- [ ] **2c.33 — BLOCKING.** Billing has no FIELD-LEVEL validation. Remediation R1 made `hasBillingAddress` a client fact (`apps/storefront/src/lib/util/checkout-readiness.ts:256` — `billingDraftIsComplete`), which blocks an all-empty billing draft and closes the Openpay error 1001 path. What it does NOT do is tell the customer WHICH billing field is wrong: shipping has `REQUIRED_ADDRESS_FIELDS` plus dedicated `phone` and `colonia` codes, billing has one undifferentiated `billing_address` message (`checkout-readiness.ts:147`). Add a `billing_address_incomplete` code, or per-field billing codes, once `contact-address-section` renders the separate billing form in slice 2. **Blocking because the customer who unchecks the box and mistypes one field is told only "Falta tu dirección de facturación."** and has no way to find which one.
+- [ ] **2c.34 — BLOCKING.** `placeOrderFlow` gained two members slice 2's CTA must wire: `place(openpay)` AND `release()`. `release()` is called from the `pageshow` listener already wired in `apps/storefront/src/modules/checkout/state/checkout-context.tsx:386`; the CTA itself must not call it. Verify by manual QA (2c.26): press **Back** out of Mercado Pago and confirm the CTA is usable again without a reload. This is the only escape from the redirect lock and it is untestable by the node runner.
+- [ ] **2c.35 — BLOCKING.** `MedusaRadio` a11y defect (PR2b's, `aria-checked` hard-coded `true`) is still open in `apps/storefront/src/modules/checkout/components/payment-container/index.tsx`'s radio. Slice 2 owns it; it becomes customer-visible the moment `payment-section` ships.
 
 ### CTA presentation
 
