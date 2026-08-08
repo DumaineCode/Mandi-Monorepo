@@ -53,6 +53,18 @@ module.exports = {
         "ink-soft": "#5a3a5e",
         "cream-muted": "#dccadf",
         "cream-soft": "#bfa6c2",
+        // Hero headline palette, sampled from the design assets. The headline
+        // plum sits between `ink` and `ink-soft`; none of the highlighter
+        // swipes matched an existing token. The accent dot reuses `teal` and
+        // the pill label reuses plain `white`.
+        //
+        // Four measured swipe colours, one per slide — peers, with no default
+        // among them. Each slide picks exactly one by name in `hero/slides.ts`.
+        "hero-headline": "#5E1F5B",
+        "hero-highlight-lilac": "#D7B1D4",
+        "hero-highlight-yellow": "#FED143",
+        "hero-highlight-pink": "#E72564",
+        "hero-highlight-blue": "#1D8DB3",
       },
       borderRadius: {
         none: "0px",
@@ -88,6 +100,7 @@ module.exports = {
           "Ubuntu",
           "sans-serif",
         ],
+        blusans: ["var(--font-blusans)", "sans-serif"],
         bricolage: ["var(--font-bricolage)", "sans-serif"],
         hanken: ["var(--font-hanken)", "sans-serif"],
         mono: ["var(--font-space-mono)", "monospace"],
@@ -166,8 +179,8 @@ module.exports = {
           "0%": { transform: "translateY(-100%)" },
           "100%": { transform: "translateY(0)" },
         },
-        // Hero slider. The headline layer is a full-canvas transparent image, so
-        // translating it moves the words exactly as if they were real type.
+        // Hero slider. `hero-media-in` settles the artwork; `hero-text-in` is
+        // the delayed rise of the real HTML headline layered on top of it.
         "hero-media-in": {
           "0%": { opacity: "0", transform: "scale(1.05)" },
           "100%": { opacity: "1", transform: "scale(1)" },
@@ -199,6 +212,9 @@ module.exports = {
         "slide-in": "slide-in 1.2s cubic-bezier(.41,.73,.51,1.02)",
         leave: "leave 150ms ease-in forwards",
         "hero-media-in": "hero-media-in 1100ms cubic-bezier(.22,.61,.36,1) both",
+        // `both` is load-bearing: the final frame persists after the animation
+        // ends, which is why the centering transform MUST live on a different
+        // element (the hero component explains the rest).
         "hero-text-in":
           "hero-text-in 900ms cubic-bezier(.22,.61,.36,1) 260ms both",
       },
