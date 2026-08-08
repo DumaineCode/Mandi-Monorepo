@@ -33,6 +33,37 @@ const nextConfig = {
    */
   output: "standalone",
   outputFileTracingRoot: path.join(__dirname, "../../"),
+  /**
+   * The tracer over-includes. It follows build-time requires into the emitted
+   * server tree, so .next/standalone ships esbuild, typescript, webpack and
+   * terser even though the running server never loads a line of any of them.
+   * Measured on the runner image: 88MB of traced node_modules, 45MB of it
+   * build-only. Excluding them here is the ONLY lever — the Dockerfile sits
+   * downstream of this build and can only copy what the tracer emits.
+   *
+   * sharp is excluded ONLY because `images.unoptimized` is true below, which
+   * removes the /_next/image optimizer route entirely (it 404s), so nothing
+   * ever reaches the code that would load sharp. THESE TWO SETTINGS ARE
+   * COUPLED. Turning `unoptimized` off without first deleting the @img and
+   * sharp entries from this list makes every optimized image fail at runtime
+   * with MODULE_NOT_FOUND — and it fails in production only, because the dev
+   * server never reads the traced tree.
+   *
+   * Verified by stripping each package from a built image: the server still
+   * reaches "Ready", nothing reports MODULE_NOT_FOUND, and five routes return
+   * status codes identical to an untouched control build.
+   */
+  outputFileTracingExcludes: {
+    "**": [
+      "**/node_modules/@img/**",
+      "**/node_modules/sharp/**",
+      "**/node_modules/@esbuild/**",
+      "**/node_modules/esbuild/**",
+      "**/node_modules/typescript/**",
+      "**/node_modules/webpack/**",
+      "**/node_modules/terser/**",
+    ],
+  },
   logging: {
     fetches: {
       fullUrl: true,
@@ -45,6 +76,9 @@ const nextConfig = {
     ignoreBuildErrors: true,
   },
   images: {
+    // Coupled to outputFileTracingExcludes above: this being true is what
+    // makes dropping sharp from the traced output safe. Flipping it to false
+    // requires putting the @img and sharp entries back first.
     unoptimized: true,
     remotePatterns: [
       {
