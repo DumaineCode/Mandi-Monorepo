@@ -898,6 +898,51 @@ describe("the Openpay tail", () => {
     expect(h.readState().placingOrder).toBe(false)
   })
 
+  /**
+   * The `ok` flag is CHECKED, not merely present.
+   *
+   * A mutant that dropped the check — `selectOpenpayRedirectUrl(read.cart)`
+   * regardless of `read.ok` — survived the version of this file that only fed
+   * it `{ ok: false, error }`, because that shape has no `cart` key and the
+   * selector answers `null` for `undefined` anyway. Equivalent by accident, not
+   * by design, and the accident is one field away from ending.
+   *
+   * So the failure fixture carries a cart too. This is the same argument
+   * `resolveShippingAddressId` makes about `FreshCartRead`: a read that did not
+   * settle the question is not absence AND it is not data. Whatever it came
+   * back holding, it does not get to send the customer to a bank.
+   */
+  it("does not read a cart off a result that reported failure", async () => {
+    const h = harness({
+      placeOrder: async () => {
+        throw new Error("Tu tarjeta fue rechazada.")
+      },
+      retrieveCartFresh: async () =>
+        ({
+          ok: false,
+          error: "ECONNREFUSED",
+          cart: readyCart({
+            payment_collection: {
+              payment_sessions: [
+                {
+                  provider_id: OPENPAY,
+                  status: "requires_more",
+                  data: { redirect_url: "https://3ds.bank/stale" },
+                },
+              ],
+            },
+          }),
+        }) as unknown as Awaited<
+          ReturnType<PlaceOrderDeps["retrieveCartFresh"]>
+        >,
+    })
+
+    const outcome = await h.flow.place()
+
+    expect(h.navigate).not.toHaveBeenCalled()
+    expect(outcome.status).toBe("failed")
+  })
+
   it("still reports a decline when the fresh re-read throws", async () => {
     const h = harness({
       placeOrder: async () => {
