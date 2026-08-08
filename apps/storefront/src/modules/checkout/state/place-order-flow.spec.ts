@@ -311,7 +311,7 @@ const harness = (
   }
 
   return {
-    flow: { place: () => flow.place(openpay) },
+    flow: { place: () => flow.place(openpay), release: flow.release },
     calls,
     actions,
     tokenize,
@@ -1170,23 +1170,179 @@ describe("the busy affordance", () => {
    * the click had not registered.
    */
   it("stays busy through a redirect", async () => {
-    const h = harness({
-      providerId: MERCADOPAGO,
-      initiatePaymentSession: async () => ({
-        payment_collection: {
-          payment_sessions: [
-            {
-              provider_id: MERCADOPAGO,
-              data: { init_point: "https://mp.example/go" },
-            },
-          ],
-        },
-      }),
-    })
+    const h = harness(redirectingToMercadoPago())
 
     await h.flow.place()
 
     expect(h.readState().placingOrder).toBe(true)
+  })
+})
+
+const redirectingToMercadoPago = () => ({
+  providerId: MERCADOPAGO,
+  initiatePaymentSession: async () => ({
+    payment_collection: {
+      payment_sessions: [
+        {
+          provider_id: MERCADOPAGO,
+          data: { init_point: "https://mp.example/go" },
+        },
+      ],
+    },
+  }),
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * The lock survives a redirect, and there is a way out of it
+ * ---------------------------------------------------------------------------
+ *
+ * The flow's own docstring states the contract: *"`state.placingOrder` still
+ * exists, because the BUTTON needs something to render. It is the affordance;
+ * this is the lock."* On the two redirect paths that was INVERTED — the
+ * `finally` released `running` while `placingOrder` stayed true. The lock was
+ * dropped and only the affordance held.
+ *
+ * Three consequences, in order of severity:
+ *
+ * (c) after `place()` returns, a second click passes the `running` check and
+ *     re-runs steps 2–4 — a SECOND Mercado Pago preference, breaking S8's
+ *     "exactly one preference call per checkout", stopped only by the
+ *     affordance the docstring says not to trust;
+ * (a) the customer presses Back; bfcache restores React state with
+ *     `placingOrder: true` and the CTA is disabled forever with no error and no
+ *     path forward except a manual reload;
+ * (b) if `window.location.href = initPoint` does not navigate at all, nothing
+ *     happens and the button never returns.
+ *
+ * The lock now holds through a redirect, and `release()` is the escape. The
+ * decision of WHEN to call it is a pure rule
+ * (`shouldReleasePlaceOrderLock`, `lib/util/place-order.ts`) so the `.tsx`
+ * listener carries wiring only.
+ */
+describe("the redirect lock", () => {
+  it("does NOT release the lock when the browser is navigating away", async () => {
+    const h = harness(redirectingToMercadoPago())
+
+    const first = await h.flow.place()
+    expect(first.status).toBe("redirected")
+
+    const second = await h.flow.place()
+
+    expect(second.status).toBe("busy")
+  })
+
+  /**
+   * S8, restated as the thing that actually goes wrong. A second preference is
+   * a second hosted-checkout URL for the same cart, and the webhook is the
+   * source of truth for both.
+   */
+  it("creates exactly ONE Mercado Pago preference across a double click", async () => {
+    const h = harness(redirectingToMercadoPago())
+
+    await h.flow.place()
+    await h.flow.place()
+
+    expect(h.initiate).toHaveBeenCalledTimes(1)
+    expect(h.navigate).toHaveBeenCalledTimes(1)
+  })
+
+  it("holds the lock through a 3DS redirect too", async () => {
+    const h = harness({
+      placeOrder: async () => {
+        throw new Error("payment requires more")
+      },
+      retrieveCartFresh: async () => ({
+        ok: true,
+        cart: readyCart({
+          payment_collection: {
+            payment_sessions: [
+              {
+                provider_id: OPENPAY,
+                status: "requires_more",
+                data: { redirect_url: "https://3ds.bank/challenge" },
+              },
+            ],
+          },
+        }),
+      }),
+    })
+
+    expect((await h.flow.place()).status).toBe("redirected")
+    expect((await h.flow.place()).status).toBe("busy")
+  })
+
+  /**
+   * THE ESCAPE. Without it the lock is a trap: a customer who presses Back out
+   * of Mercado Pago gets a restored page whose CTA can never be clicked again.
+   */
+  it("release() gives the button and the lock back", async () => {
+    const h = harness(redirectingToMercadoPago())
+
+    await h.flow.place()
+    expect(h.readState().placingOrder).toBe(true)
+
+    h.flow.release()
+
+    expect(h.readState().placingOrder).toBe(false)
+    // …and with no error, because nothing failed — the customer simply came
+    // back.
+    expect(h.readState().error).toBeNull()
+
+    const retry = await h.flow.place()
+    expect(retry.status).not.toBe("busy")
+  })
+
+  /**
+   * A failure still releases, exactly as before. The lock is scoped to the
+   * redirect outcomes and nothing else, or every declined card would need a
+   * page reload.
+   */
+  it.each([
+    ["a decline", { placeOrder: async () => { throw new Error("rechazada") } }],
+    [
+      "an address write that aborted",
+      {
+        syncAddresses: async () => ({
+          ok: false as const,
+          error: PLACE_ORDER_MESSAGES.addressSyncFailed,
+        }),
+      },
+    ],
+    ["a total that moved", {
+      syncAddresses: async () => ({
+        ok: true as const,
+        cart: readyCart({ total: 1250 }),
+      }),
+    }],
+  ])("still releases after %s", async (_label, options) => {
+    const h = harness(options)
+
+    await h.flow.place()
+    const second = await h.flow.place()
+
+    expect(second.status).not.toBe("busy")
+  })
+
+  /**
+   * A throw escaping `run` must not strand the lock either. Nothing in `run`
+   * is supposed to throw — every path is caught — but a lock whose release
+   * depends on that staying true is one refactor away from a checkout nobody
+   * can use.
+   */
+  it("releases when the flow throws outright", async () => {
+    const h = harness({
+      syncAddresses: () => {
+        throw new Error("synchronous boom")
+      },
+    })
+
+    await expect(h.flow.place()).rejects.toThrow("synchronous boom")
+
+    // The second attempt REACHES the write again. A stranded lock would have
+    // returned `busy` without calling anything.
+    await expect(h.flow.place()).rejects.toThrow("synchronous boom")
+    expect(h.sync).toHaveBeenCalledTimes(2)
   })
 })
 

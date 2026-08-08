@@ -178,6 +178,19 @@ export type PlaceOrderFlow = {
    * signal.
    */
   place: (openpay: OpenpayGateway) => Promise<PlaceOrderOutcome>
+  /**
+   * Gives the lock and the button back after a redirect that came back.
+   *
+   * The lock is deliberately NOT released on a `redirected` outcome, so this is
+   * the only way out of it. The caller decides WHEN by asking
+   * `shouldReleasePlaceOrderLock` — a `pageshow` restored from the
+   * back/forward cache — and that decision is a pure rule so the listener
+   * itself carries nothing but wiring.
+   *
+   * Settles with `error: null`: the customer did not fail at anything, they
+   * came back.
+   */
+  release: () => void
 }
 
 export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
@@ -204,11 +217,49 @@ export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
 
     running = true
 
+    let outcome: PlaceOrderOutcome
+
     try {
-      return await run(openpay)
-    } finally {
+      outcome = await run(openpay)
+    } catch (error) {
+      /**
+       * Nothing in `run` is supposed to throw — every path is caught and
+       * converted to an outcome. The lock is released here anyway, because a
+       * lock whose release depends on that staying true is one refactor away
+       * from a checkout nobody can use.
+       */
+      running = false
+      throw error
+    }
+
+    /**
+     * ## The lock SURVIVES a redirect, and this is the contract inverted back
+     *
+     * A `finally` used to release `running` unconditionally while
+     * `state.placingOrder` stayed true — i.e. exactly backwards from the
+     * docstring above, which calls `placingOrder` the affordance and this the
+     * lock. The lock was dropped and only the affordance held.
+     *
+     * The one that hurts: after `place()` returns, a second click passes this
+     * check and re-runs steps 2–4, minting a SECOND Mercado Pago preference for
+     * the same cart. That breaks S8's "exactly one preference call per
+     * checkout", on a provider where the webhook is the source of truth for
+     * both, and the only thing stopping it was the affordance the docstring
+     * says not to trust.
+     *
+     * The browser is navigating away, so there is nothing left for this
+     * checkout to do. `release()` is the way back, called on a bfcache restore.
+     */
+    if (outcome.status !== "redirected") {
       running = false
     }
+
+    return outcome
+  }
+
+  const release = (): void => {
+    running = false
+    deps.dispatch({ type: "PLACE_ORDER_SETTLED", error: null })
   }
 
   const run = async (openpay: OpenpayGateway): Promise<PlaceOrderOutcome> => {
@@ -374,9 +425,11 @@ export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
       // WEBHOOK is the source of truth (`explore §6`); completing the cart here
       // would confirm an order nobody has paid for.
       //
-      // The busy flag deliberately survives: the browser is navigating away,
-      // and re-enabling the button mid-navigation reads as if the click never
-      // registered.
+      // BOTH the lock (`running`) and the affordance (`state.placingOrder`)
+      // survive this. The browser is navigating away: re-enabling the button
+      // mid-navigation reads as if the click never registered, and re-arming
+      // the lock lets a second click mint a second preference. `release()` on a
+      // bfcache restore is the way out.
       deps.navigate(initPoint)
       return { status: "redirected", url: initPoint }
     }
@@ -468,7 +521,7 @@ export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
     return undefined
   }
 
-  return { place }
+  return { place, release }
 }
 
 /**

@@ -204,6 +204,31 @@ export function hasTotalChanged(
   return total !== totalAtRender
 }
 
+/**
+ * Whether a `pageshow` event is the one that must give the CTA back.
+ *
+ * `placeOrderFlow` deliberately KEEPS its re-entrancy lock through a redirect:
+ * releasing it would let a second click mint a second Mercado Pago preference
+ * for the same cart, on a provider where the webhook is the source of truth for
+ * both. That leaves one way in and no way out — the customer presses Back, the
+ * browser restores the page from the back/forward cache with React state
+ * intact, and the CTA is disabled forever with no error and no path forward
+ * except a manual reload.
+ *
+ * `pageshow` with `persisted: true` is the only signal that distinguishes a
+ * bfcache restore from an ordinary load, and an ordinary load needs no release
+ * because it builds fresh state anyway.
+ *
+ * A literal `true` and nothing else: the value comes off a DOM event object, so
+ * it is probed rather than asserted, and a truthy-but-wrong value must not be
+ * able to unlock a checkout that is mid-navigation.
+ */
+export function shouldReleasePlaceOrderLock(
+  event: { persisted?: unknown } | null | undefined
+): boolean {
+  return event?.persisted === true
+}
+
 export type OpenpaySessionData = {
   token_id: string
   device_session_id: string

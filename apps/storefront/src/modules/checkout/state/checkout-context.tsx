@@ -12,7 +12,10 @@ import {
   listCartShippingMethods,
 } from "@lib/data/fulfillment"
 import { getPostalCode } from "@lib/data/postal-code"
-import { PLACE_ORDER_MESSAGES } from "@lib/util/place-order"
+import {
+  PLACE_ORDER_MESSAGES,
+  shouldReleasePlaceOrderLock,
+} from "@lib/util/place-order"
 import { getBaseURL } from "@lib/util/env"
 import { useParams } from "next/navigation"
 import {
@@ -222,9 +225,22 @@ export function CheckoutProvider({
    * unsafe, because under concurrent rendering a render can be thrown away or
    * replayed and the ref would then carry state that was never committed. An
    * effect runs after commit, so the ref only ever holds state the tree actually
-   * shows. Every reader here is a debounced timer at least 400 ms out or an
-   * awaited continuation, so there is no reader that could observe the one-commit
-   * lag this introduces.
+   * shows.
+   *
+   * ## The one-commit lag, stated correctly
+   *
+   * An earlier version of this comment claimed every reader is "a debounced
+   * timer at least 400 ms out or an awaited continuation", so nothing could
+   * observe the lag. That stopped being true when PR2c landed:
+   * `placeOrderFlow` reads `stateRef.current` SYNCHRONOUSLY from a click
+   * handler (`place-order-flow.ts`, the snapshot at the top of `run`).
+   *
+   * It is still safe, for a different and narrower reason. The lag is one
+   * COMMIT, and a click is dispatched by the browser after the commit that
+   * rendered the button it landed on — so the flow reads the state the customer
+   * was looking at, which is exactly the state its readiness re-check and its
+   * total-change guard are about. What the flow must NOT do is treat this ref
+   * as a lock; it keeps its own synchronous closure flag for that, and says so.
    */
   const stateRef = useRef(state)
 
@@ -348,6 +364,40 @@ export function CheckoutProvider({
   }
 
   const placeOrderFlow = placeOrderFlowRef.current.place
+
+  /**
+   * The way out of the redirect lock.
+   *
+   * `placeOrderFlow` deliberately keeps its re-entrancy lock through a redirect
+   * — otherwise a second click mints a second Mercado Pago preference for the
+   * same cart. The customer who presses Back out of Mercado Pago then gets this
+   * page restored FROM THE BACK/FORWARD CACHE with React state intact:
+   * `placingOrder` still true, CTA disabled, no error, no path forward except a
+   * manual reload.
+   *
+   * `pageshow` is the only event that fires on a bfcache restore — `load` and
+   * React's own mount do not — and `event.persisted` is the only thing that
+   * separates it from an ordinary load. Wiring only: WHETHER to release is
+   * `shouldReleasePlaceOrderLock`'s decision, and WHAT to release is the flow's,
+   * because both are testable and this file is not.
+   */
+  useEffect(() => {
+    const release = placeOrderFlowRef.current?.release
+
+    if (!release) {
+      return
+    }
+
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (shouldReleasePlaceOrderLock(event)) {
+        release()
+      }
+    }
+
+    window.addEventListener("pageshow", onPageShow)
+
+    return () => window.removeEventListener("pageshow", onPageShow)
+  }, [])
 
   // -------------------------------------------------------------------------
   // SEPOMEX lookup

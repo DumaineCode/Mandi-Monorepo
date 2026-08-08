@@ -8,6 +8,7 @@ import {
   resolvePaymentTail,
   selectMercadoPagoInitPoint,
   selectOpenpayRedirectUrl,
+  shouldReleasePlaceOrderLock,
 } from "./place-order"
 
 /**
@@ -381,6 +382,50 @@ describe("buildOpenpaySessionData", () => {
       email: undefined,
       phone_number: undefined,
     })
+  })
+})
+
+/**
+ * The bfcache escape from the redirect lock.
+ *
+ * `placeOrderFlow` deliberately keeps its re-entrancy lock through a redirect —
+ * otherwise a second click mints a second Mercado Pago preference. That leaves
+ * one way in and no way out: the customer presses Back, the browser restores
+ * the page FROM THE BACK/FORWARD CACHE with React state intact, and the CTA is
+ * disabled forever with no error and no path forward except a manual reload.
+ *
+ * `pageshow` with `persisted: true` is the only signal that distinguishes a
+ * bfcache restore from an ordinary load — an ordinary load builds fresh state
+ * and needs no release at all. The rule lives here rather than in the listener
+ * because the listener is `.tsx`, which this runner cannot load.
+ */
+describe("shouldReleasePlaceOrderLock", () => {
+  it("releases on a back/forward cache restore", () => {
+    expect(shouldReleasePlaceOrderLock({ persisted: true })).toBe(true)
+  })
+
+  /**
+   * An ordinary load already has fresh state; releasing there would be a
+   * no-op at best, and at worst it would clear an error the customer has not
+   * read yet.
+   */
+  it("does not release on an ordinary load", () => {
+    expect(shouldReleasePlaceOrderLock({ persisted: false })).toBe(false)
+  })
+
+  /**
+   * `persisted` is not guaranteed to be a boolean at this boundary — the value
+   * arrives off a DOM event object. Only a literal `true` counts, so a
+   * truthy-but-wrong value cannot unlock a checkout that is mid-navigation.
+   */
+  it.each([
+    ["a missing event", null],
+    ["undefined", undefined],
+    ["an event with no persisted key", {}],
+    ["a truthy non-boolean", { persisted: "yes" }],
+    ["a number", { persisted: 1 }],
+  ])("does not release for %s", (_label, event) => {
+    expect(shouldReleasePlaceOrderLock(event)).toBe(false)
   })
 })
 
