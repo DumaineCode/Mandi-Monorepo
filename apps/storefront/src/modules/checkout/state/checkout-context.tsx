@@ -4,7 +4,7 @@ import {
   initiatePaymentSession,
   persistCheckoutDraft,
   placeOrder,
-  retrieveCart,
+  retrieveCartFresh,
   syncCheckoutAddresses,
 } from "@lib/data/cart"
 import {
@@ -318,7 +318,16 @@ export function CheckoutProvider({
       syncAddresses,
       initiatePaymentSession,
       placeOrder,
-      retrieveCart: () => retrieveCart(),
+      /**
+       * `retrieveCartFresh`, NOT `retrieveCart`. The 3DS re-read has to observe
+       * the authorization that just happened, and `retrieveCart` is
+       * `force-cache` on a tag that `initiatePaymentSession` revalidates —
+       * which in App Router re-runs `checkout/page.tsx` and repopulates the
+       * entry with a pre-authorization cart. Passed by reference: the
+       * discriminated result is interpreted inside the flow, where a spec can
+       * reach it.
+       */
+      retrieveCartFresh: () => retrieveCartFresh(),
       /**
        * Disarmed at the very top of the flow, not just by `runExclusive` at
        * step 2 — the tokenize round trip in between is longer than the 400 ms

@@ -1,3 +1,4 @@
+import type { FreshCartRead } from "@lib/util/cart-address-payload"
 import { getMissingOrderRequirements } from "@lib/util/checkout-readiness"
 import {
   buildOpenpaySessionData,
@@ -111,7 +112,26 @@ export type PlaceOrderDeps = {
     session: { provider_id: string; data?: Record<string, unknown> }
   ) => Promise<unknown>
   placeOrder: () => Promise<unknown>
-  retrieveCart: () => Promise<HttpTypes.StoreCart | null>
+  /**
+   * `retrieveCartFresh` — `cache: "no-store"`, 5 s bound — and NOT
+   * `retrieveCart`.
+   *
+   * The 3DS decision below is made by re-reading the cart, which is only worth
+   * anything if the read observes the write that just happened. `retrieveCart`
+   * is `cache: "force-cache"` with a `carts` tag, and
+   * `initiatePaymentSession` calls `revalidateTag("carts")` — which in App
+   * Router also refreshes the current route, re-running `checkout/page.tsx`'s
+   * own `retrieveCart()` and REPOPULATING the entry with a pre-authorization
+   * cart. `placeOrder` then fails with `requires_more` and this read could hit
+   * exactly that entry: the flow shows a decline for a charge sitting live at
+   * the customer's bank, and their retry takes a SECOND authorization hold.
+   *
+   * The DISCRIMINATED result is taken directly rather than flattened to
+   * cart-or-null by the caller, because `null` would mean two opposite things —
+   * "no challenge" and "we could not find out" — and the `.tsx` that would do
+   * the flattening is the one file no spec can load.
+   */
+  retrieveCartFresh: () => Promise<FreshCartRead>
   /**
    * `checkout-write-scheduler.cancelAutosave`, called FIRST — before the
    * readiness re-check, before the pre-flight, before anything.
@@ -393,13 +413,20 @@ export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
    * decline, and it breaks silently, in the direction of sending the customer
    * to a challenge for a charge that does not exist.
    *
-   * A failed re-read yields `null`, which surfaces the decline. That is the
-   * right default: not knowing whether a challenge is pending is not a reason
-   * to navigate away from the checkout.
+   * The read is UNCACHED. See `PlaceOrderDeps.retrieveCartFresh` for why a
+   * `force-cache` read here can hand back a pre-authorization cart and turn a
+   * live 3DS challenge into a decline the customer answers with a retry.
+   *
+   * A read that failed — returned `{ ok: false }` or threw — yields `null`,
+   * which surfaces the decline. That is the right default and it is a DIFFERENT
+   * branch from "the cart says there is no challenge": not knowing whether a
+   * challenge is pending is not a reason to navigate away from the checkout.
    */
   const readOpenpayChallenge = async (): Promise<string | null> => {
     try {
-      return selectOpenpayRedirectUrl(await deps.retrieveCart())
+      const read = await deps.retrieveCartFresh()
+
+      return read.ok ? selectOpenpayRedirectUrl(read.cart) : null
     } catch {
       return null
     }

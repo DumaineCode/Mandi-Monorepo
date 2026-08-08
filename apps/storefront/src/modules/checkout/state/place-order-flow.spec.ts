@@ -148,7 +148,7 @@ const harness = (
     syncAddresses?: PlaceOrderDeps["syncAddresses"]
     initiatePaymentSession?: PlaceOrderDeps["initiatePaymentSession"]
     placeOrder?: PlaceOrderDeps["placeOrder"]
-    retrieveCart?: PlaceOrderDeps["retrieveCart"]
+    retrieveCartFresh?: PlaceOrderDeps["retrieveCartFresh"]
     paymentDetailsComplete?: boolean
     sameAsBilling?: boolean
     /**
@@ -288,7 +288,8 @@ const harness = (
     syncAddresses: syncSpy,
     initiatePaymentSession: initiateSpy,
     placeOrder: placeOrderSpy,
-    retrieveCart: options.retrieveCart ?? (async () => null),
+    retrieveCartFresh:
+      options.retrieveCartFresh ?? (async () => ({ ok: true, cart: null })),
     cancelAutosave,
     navigate,
     countryCode: "mx",
@@ -771,14 +772,35 @@ describe("the Openpay tail", () => {
    * 3DS. `placeOrder` throws, and the decision is made by RE-READING the cart —
    * never by matching on the error text, which is the rule
    * `payment-button/index.tsx` carries in capitals today.
+   *
+   * ## And the re-read must be UNCACHED
+   *
+   * The right rule was wired to the wrong function. It used `retrieveCart`,
+   * which is `cache: "force-cache"` with a `carts` tag. `initiatePaymentSession`
+   * calls `revalidateTag("carts")`, and in App Router that also refreshes the
+   * current route, re-running `checkout/page.tsx`'s own `retrieveCart()` and
+   * REPOPULATING the entry with a pre-authorization cart. `placeOrder` then
+   * fails with `requires_more` and this read could hit exactly that entry.
+   *
+   * The customer: the bank issues a 3DS challenge, the flow sees no
+   * `requires_more`, shows a decline for a charge sitting live at their bank,
+   * and they retry — a SECOND authorization hold on their card.
+   *
+   * `retrieveCartFresh` (`cache: "no-store"`, 5 s bound) was built in PR1a for
+   * precisely this, and it returns a DISCRIMINATED result rather than a
+   * cart-or-null so "the cart has no challenge" and "the read failed" cannot
+   * collapse into one another. The flow takes that discriminated shape directly
+   * so the mapping is decided here, where a spec can contradict it, rather than
+   * in the `.tsx` wiring where it would be an untestable adapter.
    */
   it("follows the 3DS redirect when Openpay asks for a challenge", async () => {
     const h = harness({
       placeOrder: async () => {
         throw new Error("payment requires more")
       },
-      retrieveCart: async () =>
-        readyCart({
+      retrieveCartFresh: async () => ({
+        ok: true,
+        cart: readyCart({
           payment_collection: {
             payment_sessions: [
               {
@@ -789,6 +811,7 @@ describe("the Openpay tail", () => {
             ],
           },
         }),
+      }),
     })
 
     const outcome = await h.flow.place()
@@ -802,7 +825,7 @@ describe("the Openpay tail", () => {
       placeOrder: async () => {
         throw new Error("Tu tarjeta fue rechazada.")
       },
-      retrieveCart: async () => readyCart({}),
+      retrieveCartFresh: async () => ({ ok: true, cart: readyCart({}) }),
     })
 
     const outcome = await h.flow.place()
@@ -813,12 +836,34 @@ describe("the Openpay tail", () => {
     expect(h.readState().placingOrder).toBe(false)
   })
 
-  it("still reports a decline when the cart re-read itself fails", async () => {
+  /**
+   * A read that did not settle the question is NOT a read that answered "no
+   * challenge". It surfaces the decline — not knowing whether a challenge is
+   * pending is not a reason to navigate away from the checkout — but it must
+   * reach that answer through the failure branch, not by mistaking `{ ok:
+   * false }` for an empty cart.
+   */
+  it("still reports a decline when the fresh re-read reports a failure", async () => {
     const h = harness({
       placeOrder: async () => {
         throw new Error("Tu tarjeta fue rechazada.")
       },
-      retrieveCart: async () => {
+      retrieveCartFresh: async () => ({ ok: false, error: "ECONNREFUSED" }),
+    })
+
+    const outcome = await h.flow.place()
+
+    expect(h.navigate).not.toHaveBeenCalled()
+    expect(outcome.status).toBe("failed")
+    expect(h.readState().placingOrder).toBe(false)
+  })
+
+  it("still reports a decline when the fresh re-read throws", async () => {
+    const h = harness({
+      placeOrder: async () => {
+        throw new Error("Tu tarjeta fue rechazada.")
+      },
+      retrieveCartFresh: async () => {
         throw new Error("ECONNREFUSED")
       },
     })
@@ -827,6 +872,27 @@ describe("the Openpay tail", () => {
 
     expect(outcome.status).toBe("failed")
     expect(h.readState().placingOrder).toBe(false)
+  })
+
+  /**
+   * The backend error text must never be the input to this decision — the rule
+   * `payment-button/index.tsx` carries in capitals. A message-matching version
+   * breaks the first time the backend rephrases a decline, and it breaks
+   * silently, in the direction of sending the customer to a challenge for a
+   * charge that does not exist.
+   */
+  it("does not follow a challenge just because the message says so", async () => {
+    const h = harness({
+      placeOrder: async () => {
+        throw new Error("requires_more: additional authentication required")
+      },
+      retrieveCartFresh: async () => ({ ok: true, cart: readyCart({}) }),
+    })
+
+    const outcome = await h.flow.place()
+
+    expect(h.navigate).not.toHaveBeenCalled()
+    expect(outcome.status).toBe("failed")
   })
 })
 
