@@ -188,6 +188,10 @@ export type CheckoutWriteScheduler = {
    * Cancels any armed autosave before running: a debounce that fires while the
    * order is being placed would put a second writer on the same row for no
    * benefit, since this write persists the same draft anyway.
+   *
+   * Bounded by `CHECKOUT_WRITE_TIMEOUT_MS`, like `persistNow`. See
+   * `performExclusiveWrite` for why this writer needs the bound more than the
+   * autosave does.
    */
   runExclusive: (write: ExclusiveWrite) => Promise<WriteOutcome>
   /** Arms a trailing-edge debounce. A previous arming is replaced, latest wins. */
@@ -323,10 +327,29 @@ export function createCheckoutWriteScheduler(
     const sequence = deps.nextSequence()
     deps.dispatch({ type: "CART_WRITE_STARTED", sequence })
 
-    let result: Awaited<ReturnType<ExclusiveWrite>>
+    let result: Awaited<ReturnType<ExclusiveWrite>> | typeof TIMED_OUT
 
     try {
-      result = await write(sequence)
+      /**
+       * Raced against the SAME deadline as the autosave, and this is the writer
+       * that needs it more.
+       *
+       * `syncCheckoutAddresses` bounds only its fresh READ
+       * (`CART_READ_TIMEOUT_MS`); the `sdk.store.cart.update` behind it is
+       * deliberately unbounded because the typed SDK method takes no request
+       * init. So the CTA's write is the one call in the checkout with no bound
+       * of its own — on the one request per checkout the customer cannot
+       * casually retry.
+       *
+       * Without this, a hung PATCH is not a slow save: `place()`'s `finally`
+       * never runs, so its re-entrancy flag stays set and every later click
+       * returns `busy` silently; `placingOrder` stays true and the button spins
+       * forever; `tail` never resolves so every later autosave queues behind it
+       * and the requote path deadlocks. And the card has already been
+       * tokenized, so the single-use token is burned with nothing to spend it
+       * on.
+       */
+      result = await withDeadline(write(sequence), CHECKOUT_WRITE_TIMEOUT_MS)
     } catch {
       // A rejection must not poison the chain: the customer has to be able to
       // fix whatever went wrong and click the button again.
@@ -334,7 +357,13 @@ export function createCheckoutWriteScheduler(
       return { status: "failed" }
     }
 
-    if (!result.ok) {
+    /**
+     * A write we gave up waiting for is reported EXACTLY like one that failed,
+     * for the same reason `performWrite` does it: the flow awaiting this needs
+     * a RESOLVED outcome to reach `settleFailed`, which is what releases the
+     * lock, clears `placingOrder` and tells the customer why.
+     */
+    if (result === TIMED_OUT || !result.ok) {
       deps.dispatch({ type: "CART_WRITE_FAILED", sequence })
       return { status: "failed" }
     }
