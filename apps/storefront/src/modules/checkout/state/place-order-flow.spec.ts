@@ -66,6 +66,43 @@ const ADDRESS = {
 }
 
 /**
+ * A billing address that shares NOT ONE customer-visible field with
+ * {@link ADDRESS}.
+ *
+ * ## Why the difference has to be in the CONTENT
+ *
+ * The test that used to cover the separate-billing branch asserted
+ * `expect(input.billing).not.toBe(input.shipping)` — reference identity. The
+ * flow spreads BOTH operands, so those are always distinct objects no matter
+ * which draft was read, and `initFromServer` mirrors the shipping draft into
+ * `billingDraft` (`checkout-reducer.ts:427-435`) so the CONTENTS matched too.
+ *
+ * A reviewer deleted the `sameAsBilling` branch outright — `const billingSource
+ * = state.draft` — and the full suite stayed green. It was the only surviving
+ * mutant of twelve. The test's own comment claimed it "asserts the flow READ the
+ * billing draft"; it asserted that a spread had happened.
+ *
+ * The customer this costs is routine in Mexico: billing address drives the CFDI,
+ * so unchecking "misma dirección de facturación" is normal. Their SHIPPING
+ * address would be written to `cart.billing_address`, and
+ * `buildOpenpaySessionData` sends that wrong name and phone to Openpay as the
+ * cardholder `customer` object — which Openpay matches on for anti-fraud. Wrong
+ * invoice, raised decline rate.
+ */
+const BILLING_ADDRESS = {
+  first_name: "Beatriz",
+  last_name: "Salazar",
+  company: "Salazar Contadores SA de CV",
+  address_1: "Río Lerma 232",
+  address_2: "Cuauhtémoc",
+  postal_code: "06500",
+  city: "Miguel Hidalgo",
+  province: "CDMX",
+  country_code: "mx",
+  phone: "5598765432",
+}
+
+/**
  * A cart that satisfies every `getMissingOrderRequirements` code, so step 0
  * passes and the tests below are about the flow rather than about readiness.
  */
@@ -100,6 +137,13 @@ const harness = (
     retrieveCart?: PlaceOrderDeps["retrieveCart"]
     paymentDetailsComplete?: boolean
     sameAsBilling?: boolean
+    /**
+     * The separate billing form's contents. Overriding it is how a test states
+     * that the two addresses genuinely DIFFER — `initFromServer` mirrors the
+     * shipping draft here, so leaving it alone makes any assertion about
+     * "the flow read the billing draft" vacuous. See {@link BILLING_ADDRESS}.
+     */
+    billingDraft?: Record<string, string>
   } = {}
 ) => {
   const cart = options.cart ?? readyCart()
@@ -110,12 +154,23 @@ const harness = (
     shippingOptions: [],
   })
 
+  const sameAsBilling = options.sameAsBilling ?? true
+
   state = {
     ...state,
     selectedPaymentProviderId:
       options.providerId === undefined ? OPENPAY : options.providerId,
     paymentDetailsComplete: options.paymentDetailsComplete ?? true,
-    sameAsBilling: options.sameAsBilling ?? true,
+    sameAsBilling,
+    /**
+     * Mirrors the reducer's own W7 invariant: while the box is checked the
+     * billing draft IS the shipping draft, and once it is unchecked the two are
+     * independent. A test that unchecks the box without supplying different
+     * contents is testing nothing, which is exactly how the surviving mutant
+     * survived.
+     */
+    billingDraft: (options.billingDraft ??
+      (sameAsBilling ? state.draft : BILLING_ADDRESS)) as typeof state.draft,
   }
 
   const actions: CheckoutAction[] = []
@@ -407,15 +462,55 @@ describe("step 2 — syncCheckoutAddresses", () => {
     expect(input.shipping.postal_code).toBe("03940")
   })
 
+  /**
+   * ## The assertion is on VALUES, and it has to be
+   *
+   * This test used to read `expect(input.billing).not.toBe(input.shipping)` —
+   * reference identity. The flow spreads both operands, so they are always
+   * distinct objects regardless of which draft was read, and `initFromServer`
+   * mirrors the shipping draft into `billingDraft` so the contents matched too.
+   * Deleting the `sameAsBilling` branch entirely (`const billingSource =
+   * state.draft`) left the whole suite green: the only mutant of twelve to
+   * survive.
+   *
+   * A customer who unchecks *misma dirección de facturación* — routine in
+   * Mexico, where the billing address drives the CFDI — would have had their
+   * SHIPPING address written to `cart.billing_address`, and
+   * `buildOpenpaySessionData` would have sent that wrong name and phone to
+   * Openpay as the cardholder `customer` object, which Openpay matches on for
+   * anti-fraud. Wrong invoice, raised decline rate.
+   */
   it("sends the separate billing draft when the customer unchecked the box", async () => {
     const h = harness({ sameAsBilling: false })
 
     await h.flow.place()
 
     const input = h.sync.mock.calls[0][0]
-    // `initFromServer` mirrors the shipping draft into `billingDraft`, so this
-    // asserts the flow READ the billing draft rather than that the two differ.
-    expect(input.billing).not.toBe(input.shipping)
+
+    // Every customer-visible field, so no single-field mutation slips through.
+    expect(input.billing).toEqual(BILLING_ADDRESS)
+    expect(input.billing.postal_code).toBe("06500")
+    expect(input.billing.first_name).toBe("Beatriz")
+    expect(input.billing.phone).toBe("5598765432")
+
+    // …and the shipping half is untouched by the same call.
+    expect(input.shipping.postal_code).toBe("03940")
+    expect(input.shipping.first_name).toBe("Ana")
+  })
+
+  /**
+   * The other direction, stated separately. With the box CHECKED the billing
+   * draft must be the shipping one — a mutant that always read
+   * `state.billingDraft` would pass the test above and fail here.
+   */
+  it("ignores a stale billing draft while the box is checked", async () => {
+    const h = harness({ sameAsBilling: true, billingDraft: BILLING_ADDRESS })
+
+    await h.flow.place()
+
+    const input = h.sync.mock.calls[0][0]
+    expect(input.billing.postal_code).toBe("03940")
+    expect(input.billing.first_name).toBe("Ana")
   })
 
   it("carries the email so a guest checkout persists it with the addresses", async () => {
