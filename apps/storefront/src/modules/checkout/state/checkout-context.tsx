@@ -29,6 +29,7 @@ import {
   initFromServer,
   selectQuoteIsBlockedByFailure,
   selectQuoteRelevantAddress,
+  selectPostalCodeIsUsable,
   selectShippingOptionsKey,
   selectShouldLookUpPostalCode,
   type CheckoutAction,
@@ -264,13 +265,18 @@ export function CheckoutProvider({
 
     if (!selectShouldLookUpPostalCode(stateRef.current)) {
       /**
-       * Reset only for a postal code that is not usable at all. A COMPLETE
-       * returning address also lands here — the selector declines it — and
-       * resetting `cpStatus` there is correct too: there is no lookup in
-       * flight and no list to show.
+       * No lookup will be (re-)started. Which reset applies is the pure
+       * predicate's call, never a rule in this `.tsx`: a USABLE postal code (a
+       * complete returning address, or a list already fetched for it) keeps its
+       * colonia list via `CP_LOOKUP_NOT_NEEDED`; an UNUSABLE one drops the list
+       * via `CP_LOOKUP_DISCARDED`.
        */
       lastLookedUpCp.current = ""
-      dispatch({ type: "CP_LOOKUP_RESET" })
+      dispatch({
+        type: selectPostalCodeIsUsable(stateRef.current)
+          ? "CP_LOOKUP_NOT_NEEDED"
+          : "CP_LOOKUP_DISCARDED",
+      })
       return
     }
 

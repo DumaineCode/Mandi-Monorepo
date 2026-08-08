@@ -6,6 +6,8 @@ import { describe, expect, it } from "vitest"
 import {
   checkoutReducer,
   initFromServer,
+  selectCarrierRatesUnavailable,
+  selectPostalCodeIsUsable,
   selectQuoteIsBlockedByFailure,
   selectQuoteRelevantAddress,
   selectQuoteStatus,
@@ -231,7 +233,7 @@ describe("FIELD_BLUR on a non-quote-relevant field", () => {
     "last_name",
     "company",
     "phone",
-    "address_2",
+    "address_1",
   ] as const)("leaves the signature untouched for %s", (field) => {
     const before = baseState()
     const after = checkoutReducer(before, {
@@ -240,6 +242,21 @@ describe("FIELD_BLUR on a non-quote-relevant field", () => {
       value: "cambiado",
     })
     expect(after.quoteSignature).toBe(before.quoteSignature)
+  })
+
+  /**
+   * S3: `address_2` (the colonia) IS quote-relevant now — this used to sit in
+   * the list above and no longer can. Kept as an explicit counter-assertion so
+   * the boundary is visible rather than silently dropped.
+   */
+  it("DOES move the signature for address_2 (the colonia, S3)", () => {
+    const before = baseState()
+    const after = checkoutReducer(before, {
+      type: "FIELD_BLUR",
+      field: "address_2",
+      value: "Otra Colonia",
+    })
+    expect(after.quoteSignature).not.toBe(before.quoteSignature)
   })
 })
 
@@ -381,7 +398,30 @@ describe("QUOTE_STARTED", () => {
 })
 
 describe("QUOTE_FAILED", () => {
-  it("leaves quotedSignature unchanged so the same address is retryable", () => {
+  it("does not advance quotedSignature, so the same address stays retryable", () => {
+    const state = baseState()
+    const signature = state.quoteSignature!
+
+    // A quote is in flight for the current address; it then fails (no
+    // destination move, so MAJ-2's commitDraft clearing is not involved here —
+    // this isolates what QUOTE_FAILED itself does to quotedSignature).
+    const started = checkoutReducer(state, {
+      type: "QUOTE_STARTED",
+      signature,
+    })
+    const failed = checkoutReducer(started, {
+      type: "QUOTE_FAILED",
+      signature,
+    })
+
+    // `QUOTE_FAILED` tracks the last SUCCESS only — it never advances
+    // `quotedSignature` — so `evaluateQuoteReadiness` returns `quote` again for
+    // the failed address instead of `already_quoted`.
+    expect(failed.quotedSignature).toBe(state.quotedSignature)
+    expect(failed.failedSignature).toBe(signature)
+  })
+
+  it("clears the held quote when a destination move precedes the failure (MAJ-2)", () => {
     const state = baseState()
     const quoted = run(state, {
       type: "QUOTE_READY",
@@ -389,21 +429,24 @@ describe("QUOTE_FAILED", () => {
       options: [option("so_std")],
       prices: { so_std: 100 },
     })
+    expect(quoted.quotedSignature).not.toBeNull()
 
+    // Moving the destination clears the held quote via commitDraft (MAJ-2)
+    // BEFORE any failure is recorded …
     const moved = checkoutReducer(quoted, {
       type: "FIELD_BLUR",
       field: "postal_code",
       value: "44160",
     })
+    expect(moved.quotedSignature).toBeNull()
+
     const failed = checkoutReducer(moved, {
       type: "QUOTE_FAILED",
       signature: moved.quoteSignature!,
     })
 
-    // `quotedSignature` still points at the LAST SUCCESS. That is what makes
-    // `evaluateQuoteReadiness` return `quote` again for the failed address
-    // instead of `already_quoted`.
-    expect(failed.quotedSignature).toBe(quoted.quotedSignature)
+    // … and QUOTE_FAILED leaves it cleared and parks the new signature.
+    expect(failed.quotedSignature).toBeNull()
     expect(failed.failedSignature).toBe(moved.quoteSignature)
   })
 
@@ -1104,8 +1147,21 @@ describe("SEPOMEX lookup", () => {
       colonias: ["Roma Norte", "Roma Sur"],
     })
 
-    expect(resolved.quoteSignature).not.toBeNull()
+    /**
+     * S3: province + city from SEPOMEX is no longer sufficient — the colonia is
+     * now a signature component, so the draft (which had no colonia) is still
+     * not quotable. The street stays empty; the customer must pick a colonia.
+     */
+    expect(resolved.quoteSignature).toBeNull()
     expect(resolved.draft.address_1).toBe("")
+
+    // Picking a colonia from the returned list completes the signature.
+    const withColonia = checkoutReducer(resolved, {
+      type: "FIELD_CHANGE",
+      field: "address_2",
+      value: "Roma Norte",
+    })
+    expect(withColonia.quoteSignature).not.toBeNull()
   })
 
   it("keeps a colonia that is not in the returned list as free text", () => {
@@ -1137,10 +1193,11 @@ describe("SEPOMEX lookup", () => {
     // Otherwise "No encontramos ese código postal" stays on screen after the
     // customer has deleted the digits it was about, and a colonia dropdown
     // keeps offering colonias for a postal code that is no longer entered.
+    // The unusable-postal-code path is now CP_LOOKUP_DISCARDED (S2 split).
     const missed = checkoutReducer(baseState(), { type: "CP_LOOKUP_NOT_FOUND", postalCode: "06700" })
     expect(missed.cpStatus).toBe("not_found")
 
-    expect(checkoutReducer(missed, { type: "CP_LOOKUP_RESET" }).cpStatus).toBe(
+    expect(checkoutReducer(missed, { type: "CP_LOOKUP_DISCARDED" }).cpStatus).toBe(
       "idle"
     )
 
@@ -1154,7 +1211,7 @@ describe("SEPOMEX lookup", () => {
     expect(listed.colonias).toHaveLength(2)
 
     expect(
-      checkoutReducer(listed, { type: "CP_LOOKUP_RESET" }).colonias
+      checkoutReducer(listed, { type: "CP_LOOKUP_DISCARDED" }).colonias
     ).toEqual([])
   })
 
@@ -1163,7 +1220,7 @@ describe("SEPOMEX lookup", () => {
     // every postal-code change, and a fresh object each time is a re-render of
     // the whole checkout tree for no reason.
     const state = baseState()
-    expect(checkoutReducer(state, { type: "CP_LOOKUP_RESET" })).toBe(state)
+    expect(checkoutReducer(state, { type: "CP_LOOKUP_DISCARDED" })).toBe(state)
   })
 
   /**
@@ -1320,6 +1377,317 @@ describe("SEPOMEX lookup", () => {
 
     expect(state.coloniaManual).toBe(true)
     expect(state.draft.address_2).toBe("")
+  })
+})
+
+/**
+ * S3 — the colonia becomes a quote input.
+ *
+ * The colonia (`address_2`) now moves the signature (`shipping-quote.ts`), which
+ * turns two latent defects into real ones and requires the draft projection to
+ * carry the colonia through. All three are asserted here.
+ */
+describe("colonia in the quote signature (S3)", () => {
+  it("projects the draft colonia into the quote-relevant address (S3.1)", () => {
+    const draft = { ...baseState().draft, address_2: "Condesa" }
+
+    expect(selectQuoteRelevantAddress(draft).address_2).toBe("Condesa")
+  })
+
+  it("moves the draft-derived signature when only the colonia changes", () => {
+    const withNorte = run(baseState(), {
+      type: "FIELD_CHANGE",
+      field: "address_2",
+      value: "Roma Norte",
+    })
+    const withSur = run(baseState(), {
+      type: "FIELD_CHANGE",
+      field: "address_2",
+      value: "Roma Sur",
+    })
+
+    expect(withNorte.quoteSignature).not.toBeNull()
+    expect(withNorte.quoteSignature).not.toBe(withSur.quoteSignature)
+  })
+
+  /**
+   * MAJ-2. `commitDraft` clears `calculatedPrices` on a signature change but,
+   * before S3, never cleared `quotedSignature`. With the colonia in the
+   * signature a colonia X -> Y -> X round-trip inside the debounce leaves
+   * `quoteSignature === quotedSignature` with `calculatedPrices === {}`, so the
+   * section falsely reports `quoted` with every row unpriced and no retry. The
+   * two facts describe the same round and MUST be cleared together.
+   */
+  describe("commitDraft clears quotedSignature with calculatedPrices (MAJ-2)", () => {
+    const quotedAtNorte = () => {
+      const draftNorte = run(baseState(), {
+        type: "FIELD_CHANGE",
+        field: "address_2",
+        value: "Roma Norte",
+      })
+      const signatureNorte = draftNorte.quoteSignature as string
+
+      // Land a successful quote for the current (Roma Norte) destination.
+      return checkoutReducer(draftNorte, {
+        type: "QUOTE_READY",
+        signature: signatureNorte,
+        options: [option("so_std")],
+        prices: { so_std: 12345 },
+      })
+    }
+
+    it("clears quotedSignature when a colonia change moves the destination", () => {
+      const quoted = quotedAtNorte()
+      expect(quoted.quotedSignature).toBe(quoted.quoteSignature)
+
+      const movedToSur = checkoutReducer(quoted, {
+        type: "FIELD_CHANGE",
+        field: "address_2",
+        value: "Roma Sur",
+      })
+
+      // The destination moved, so the held prices are dropped …
+      expect(movedToSur.calculatedPrices).toEqual({})
+      // … and `quotedSignature` MUST be dropped alongside them, or the section
+      // reports `quoted` for a colonia whose prices were just discarded.
+      expect(movedToSur.quotedSignature).toBeNull()
+    })
+
+    it("does not falsely report quoted on a colonia X -> Y -> X round-trip", () => {
+      const quoted = quotedAtNorte()
+
+      const bounced = run(
+        quoted,
+        { type: "FIELD_CHANGE", field: "address_2", value: "Roma Sur" },
+        { type: "FIELD_CHANGE", field: "address_2", value: "Roma Norte" }
+      )
+
+      // Back at Roma Norte the signature equals the one we quoted, but the
+      // prices are gone — so `quotedSignature` must NOT still equal it.
+      expect(bounced.quotedSignature).toBeNull()
+      expect(selectQuoteStatus(bounced)).not.toBe("quoted")
+    })
+
+    it("leaves quotedSignature intact when the draft change does not move the destination", () => {
+      const quoted = quotedAtNorte()
+
+      // A street edit cannot move the signature — the held quote stands.
+      const streetEdit = checkoutReducer(quoted, {
+        type: "FIELD_CHANGE",
+        field: "address_1",
+        value: "Calle Durango 12",
+      })
+
+      expect(streetEdit.quoteSignature).toBe(quoted.quoteSignature)
+      expect(streetEdit.quotedSignature).toBe(quoted.quotedSignature)
+      expect(streetEdit.calculatedPrices).toEqual(quoted.calculatedPrices)
+    })
+  })
+
+  /**
+   * MAJ-1. `COLONIA_MANUAL_REQUESTED` was the only draft write that bypassed
+   * `commitDraft`: it cleared `address_2` while `quoteSignature` stayed put, so
+   * with the colonia now in the signature the section kept reporting `quoted`
+   * and rendering prices for a colonia just cleared. Routing it through
+   * `commitDraft` makes the draft-derived signature go non-null -> null.
+   */
+  describe("COLONIA_MANUAL_REQUESTED routes through commitDraft (MAJ-1)", () => {
+    it("drives the signature non-null -> null when it clears the colonia", () => {
+      // Arrange a quotable draft (colonia present -> non-null signature).
+      const quotable = run(baseState(), {
+        type: "FIELD_CHANGE",
+        field: "address_2",
+        value: "Roma Norte",
+      })
+      expect(quotable.quoteSignature).not.toBeNull()
+
+      const cleared = checkoutReducer(quotable, {
+        type: "COLONIA_MANUAL_REQUESTED",
+      })
+
+      // The colonia is cleared AND the signature recomputes to null, so the
+      // section can no longer report `quoted` for the cleared colonia.
+      expect(cleared.draft.address_2).toBe("")
+      expect(cleared.coloniaManual).toBe(true)
+      expect(cleared.quoteSignature).toBeNull()
+    })
+
+    it("drops held prices and quotedSignature when it clears the colonia", () => {
+      const draftNorte = run(baseState(), {
+        type: "FIELD_CHANGE",
+        field: "address_2",
+        value: "Roma Norte",
+      })
+      const quoted = checkoutReducer(draftNorte, {
+        type: "QUOTE_READY",
+        signature: draftNorte.quoteSignature as string,
+        options: [option("so_std")],
+        prices: { so_std: 12345 },
+      })
+      expect(quoted.quotedSignature).not.toBeNull()
+
+      const cleared = checkoutReducer(quoted, {
+        type: "COLONIA_MANUAL_REQUESTED",
+      })
+
+      expect(cleared.calculatedPrices).toEqual({})
+      expect(cleared.quotedSignature).toBeNull()
+    })
+  })
+})
+
+/**
+ * S2 — the CP_LOOKUP_RESET split.
+ *
+ * The single collapsed reset conflates two facts: "no lookup is in flight" and
+ * "there is no list to show". A usable postal code whose lookup merely finished
+ * must keep its colonia list (otherwise the autosave round-trip wipes a list the
+ * moment it arrives and `address_2` stays empty); an unusable postal code must
+ * drop it. Two actions, chosen by the pure {@link selectPostalCodeIsUsable}.
+ */
+describe("CP_LOOKUP_NOT_NEEDED (usable postal code, no lookup in flight)", () => {
+  const listed = () =>
+    checkoutReducer(baseState(), {
+      type: "CP_LOOKUP_FOUND",
+      postalCode: "06700",
+      province: "CDMX",
+      city: "Ciudad de México",
+      colonias: ["Roma Norte", "Roma Sur"],
+    })
+
+  it("sets cpStatus to idle and leaves the colonia list untouched", () => {
+    const state = listed()
+    expect(state.colonias).toHaveLength(2)
+
+    const reset = checkoutReducer(state, { type: "CP_LOOKUP_NOT_NEEDED" })
+
+    expect(reset.cpStatus).toBe("idle")
+    expect(reset.colonias).toEqual(["Roma Norte", "Roma Sur"])
+    expect(reset.coloniasPostalCode).toBe("06700")
+  })
+
+  it("leaves the manual-colonia flag untouched", () => {
+    const manual = checkoutReducer(listed(), {
+      type: "COLONIA_MANUAL_REQUESTED",
+    })
+    expect(manual.coloniaManual).toBe(true)
+
+    const reset = checkoutReducer(manual, { type: "CP_LOOKUP_NOT_NEEDED" })
+
+    expect(reset.coloniaManual).toBe(true)
+  })
+
+  it("returns the identical state object when the status is already idle", () => {
+    // Fires from an effect on every postal-code change; a fresh object each
+    // time re-renders the whole checkout tree for no reason.
+    const state = baseState()
+    expect(state.cpStatus).toBe("idle")
+    expect(checkoutReducer(state, { type: "CP_LOOKUP_NOT_NEEDED" })).toBe(state)
+  })
+})
+
+describe("CP_LOOKUP_DISCARDED (postal code not usable)", () => {
+  const listed = () =>
+    checkoutReducer(baseState(), {
+      type: "CP_LOOKUP_FOUND",
+      postalCode: "06700",
+      province: "CDMX",
+      city: "Ciudad de México",
+      colonias: ["Roma Norte", "Roma Sur"],
+    })
+
+  it("sets cpStatus to idle, empties the list and clears its postal code", () => {
+    const state = listed()
+    expect(state.colonias).toHaveLength(2)
+    expect(state.coloniasPostalCode).toBe("06700")
+
+    const reset = checkoutReducer(state, { type: "CP_LOOKUP_DISCARDED" })
+
+    expect(reset.cpStatus).toBe("idle")
+    expect(reset.colonias).toEqual([])
+    expect(reset.coloniasPostalCode).toBeNull()
+  })
+
+  it("leaves the manual-colonia flag untouched", () => {
+    const manual = checkoutReducer(listed(), {
+      type: "COLONIA_MANUAL_REQUESTED",
+    })
+    expect(manual.coloniaManual).toBe(true)
+
+    const reset = checkoutReducer(manual, { type: "CP_LOOKUP_DISCARDED" })
+
+    expect(reset.coloniaManual).toBe(true)
+  })
+
+  it("returns the identical state object when there is nothing to discard", () => {
+    const state = baseState()
+    expect(state.cpStatus).toBe("idle")
+    expect(state.colonias).toEqual([])
+    expect(checkoutReducer(state, { type: "CP_LOOKUP_DISCARDED" })).toBe(state)
+  })
+})
+
+describe("selectPostalCodeIsUsable", () => {
+  const listedFor = (postalCode: string) =>
+    checkoutReducer(
+      checkoutReducer(baseState({ shipping_address: null }), {
+        type: "FIELD_CHANGE",
+        field: "postal_code",
+        value: postalCode,
+      }),
+      {
+        type: "CP_LOOKUP_FOUND",
+        postalCode,
+        province: "CDMX",
+        city: "Ciudad de México",
+        colonias: ["Roma Norte", "Roma Sur"],
+      }
+    )
+
+  it.each(["", "067", "0670a", "abcde", "067000"])(
+    "is false for the postal code %o that fails the pattern",
+    (value) => {
+      const typed = checkoutReducer(baseState(), {
+        type: "FIELD_CHANGE",
+        field: "postal_code",
+        value,
+      })
+
+      expect(selectPostalCodeIsUsable(typed)).toBe(false)
+    }
+  )
+
+  it("is true when there is no list held (nothing to invalidate)", () => {
+    const state = baseState()
+    expect(state.colonias).toEqual([])
+    expect(selectPostalCodeIsUsable(state)).toBe(true)
+  })
+
+  it("is true when the held list belongs to the current postal code", () => {
+    const state = listedFor("06700")
+    expect(state.colonias).toHaveLength(2)
+    expect(state.draft.postal_code).toBe("06700")
+
+    expect(selectPostalCodeIsUsable(state)).toBe(true)
+  })
+
+  it("is false when a held list belongs to a different postal code", () => {
+    // The B -> A -> B retention edge. A list fetched for A must not be treated
+    // as usable under a different postal code B, or the customer could pick a
+    // colonia that does not exist for B and the order fails only at labelling.
+    const listedForA = listedFor("06700")
+
+    const backToB = checkoutReducer(listedForA, {
+      type: "FIELD_CHANGE",
+      field: "postal_code",
+      value: "64000",
+    })
+    // The list still belongs to 06700, but the draft now reads 64000.
+    expect(backToB.colonias).toHaveLength(2)
+    expect(backToB.coloniasPostalCode).toBe("06700")
+    expect(backToB.draft.postal_code).toBe("64000")
+
+    expect(selectPostalCodeIsUsable(backToB)).toBe(false)
   })
 })
 
@@ -2821,6 +3189,131 @@ describe("selectShippingChoices", () => {
     const state = priced(baseState({}, [nameless]), { so_std: 100 }, [nameless])
 
     expect(selectShippingChoices(state)[0].name).toBe("")
+  })
+})
+
+/**
+ * `selectCarrierRatesUnavailable` (S0) — the annotation, orthogonal to the six
+ * quotation states. It answers "did this round leave a calculated option without
+ * a price?" and is `true` ONLY in `quoted` with at least one unpresentable
+ * calculated row. Never a seventh state; `false` everywhere else by
+ * construction.
+ */
+describe("selectCarrierRatesUnavailable", () => {
+  const flatOption = (id: string, amount: number | null) =>
+    ({
+      id,
+      name: id,
+      price_type: "flat",
+      amount,
+    } as unknown as HttpTypes.StoreCartShippingOption)
+
+  const priced = (
+    state: CheckoutState,
+    prices: Record<string, number>,
+    options = state.shippingOptions
+  ) =>
+    checkoutReducer(state, {
+      type: "QUOTE_READY",
+      signature: state.quoteSignature!,
+      options,
+      prices,
+    })
+
+  /**
+   * The revenue-rescue case (S0): a calculated `Expres` that never priced beside
+   * a presentable flat `Gratis`. The round is `quoted`, the flat option sells,
+   * and the annotation flags that a carrier rate is missing.
+   */
+  it("is true in a quoted round where a calculated option has no price", () => {
+    const state = priced(
+      baseState({}, [option("so_expres"), flatOption("so_gratis", 0)]),
+      {},
+      [option("so_expres"), flatOption("so_gratis", 0)]
+    )
+
+    expect(selectQuoteStatus(state)).toBe("quoted")
+    expect(selectCarrierRatesUnavailable(state)).toBe(true)
+  })
+
+  it("is false in a quoted round where every calculated option is priced", () => {
+    const state = priced(baseState({}, [option("so_std"), option("so_exp")]), {
+      so_std: 12900,
+      so_exp: 24900,
+    })
+
+    expect(selectQuoteStatus(state)).toBe("quoted")
+    expect(selectCarrierRatesUnavailable(state)).toBe(false)
+  })
+
+  /**
+   * A calculated option priced at `0` is presentable — free shipping is a price.
+   * The annotation must NOT fire on it (`Number.isFinite`, not truthiness).
+   */
+  it("is false when a calculated option is priced at zero", () => {
+    const state = priced(baseState({}, [option("so_std")]), { so_std: 0 })
+
+    expect(selectCarrierRatesUnavailable(state)).toBe(false)
+  })
+
+  it("is false in an all-flat quoted round with no calculated option at all", () => {
+    const state = priced(
+      baseState({}, [flatOption("so_gratis", 0)]),
+      {},
+      [flatOption("so_gratis", 0)]
+    )
+
+    expect(selectQuoteStatus(state)).toBe("quoted")
+    expect(selectCarrierRatesUnavailable(state)).toBe(false)
+  })
+
+  it("is false in the idle state", () => {
+    const idle = baseState({
+      shipping_address: { id: "caaddr_01", ...CDMX, postal_code: "" },
+    })
+
+    expect(selectQuoteStatus(idle)).toBe("idle")
+    expect(selectCarrierRatesUnavailable(idle)).toBe(false)
+  })
+
+  it("is false while a quote is in flight", () => {
+    const state = baseState()
+    const inFlight = checkoutReducer(state, {
+      type: "QUOTE_STARTED",
+      signature: state.quoteSignature!,
+    })
+
+    expect(selectQuoteStatus(inFlight)).toBe("quoting")
+    expect(selectCarrierRatesUnavailable(inFlight)).toBe(false)
+  })
+
+  /**
+   * The dangerous false positive to prevent: a `failed` round also has an
+   * unpriced calculated row, but the annotation belongs to `quoted` only —
+   * `failed` renders its own copy.
+   */
+  it("is false in the failed state even though a calculated row is unpriced", () => {
+    const state = baseState()
+    const failed = checkoutReducer(state, {
+      type: "QUOTE_FAILED",
+      signature: state.quoteSignature!,
+    })
+
+    expect(selectQuoteStatus(failed)).toBe("failed")
+    expect(selectCarrierRatesUnavailable(failed)).toBe(false)
+  })
+
+  it("is false in the not_serviceable state", () => {
+    const state = baseState()
+    const empty = checkoutReducer(state, {
+      type: "QUOTE_READY",
+      signature: state.quoteSignature!,
+      options: [],
+      prices: {},
+    })
+
+    expect(selectQuoteStatus(empty)).toBe("not_serviceable")
+    expect(selectCarrierRatesUnavailable(empty)).toBe(false)
   })
 })
 

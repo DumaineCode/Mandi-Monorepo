@@ -9,6 +9,7 @@ import {
   isShippingSelectionStale,
   MX_POSTAL_CODE_PATTERN,
   QUOTE_DEBOUNCE_MS,
+  readPresentableAmount,
   type QuoteRelevantAddress,
 } from "./shipping-quote"
 
@@ -23,6 +24,7 @@ const COMPLETE: QuoteRelevantAddress = {
   postal_code: "06700",
   province: "CDMX",
   city: "Cuauhtémoc",
+  address_2: "Roma Norte",
 }
 
 const address = (
@@ -86,26 +88,71 @@ describe("buildQuoteSignature", () => {
   })
 
   /**
-   * The whole point of the change (R4). `buildCartShippingSignature`
+   * Half of the R4 change (S3). `buildCartShippingSignature`
    * (`shipping-address/index.tsx:33-45`) includes `address_1`/`address_2`,
-   * which is why a postal code alone can never trigger a quote today.
+   * which is why a postal code alone can never trigger a quote today. S3 keeps
+   * the STREET half of that exclusion — `address_1` still cannot move a price —
+   * while the COLONIA half is reversed (see the colonia scenarios below), so
+   * this test now varies `address_1` only and holds `address_2` equal.
    */
-  it("ignores street fields entirely", () => {
+  it("ignores the street field entirely", () => {
     const withStreet = {
       ...address(),
       address_1: "Av. Insurgentes Sur 1602",
-      address_2: "Piso 4",
     } as QuoteRelevantAddress
 
     const withOtherStreet = {
       ...address(),
       address_1: "Calle Durango 12",
-      address_2: null,
     } as QuoteRelevantAddress
 
     expect(buildQuoteSignature(withStreet)).toBe(
       buildQuoteSignature(withOtherStreet)
     )
+  })
+
+  /**
+   * S3: the colonia (`address_2`) is now the FIFTH signature component. Skydropx
+   * PRO rejects a quote whose destination has no `area_level3`
+   * (`422 {"address_to":{"area_level3":["no puede estar en blanco"]}}`), so the
+   * colonia genuinely moves the price and must move the signature — otherwise a
+   * quote parked on a colonia-less failure could never be re-fired by picking
+   * one, because failure parking keys on the signature.
+   */
+  it("moves the signature when the colonia changes", () => {
+    const romaNorte = buildQuoteSignature(address({ address_2: "Roma Norte" }))
+    const romaSur = buildQuoteSignature(address({ address_2: "Roma Sur" }))
+
+    expect(romaNorte).not.toBeNull()
+    expect(romaSur).not.toBeNull()
+    expect(romaNorte).not.toBe(romaSur)
+  })
+
+  it("produces distinct signatures for two colonias under the same postal code", () => {
+    const centro = buildQuoteSignature(address({ address_2: "Centro" }))
+    const juarez = buildQuoteSignature(address({ address_2: "Juárez" }))
+
+    expect(centro).not.toBe(juarez)
+  })
+
+  it("is stable for the same colonia across calls", () => {
+    expect(buildQuoteSignature(address({ address_2: "Centro" }))).toBe(
+      buildQuoteSignature(address({ address_2: "Centro" }))
+    )
+  })
+
+  it("normalizes the colonia the same way as every other component", () => {
+    expect(buildQuoteSignature(address({ address_2: "  Centro  " }))).toBe(
+      buildQuoteSignature(address({ address_2: "centro" }))
+    )
+  })
+
+  it.each([
+    ["a missing colonia", { address_2: null }],
+    ["a blank colonia", { address_2: "  " }],
+    ["an absent colonia", { address_2: undefined }],
+  ])("returns null for %s", (_label, overrides) => {
+    expect(buildQuoteSignature(address(overrides))).toBeNull()
   })
 
   it("normalizes case, padding and internal whitespace runs", () => {
@@ -478,6 +525,36 @@ describe("isShippingSelectionStale", () => {
   it("is true when the address stopped being quotable under a live selection", () => {
     expect(isShippingSelectionStale(SIG_A, null)).toBe(true)
   })
+
+  /**
+   * S3, both directions. With the colonia in the signature, a colonia change
+   * now invalidates a selection made for the old colonia — which is CORRECT,
+   * because the price can differ between colonias. But a change that does NOT
+   * move the signature (same colonia, same everything) must NOT invalidate it.
+   */
+  describe("colonia in the signature (S3)", () => {
+    const sameCp = { ...COMPLETE }
+    const sigRomaNorte = buildQuoteSignature({
+      ...sameCp,
+      address_2: "Roma Norte",
+    })
+    const sigRomaSur = buildQuoteSignature({ ...sameCp, address_2: "Roma Sur" })
+
+    it("invalidates a selection when the colonia changed (signature moved)", () => {
+      expect(isShippingSelectionStale(sigRomaNorte, sigRomaSur)).toBe(true)
+    })
+
+    it("does NOT invalidate a selection when the colonia is unchanged (signature stable)", () => {
+      const sameAgain = buildQuoteSignature({
+        ...sameCp,
+        address_2: "  Roma Norte  ",
+      })
+      // Normalization collapses the whitespace, so the signature did not
+      // actually move — the selection must stand.
+      expect(sameAgain).toBe(sigRomaNorte)
+      expect(isShippingSelectionStale(sigRomaNorte, sameAgain)).toBe(false)
+    })
+  })
 })
 
 /**
@@ -545,14 +622,17 @@ describe("classifyQuoteResult", () => {
 
   /**
    * Flat-rate options carry their amount on the option itself and are never
-   * routed through `calculatePriceForShippingOption`, so an empty price map says
-   * nothing about them. Reporting a failure here would break a store that sells
-   * flat-rate shipping only.
+   * routed through `calculatePriceForShippingOption`, so the empty price map
+   * says nothing about them. A store selling flat-rate shipping only stays
+   * priced — the amount is read off the option (S0).
    */
-  it("is priced when the list is entirely flat-rate and the price map is empty", () => {
+  it("is priced when the list is entirely flat-rate and the flat amounts are present", () => {
     expect(
       classifyQuoteResult({
-        options: [flat("so_a"), flat("so_b")],
+        options: [
+          { id: "so_a", price_type: "flat", amount: 9900 },
+          { id: "so_b", price_type: "flat", amount: 0 },
+        ],
         prices: {},
       })
     ).toBe("priced")
@@ -609,5 +689,140 @@ describe("classifyQuoteResult", () => {
     const prices = Object.freeze({ so_a: 100 })
 
     expect(() => classifyQuoteResult({ options, prices })).not.toThrow()
+  })
+
+  /**
+   * The revenue stopper (S0). A calculated `Expres` that never priced sitting
+   * beside a flat `Gratis` at `amount: 0` used to classify `unpriceable`,
+   * because the classifier only looked at the calculated subset — and both rows
+   * then vanished. A presentable flat option MUST rescue the round.
+   */
+  it("is priced when a flat option is presentable even though every calculated option failed", () => {
+    expect(
+      classifyQuoteResult({
+        options: [
+          { id: "so_expres", price_type: "calculated" },
+          { id: "so_gratis", price_type: "flat", amount: 0 },
+        ],
+        prices: {},
+      })
+    ).toBe("priced")
+  })
+
+  /**
+   * The mirror: a flat option carrying no amount cannot rescue anything, and an
+   * all-flat list whose every amount is `null` is unpriceable.
+   */
+  it("is unpriceable when every option is flat and every flat amount is null", () => {
+    expect(
+      classifyQuoteResult({
+        options: [
+          { id: "so_a", price_type: "flat", amount: null },
+          { id: "so_b", price_type: "flat", amount: null },
+        ],
+        prices: {},
+      })
+    ).toBe("unpriceable")
+  })
+
+  it("is unpriceable when a calculated option failed and the only flat option has a null amount", () => {
+    expect(
+      classifyQuoteResult({
+        options: [
+          { id: "so_expres", price_type: "calculated" },
+          { id: "so_gratis", price_type: "flat", amount: null },
+        ],
+        prices: {},
+      })
+    ).toBe("unpriceable")
+  })
+})
+
+/**
+ * `readPresentableAmount` (S0) — the single definition of "does this row carry a
+ * price we can stand behind". A calculated option is priced by the round; any
+ * other option carries its own `amount`. `Number.isFinite`, never truthiness:
+ * free shipping quotes `0`, and `0` is falsy.
+ */
+describe("readPresentableAmount", () => {
+  it("reads a calculated option's amount out of the price map", () => {
+    expect(
+      readPresentableAmount(
+        { id: "so_a", price_type: "calculated" },
+        { so_a: 15000 }
+      )
+    ).toBe(15000)
+  })
+
+  it("returns null for a calculated option with no price in the map", () => {
+    expect(
+      readPresentableAmount({ id: "so_a", price_type: "calculated" }, {})
+    ).toBeNull()
+  })
+
+  it("ignores a flat option's own amount for a calculated option", () => {
+    // The map is the only source for a calculated row; its structural `amount`
+    // must never leak in.
+    expect(
+      readPresentableAmount(
+        { id: "so_a", price_type: "calculated", amount: 999 },
+        {}
+      )
+    ).toBeNull()
+  })
+
+  it("reads a flat option's amount off the option, not the price map", () => {
+    expect(
+      readPresentableAmount(
+        { id: "so_flat", price_type: "flat", amount: 9900 },
+        { so_flat: 50000 }
+      )
+    ).toBe(9900)
+  })
+
+  /**
+   * Free shipping is a price. `0` is falsy, so a truthy check would report it as
+   * "no price". This is the guard the whole slice exists to protect.
+   */
+  it("treats a flat amount of zero as a real, presentable price", () => {
+    expect(
+      readPresentableAmount({ id: "so_gratis", price_type: "flat", amount: 0 }, {})
+    ).toBe(0)
+  })
+
+  it("treats a calculated amount of zero as a real, presentable price", () => {
+    expect(
+      readPresentableAmount(
+        { id: "so_a", price_type: "calculated" },
+        { so_a: 0 }
+      )
+    ).toBe(0)
+  })
+
+  it("returns null for a flat option whose amount is null", () => {
+    expect(
+      readPresentableAmount({ id: "so_flat", price_type: "flat", amount: null }, {})
+    ).toBeNull()
+  })
+
+  it("returns null for a flat option with no amount field at all", () => {
+    expect(
+      readPresentableAmount({ id: "so_flat", price_type: "flat" }, {})
+    ).toBeNull()
+  })
+
+  it("treats a non-finite amount as no price", () => {
+    expect(
+      readPresentableAmount(
+        { id: "so_a", price_type: "calculated" },
+        { so_a: Number.NaN }
+      )
+    ).toBeNull()
+    expect(
+      readPresentableAmount(
+        { id: "so_flat", price_type: "flat", amount: Number.POSITIVE_INFINITY },
+        {}
+      )
+    ).toBeNull()
   })
 })

@@ -8,40 +8,55 @@
  */
 
 /**
- * The four fields Skydropx's `calculatePrice` actually requires on the
- * destination — and, deliberately, nothing else.
+ * The five fields Skydropx's quote path actually depends on — and, deliberately,
+ * nothing else.
  *
- * ## Why `address_1` / `address_2` are absent, and why that is the change
+ * ## Why `address_1` is absent but `address_2` (the colonia) is present
  *
- * Two independent pieces of evidence say the street cannot move a price:
+ * The two street-like fields are NOT the same case, and an earlier revision of
+ * this docstring wrongly lumped them together. They are split here because the
+ * evidence splits them.
+ *
+ * `address_1` (the street) stays excluded, and the reasoning for that is
+ * untouched:
  *
  * - `explore §4` / `skydropx-fulfillment/service.ts:431-456`, `:774-840` — the
  *   carrier's quote path reads country, postal code, state and city off the
- *   destination. No street, no colonia, no name, no phone.
+ *   destination. It does not read the street.
  * - Finding F2 (`design.md` §0) — the backend re-lists options on
  *   `country_code | province | city | postal_expression` only
  *   (`list-shipping-options-for-cart.js:200-206`). A street edit cannot change
  *   which options exist either.
  *
+ * `address_2` (the colonia) is INCLUDED as of S3, because the claim that it did
+ * not affect a price was falsified by production. Skydropx PRO rejects a quote
+ * whose destination carries no `area_level3` with
+ * `422 {"errors":{"address_to":{"area_level3":["no puede estar en blanco"]}}}`,
+ * and `toAddress` maps the colonia into `area_level3`. So the colonia is a
+ * quote input after all: two colonias under one postal code are two different
+ * destinations to the carrier, and a colonia-less draft is not quotable.
+ *
+ * That is why the colonia must move the signature rather than sit outside it.
+ * Failure parking keys on the signature (`selectQuoteIsBlockedByFailure`); if
+ * the colonia were excluded, a quote parked on a colonia-less 422 could never be
+ * re-fired by the customer finally picking a colonia — the signature would not
+ * move, so the effect's deps would not change and no retry would ever run.
+ *
  * Today's four near-duplicate signature helpers — `buildShippingSignature`
  * (`shipping-address/index.tsx:33-45`), `lastPrefetchedSignature` (`:90`),
  * `buildCartShippingSignature` and `hasValidPrefetch` (`shipping/index.tsx:33-45`,
- * `:88-97`) — DO include both street fields. Two consequences, both bad:
- *
- * 1. no quote is ever requested until the customer has typed a street they have
- *    no reason to believe affects shipping. That is the self-imposed gate R4
- *    removes, and it is why a postal code alone shows no price today;
- * 2. every street edit invalidates the signature and re-quotes, which under F2
- *    means a live carrier call for zero price change.
- *
- * Narrowing the field set is therefore not a simplification. It is the single
- * change that makes R4 expressible.
+ * `:88-97`) — include BOTH street fields, so a street edit still spends a live
+ * carrier call for zero price change. Narrowing to these five fields (street
+ * out, colonia in) is what makes R4 expressible without re-introducing that
+ * waste.
  */
 export type QuoteRelevantAddress = {
   country_code?: string | null
   postal_code?: string | null
   province?: string | null
   city?: string | null
+  /** The colonia — `area_level3` on the wire. ADDED by S3; see the note above. */
+  address_2?: string | null
 }
 
 /**
@@ -142,6 +157,10 @@ export function buildQuoteSignature(
     postalCode,
     readComponent(address.province),
     readComponent(address.city),
+    // S3: the colonia (`area_level3`) is a real quote input — see the type
+    // docstring. A colonia-less draft has a `null` component here and is not
+    // quotable, exactly like a missing city.
+    readComponent(address.address_2),
   ]
 
   if (components.some((component) => component === null)) {
@@ -238,6 +257,33 @@ export function evaluateQuoteReadiness(
 export type QuotedOption = {
   id: string
   price_type?: string | null
+  /**
+   * ADDED (S0). A flat option carries its own amount and is never routed through
+   * `calculatePriceForShippingOption`, so the price map says nothing about it.
+   * Optional and structural: `HttpTypes.StoreCartShippingOption` already has this
+   * field, so the CALL SITE passes `options` verbatim and does not change.
+   */
+  amount?: number | null
+}
+
+/**
+ * The single definition of "does this row carry a price the customer can be
+ * shown". A calculated option is priced by the quote round (its amount lives in
+ * the price map); every other option carries its own `amount`.
+ *
+ * `Number.isFinite`, never truthiness: free shipping quotes `0`, and `0` is
+ * falsy. A truthy check once hid a free `Gratis` option in production — this
+ * function exists so the classifier and the row renderer can never disagree
+ * about it again.
+ */
+export function readPresentableAmount(
+  option: QuotedOption,
+  prices: Readonly<Record<string, number | null | undefined>>
+): number | null {
+  const raw =
+    option.price_type === "calculated" ? prices[option.id] : option.amount
+
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : null
 }
 
 /**
@@ -279,11 +325,17 @@ export type QuoteResultClass = "priced" | "unpriceable"
  * that looks too small to extract right up until it is the thing deciding which
  * of two contradictory sentences a customer reads.
  *
- * Flat-rate options are excluded from the judgement deliberately: they carry
- * their amount on the option itself, are never routed through
- * `calculatePriceForShippingOption`, and so an empty price map says nothing
- * about them. Counting them would report a failure on a store that sells
- * flat-rate shipping only.
+ * ## What counts, and why flat options now count too (S0)
+ *
+ * The round is classified by asking "is ANY option in the list presentable?",
+ * via {@link readPresentableAmount} — a calculated option's returned price OR a
+ * flat option's own finite `amount`. An earlier revision judged only the
+ * calculated subset, so a cart carrying an unpriceable calculated `Expres`
+ * beside a flat `Gratis` at `amount: 0` classified `unpriceable` and BOTH rows
+ * vanished — a sellable free-shipping option withheld while the screen said
+ * shipping could not be calculated. A presentable flat option now rescues the
+ * round, and an all-flat list whose every amount is `null` is `unpriceable`
+ * rather than falsely `priced`.
  *
  * @see `modules/checkout/state/checkout-context.tsx` — dispatches `QUOTE_FAILED`
  * on `"unpriceable"`.
@@ -302,11 +354,9 @@ export function classifyQuoteResult(input: {
    */
   prices: Readonly<Record<string, number | null | undefined>>
 }): QuoteResultClass {
-  const calculated = input.options.filter(
-    (option) => option.price_type === "calculated"
-  )
-
-  if (calculated.length === 0) {
+  if (input.options.length === 0) {
+    // An empty list is `not_serviceable` downstream (from the option count),
+    // never `failed`.
     return "priced"
   }
 
@@ -315,15 +365,16 @@ export function classifyQuoteResult(input: {
    * `Promise.allSettled` fan-out and a key left over from an earlier round would
    * otherwise rescue a list none of whose options were priced.
    *
-   * `Number.isFinite` and not truthiness: free shipping quotes `0`, and `0` is
-   * falsy. The component this was extracted from used a truthy check and
-   * therefore rendered a free option as having no price at all.
+   * `Number.isFinite` and not truthiness (inside {@link readPresentableAmount}):
+   * free shipping quotes `0`, and `0` is falsy. The component this was extracted
+   * from used a truthy check and therefore rendered a free option as having no
+   * price at all.
    */
-  const anyPriced = calculated.some((option) =>
-    Number.isFinite(input.prices[option.id])
+  return input.options.some(
+    (option) => readPresentableAmount(option, input.prices) !== null
   )
-
-  return anyPriced ? "priced" : "unpriceable"
+    ? "priced"
+    : "unpriceable"
 }
 
 /**

@@ -10,6 +10,7 @@ import {
   useCheckoutState,
 } from "@modules/checkout/state/checkout-context"
 import {
+  selectCarrierRatesUnavailable,
   selectQuoteStatus,
   selectShippingChoices,
   type ShippingChoice,
@@ -148,6 +149,7 @@ const ShippingSection = () => {
 
   const status = selectQuoteStatus(state)
   const choices = selectShippingChoices(state)
+  const carrierRatesUnavailable = selectCarrierRatesUnavailable(state)
   const currencyCode = cart?.currency_code ?? "mxn"
   const checkedId = pendingId ?? state.selectedShippingOptionId
 
@@ -234,7 +236,7 @@ const ShippingSection = () => {
         {status === "idle" && (
           <StateMessage
             testId="shipping-idle"
-            title="Ingresa tu código postal para ver las opciones y el costo de envío."
+            title="Ingresa tu código postal y elige tu colonia para ver las opciones y el costo de envío."
           />
         )}
 
@@ -300,6 +302,27 @@ const ShippingSection = () => {
             <Text className="txt-medium text-ink-muted">
               ¿Cómo quieres recibir tu pedido?
             </Text>
+
+            {/*
+             * S0 · MANUAL — the carrier-rates annotation. Orthogonal to the six
+             * states (`selectCarrierRatesUnavailable`), it renders ABOVE an
+             * otherwise-normal list when a calculated option came back without a
+             * price. Fixed copy: the storefront cannot tell a timeout from a
+             * no-coverage answer, so it never derives wording from an upstream
+             * message. It MUST NOT blame the customer's address — the note points
+             * at the carrier, and the list still sells whatever priced.
+             *
+             * No node harness covers this branch (a `.tsx`); verify visually.
+             */}
+            {carrierRatesUnavailable && (
+              <Text
+                className="txt-small rounded-large border border-line bg-cream px-4 py-3 text-ink-muted"
+                data-testid="shipping-carrier-rates-unavailable"
+              >
+                Algunas tarifas de paquetería no están disponibles en este
+                momento. Puedes elegir una de las opciones que sí aparecen.
+              </Text>
+            )}
 
             <RadioGroup
               /*

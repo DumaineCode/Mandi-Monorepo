@@ -11,6 +11,7 @@ import {
   buildQuoteSignature,
   isShippingSelectionStale,
   MX_POSTAL_CODE_PATTERN,
+  readPresentableAmount,
   type QuoteRelevantAddress,
 } from "@lib/util/shipping-quote"
 import type { HttpTypes } from "@medusajs/types"
@@ -128,6 +129,21 @@ export type CheckoutState = {
   calculatedPrices: Record<string, number | null>
   cpStatus: CpStatus
   colonias: string[]
+  /**
+   * The postal code the held {@link colonias} list was FETCHED for, or `null`
+   * when no list is held.
+   *
+   * A colonia list is only meaningful for the postal code it was fetched under.
+   * On the B -> A -> B path — cart holds B, customer types A, the lookup returns
+   * A's list and overwrites province/city, customer types back to B — the mount
+   * guard declines (postal matches the cart, province/city non-empty) so the
+   * list is never refreshed, and without this field a naive reset split would
+   * keep A's colonias under postal code B. Combined with the carrier accepting
+   * any colonia string, the shopper could pick a colonia that does not exist for
+   * B and the order would only fail at labelling. {@link selectPostalCodeIsUsable}
+   * reads this to reject that case.
+   */
+  coloniasPostalCode: string | null
   coloniaManual: boolean
 
   selectedShippingOptionId: string | null
@@ -175,7 +191,8 @@ export type CheckoutAction =
       colonias: string[]
     }
   | { type: "CP_LOOKUP_NOT_FOUND"; postalCode: string }
-  | { type: "CP_LOOKUP_RESET" }
+  | { type: "CP_LOOKUP_NOT_NEEDED" }
+  | { type: "CP_LOOKUP_DISCARDED" }
   | { type: "COLONIA_MANUAL_REQUESTED" }
   | { type: "CART_WRITE_STARTED"; sequence: number }
   | { type: "CART_WRITE_FAILED"; sequence: number }
@@ -213,7 +230,7 @@ const draftFromAddress = (
   }, {} as AddressDraft)
 
 /**
- * The quote-relevant projection of a draft: the FOUR fields that can move a
+ * The quote-relevant projection of a draft: the FIVE fields that can move a
  * price, and nothing else.
  *
  * There is no companion `isQuoteRelevant(field)` predicate, deliberately. A
@@ -225,6 +242,11 @@ const draftFromAddress = (
  * recomputes the signature through this projection and compares the RESULT: a
  * field is quote-relevant if and only if changing it moves the signature. One
  * definition, and it cannot drift from itself.
+ *
+ * `address_2` (the colonia) is projected as of S3: Skydropx maps it to
+ * `area_level3` and rejects a quote without it, so it is a real quote input and
+ * the draft must carry it into the signature (see `shipping-quote.ts`).
+ * `address_1` (the street) is still excluded — it cannot move a price.
  */
 export const selectQuoteRelevantAddress = (
   draft: AddressDraft
@@ -233,6 +255,7 @@ export const selectQuoteRelevantAddress = (
   city: draft.city,
   province: draft.province,
   country_code: draft.country_code,
+  address_2: draft.address_2,
 })
 
 /**
@@ -308,6 +331,17 @@ const commitDraft = (
     billingDraft,
     quoteSignature,
     calculatedPrices: {},
+    /**
+     * MAJ-2: `quotedSignature` MUST be cleared alongside `calculatedPrices` —
+     * they describe the SAME quote round, so dropping one without the other is
+     * incoherent. Before S3 this was a rare postal A->B->A debounce race; with
+     * the colonia now in the signature a colonia X->Y->X is two clicks, and
+     * leaving `quotedSignature` at the returning value would make
+     * {@link selectQuoteStatus} report `quoted` with every row unpriced
+     * (`calculatedPrices === {}`), no retry, and S0's carrier-rates note firing
+     * falsely. Clearing it forces a fresh quote for the returned-to destination.
+     */
+    quotedSignature: null,
     // A new destination deserves a fresh attempt: the previous failure was
     // about an address the customer has moved away from.
     failedSignature: null,
@@ -387,6 +421,7 @@ export function initFromServer(init: CheckoutInit): CheckoutState {
     calculatedPrices: {},
     cpStatus: "idle",
     colonias: [],
+    coloniasPostalCode: null,
     coloniaManual: false,
 
     selectedShippingOptionId,
@@ -509,8 +544,9 @@ export function checkoutReducer(
        *
        * `cpStatus` is deliberately left untouched here. If this result is stale
        * the draft has moved, and the effect has either started a lookup for the
-       * new postal code (so `"loading"` is honest) or dispatched
-       * `CP_LOOKUP_RESET` (so `"idle"` is). Either way there is nothing for this
+       * new postal code (so `"loading"` is honest) or dispatched one of the
+       * lookup resets (`CP_LOOKUP_NOT_NEEDED` / `CP_LOOKUP_DISCARDED`, so
+       * `"idle"` is). Either way there is nothing for this
        * branch to correct.
        */
       if (isStalePostalCodeLookup(state, action.postalCode)) {
@@ -536,6 +572,12 @@ export function checkoutReducer(
         ...committed,
         cpStatus: "found",
         colonias: action.colonias,
+        /**
+         * The list belongs to the postal code the draft now holds. Stored
+         * trimmed so {@link selectPostalCodeIsUsable} can compare it against the
+         * trimmed draft postal code without a normalization mismatch.
+         */
+        coloniasPostalCode: committed.draft.postal_code.trim(),
         /**
          * A colonia the customer already has that is not in the returned list
          * (typically from a saved address) survives as free text instead of
@@ -564,18 +606,48 @@ export function checkoutReducer(
        * still complete the address by hand, and once province and city are
        * present the signature completes and quoting proceeds identically.
        */
-      return { ...state, cpStatus: "not_found", colonias: [] }
+      return { ...state, cpStatus: "not_found", colonias: [], coloniasPostalCode: null }
 
-    case "CP_LOOKUP_RESET":
-      return state.cpStatus === "idle" && state.colonias.length === 0
+    case "CP_LOOKUP_NOT_NEEDED":
+      /**
+       * The postal code is usable and no lookup is in flight — clear only the
+       * lookup status. The held colonia list (and the manual-colonia flag) is
+       * still meaningful for the current postal code and MUST survive: this is
+       * what stops the autosave round-trip from wiping a list the moment it
+       * arrives. No-op short-circuit for stable identity across re-renders.
+       */
+      return state.cpStatus === "idle"
         ? state
-        : { ...state, cpStatus: "idle", colonias: [] }
+        : { ...state, cpStatus: "idle" }
+
+    case "CP_LOOKUP_DISCARDED":
+      /**
+       * The postal code is not usable — clear the lookup status AND the colonia
+       * list it belonged to, and drop the list's postal code so the "no list"
+       * invariant holds. `coloniaManual` is untouched (as the old collapsed
+       * reset did). No-op short-circuit for stable identity.
+       */
+      return state.cpStatus === "idle" &&
+        state.colonias.length === 0 &&
+        state.coloniasPostalCode === null
+        ? state
+        : { ...state, cpStatus: "idle", colonias: [], coloniasPostalCode: null }
 
     case "COLONIA_MANUAL_REQUESTED":
+      /**
+       * MAJ-1: routed THROUGH `commitDraft` rather than patching `draft`
+       * directly. Clearing `address_2` moves the destination now that the
+       * colonia is in the signature (S3), so it must recompute `quoteSignature`,
+       * drop `calculatedPrices`/`quotedSignature`, and re-evaluate the selection
+       * exactly like any other draft edit. Patching the draft in place — as this
+       * did before S3 — left `quoteSignature` pointing at a colonia just cleared,
+       * so the section still reported `quoted` and rendered its prices.
+       */
       return {
-        ...state,
+        ...commitDraft(state, {
+          draft: { ...state.draft, address_2: "" },
+        }),
         coloniaManual: true,
-        draft: { ...state.draft, address_2: "" },
       }
 
     case "CART_WRITE_STARTED":
@@ -812,9 +884,6 @@ export type ShippingChoice = {
   selectable: boolean
 }
 
-const readAmount = (value: unknown): number | null =>
-  typeof value === "number" && Number.isFinite(value) ? value : null
-
 /**
  * What the Envío section is allowed to put on screen, and what may be picked.
  *
@@ -859,10 +928,7 @@ export function selectShippingChoices(state: CheckoutState): ShippingChoice[] {
   }
 
   return state.shippingOptions.map((option) => {
-    const amount =
-      option.price_type === "calculated"
-        ? readAmount(state.calculatedPrices[option.id])
-        : readAmount(option.amount)
+    const amount = readPresentableAmount(option, state.calculatedPrices)
 
     return {
       id: option.id,
@@ -871,6 +937,37 @@ export function selectShippingChoices(state: CheckoutState): ShippingChoice[] {
       selectable: amount !== null && !option.insufficient_inventory,
     }
   })
+}
+
+/**
+ * S0: whether this round left one or more calculated options without a price —
+ * an annotation ORTHOGONAL to {@link selectQuoteStatus}, never a seventh state.
+ *
+ * `true` ONLY when the state is `quoted` AND at least one calculated option in
+ * the current round is unpresentable; `false` in every other state by
+ * construction (the `quoted` guard alone rules out `idle`, `looking_up`,
+ * `quoting`, `failed` and `not_serviceable`). Flat options are excluded: a
+ * missing flat amount is a catalogue gap, not a carrier that failed to answer.
+ *
+ * Reads presentability through the SAME {@link readPresentableAmount} the
+ * classifier and {@link selectShippingChoices} use, so the note and the rows can
+ * never disagree about whether a rate is missing.
+ *
+ * The copy the consumer renders is fixed and never derived from an upstream
+ * message: the storefront cannot tell a timeout from a no-coverage answer.
+ *
+ * @see `modules/checkout/components/shipping-section/index.tsx` — renders the
+ * carrier-rates-unavailable note above the list.
+ */
+export function selectCarrierRatesUnavailable(state: CheckoutState): boolean {
+  return (
+    selectQuoteStatus(state) === "quoted" &&
+    state.shippingOptions.some(
+      (option) =>
+        option.price_type === "calculated" &&
+        readPresentableAmount(option, state.calculatedPrices) === null
+    )
+  )
 }
 
 /**
@@ -899,6 +996,33 @@ export function selectShippingOptionsKey(
   options: HttpTypes.StoreCartShippingOption[]
 ): string {
   return options.map((option) => option.id).join("\u001f")
+}
+
+/**
+ * Whether the current postal code is USABLE — i.e. whether a colonia list for
+ * it could still be meaningful. This is the pure decision the effect routes on
+ * (`.tsx` chooses `CP_LOOKUP_NOT_NEEDED` vs `CP_LOOKUP_DISCARDED` from it), so
+ * no rule lives in the provider.
+ *
+ * - `false` when the postal code does not match {@link MX_POSTAL_CODE_PATTERN}.
+ * - `false` when a list IS held but was fetched for a DIFFERENT postal code —
+ *   the B -> A -> B retention edge (see {@link CheckoutState.coloniasPostalCode}).
+ * - `true` when no list is held (nothing to invalidate) OR the held list belongs
+ *   to the current postal code.
+ *
+ * Distinct from {@link selectShouldLookUpPostalCode}: that decides whether to
+ * START a lookup and is NOT weakened here. This decides whether an existing list
+ * survives when a lookup is not (re-)started.
+ */
+export function selectPostalCodeIsUsable(state: CheckoutState): boolean {
+  const cp = state.draft.postal_code.trim()
+
+  if (!MX_POSTAL_CODE_PATTERN.test(cp)) {
+    return false
+  }
+
+  // A list we hold is only meaningful for the postal code it was FETCHED for.
+  return state.colonias.length === 0 || state.coloniasPostalCode === cp
 }
 
 /**
