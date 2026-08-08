@@ -35,8 +35,9 @@ import {
 } from "../../lib/stock-location-address"
 import {
   SkydropxClient,
+  MIN_VIABLE_QUOTE_BUDGET_MS,
   SKYDROPX_CANCEL_TIMEOUT_MS,
-  SKYDROPX_QUOTATION_TIMEOUT_MS,
+  SKYDROPX_QUOTE_CYCLE_BUDGET_MS,
   SKYDROPX_REQUEST_TIMEOUT_MS,
 } from "./client"
 import { buildParcel, MissingDimensionsError, ParcelItem } from "./parcel"
@@ -187,16 +188,37 @@ export const GATEWAY_SAFETY_MARGIN = 0.9
 export const MIN_VIABLE_ANCHOR_MS =
   SKYDROPX_REQUEST_TIMEOUT_MS + LABEL_POLL_INTERVAL_MS
 /**
+ * Share of the fulfillment anchor the async quote+poll cycle may consume before
+ * the label purchase is starved. Named so both `LABEL_QUOTE_BUDGET_MS` and the
+ * gateway floor (`MIN_VIABLE_QUOTE_ANCHOR_MS`) read the same ratio — the floor
+ * inverts it (`MIN_VIABLE_QUOTE_BUDGET_MS / LABEL_QUOTE_SHARE`) to guarantee the
+ * quote slice clears the physical cold-quote floor.
+ */
+export const LABEL_QUOTE_SHARE = 0.45
+/**
  * DERIVED, not guessed: the smallest gateway timeout from which a viable anchor
  * can be derived at all. A hand-picked floor here was wrong — it accepted 30_000,
  * which derives an 11_000ms anchor that cannot fund a single 15s request.
+ *
+ * It funds BOTH a viable label PURCHASE (`MIN_VIABLE_ANCHOR_MS`) and a viable
+ * label QUOTE. The label quote is `floor(fulfillment * 0.45)`, so for it to clear
+ * the shared cold-quote floor the fulfillment budget must reach
+ * `MIN_VIABLE_QUOTE_BUDGET_MS / 0.45` — otherwise a `SKYDROPX_GATEWAY_TIMEOUT_MS`
+ * reduction could silently starve the label quote below the floor S1 exists to
+ * enforce (CRITICAL-2 / M2, one level up). The gateway floor is the max of the
+ * two funding requirements.
  *
  * An override below this is rejected. That is not merely typo defence: it tells
  * the operator their environment cannot support a SYNCHRONOUS label purchase,
  * which is real information rather than a nuisance.
  */
+export const MIN_VIABLE_QUOTE_ANCHOR_MS = Math.ceil(
+  MIN_VIABLE_QUOTE_BUDGET_MS / LABEL_QUOTE_SHARE
+)
 export const MIN_VIABLE_GATEWAY_TIMEOUT_MS = Math.ceil(
-  (PRE_ANCHOR_BUDGET_MS + SKYDROPX_CANCEL_TIMEOUT_MS + MIN_VIABLE_ANCHOR_MS) /
+  (PRE_ANCHOR_BUDGET_MS +
+    SKYDROPX_CANCEL_TIMEOUT_MS +
+    Math.max(MIN_VIABLE_ANCHOR_MS, MIN_VIABLE_QUOTE_ANCHOR_MS)) /
     GATEWAY_SAFETY_MARGIN
 )
 export const DEFAULT_GATEWAY_TIMEOUT_MS = 60_000
@@ -264,7 +286,7 @@ export const SKYDROPX_FULFILLMENT_BUDGET_MS =
  * grow past it when the anchor is retuned.
  */
 export const LABEL_QUOTE_BUDGET_MS = Math.floor(
-  SKYDROPX_FULFILLMENT_BUDGET_MS * 0.45
+  SKYDROPX_FULFILLMENT_BUDGET_MS * LABEL_QUOTE_SHARE
 )
 
 /** PRO rate statuses that carry no usable price. */
@@ -812,7 +834,10 @@ export default class SkydropxFulfillmentProviderService extends AbstractFulfillm
     }
 
     const client = this.getClient_(config)
-    const deadline = Date.now() + SKYDROPX_QUOTATION_TIMEOUT_MS
+    // Checkout CYCLE deadline (create + N poll rounds), NOT a per-request bound.
+    // The whole quote-and-poll cycle needs ~18s (measured; see client.ts §1.2);
+    // the per-request bound stays ~8s inside `quoteAndPoll_`.
+    const deadline = Date.now() + SKYDROPX_QUOTE_CYCLE_BUDGET_MS
     const rates = await this.fetchUsableRates_(
       () =>
         client.quoteAndPoll_(

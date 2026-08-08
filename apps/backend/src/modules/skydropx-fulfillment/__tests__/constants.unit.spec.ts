@@ -24,9 +24,13 @@ import {
   SKYDROPX_FULFILLMENT_BUDGET_MS,
 } from "../service"
 import {
+  DERIVED_QUOTE_CYCLE_BUDGET_MS,
+  MIN_VIABLE_QUOTE_BUDGET_MS,
   QUOTE_POLL_INTERVAL_MS,
+  readQuoteCycleBudget,
   SKYDROPX_CANCEL_TIMEOUT_MS,
-  SKYDROPX_QUOTATION_TIMEOUT_MS,
+  SKYDROPX_QUOTATION_REQUEST_TIMEOUT_MS,
+  SKYDROPX_QUOTE_CYCLE_BUDGET_MS,
   SKYDROPX_REQUEST_TIMEOUT_MS,
 } from "../client"
 
@@ -86,11 +90,76 @@ describe("Skydropx budget composition", () => {
   })
 
   it("keeps every per-request bound inside the budget that contains it", () => {
-    expect(SKYDROPX_QUOTATION_TIMEOUT_MS).toBeLessThanOrEqual(LABEL_QUOTE_BUDGET_MS)
+    // CRITICAL-1: the per-request quotation bound is used on BOTH the checkout and
+    // label paths inside `quoteAndPoll_`. On the label path it must stay contained
+    // by the label budget so a single hung POST cannot eat every poll round.
+    expect(SKYDROPX_QUOTATION_REQUEST_TIMEOUT_MS).toBeLessThanOrEqual(
+      LABEL_QUOTE_BUDGET_MS
+    )
     expect(SKYDROPX_REQUEST_TIMEOUT_MS).toBeLessThanOrEqual(
       SKYDROPX_FULFILLMENT_BUDGET_MS
     )
     expect(SKYDROPX_CANCEL_TIMEOUT_MS).toBeLessThanOrEqual(SKYDROPX_REQUEST_TIMEOUT_MS)
+  })
+
+  /**
+   * CRITICAL-2: both quote budgets must clear the SHARED physical floor
+   * (`MIN_VIABLE_QUOTE_BUDGET_MS` = slowest observed cold quote + one poll
+   * interval). If `SKYDROPX_COLD_QUOTE_P95_MS` / `TAIL_ALLOWANCE_MS` are retuned
+   * below the floor, or a `SKYDROPX_GATEWAY_TIMEOUT_MS` reduction starves the
+   * label quote, one of these goes RED — a plausible retune this catches.
+   */
+  it("keeps both quote budgets above the shared cold-quote floor", () => {
+    expect(SKYDROPX_QUOTE_CYCLE_BUDGET_MS).toBeGreaterThanOrEqual(
+      MIN_VIABLE_QUOTE_BUDGET_MS
+    )
+    expect(LABEL_QUOTE_BUDGET_MS).toBeGreaterThanOrEqual(MIN_VIABLE_QUOTE_BUDGET_MS)
+  })
+})
+
+/**
+ * The checkout cycle deadline is a load-time constant with an operator override
+ * (`SKYDROPX_QUOTE_BUDGET_MS`). Like `readGatewayTimeout` it must refuse to throw
+ * at boot (the provider stays inert-safe) — but unlike a bare default it must also
+ * CLAMP its own derived default to the floor, so the guard binds the production
+ * path, not only the env-override path (CRITICAL-2).
+ */
+describe("readQuoteCycleBudget", () => {
+  const silent = () => {}
+
+  it("clamps the derived default to the floor when unset or blank", () => {
+    // The production path: nothing in the repo sets SKYDROPX_QUOTE_BUDGET_MS, so
+    // the unset branch is what actually runs. It must never fall below the floor.
+    expect(readQuoteCycleBudget(undefined, silent)).toBe(
+      DERIVED_QUOTE_CYCLE_BUDGET_MS
+    )
+    expect(readQuoteCycleBudget(undefined, silent)).toBeGreaterThanOrEqual(
+      MIN_VIABLE_QUOTE_BUDGET_MS
+    )
+    expect(readQuoteCycleBudget("", silent)).toBe(DERIVED_QUOTE_CYCLE_BUDGET_MS)
+    expect(readQuoteCycleBudget("   ", silent)).toBe(DERIVED_QUOTE_CYCLE_BUDGET_MS)
+  })
+
+  it("accepts an override at or above the floor unchanged", () => {
+    expect(readQuoteCycleBudget("20000", silent)).toBe(20_000)
+    expect(readQuoteCycleBudget(String(MIN_VIABLE_QUOTE_BUDGET_MS), silent)).toBe(
+      MIN_VIABLE_QUOTE_BUDGET_MS
+    )
+  })
+
+  it.each([
+    [String(MIN_VIABLE_QUOTE_BUDGET_MS - 1), "just below the floor"],
+    ["8000", "the pre-fix cycle literal, now below the floor"],
+    ["abc", "a non-numeric value"],
+    ["NaN", "NaN"],
+  ])("warns on %s (%s) and falls back to the clamped default", (raw) => {
+    const warn = jest.fn()
+
+    expect(readQuoteCycleBudget(raw, warn)).toBe(DERIVED_QUOTE_CYCLE_BUDGET_MS)
+    expect(readQuoteCycleBudget(raw, warn)).toBeGreaterThanOrEqual(
+      MIN_VIABLE_QUOTE_BUDGET_MS
+    )
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(raw))
   })
 })
 

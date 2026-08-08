@@ -10,10 +10,16 @@
  * (reusing `isAllowedSkydropxBaseUrl`) so stored/candidate credentials can never
  * be POSTed to an untrusted host. The token and `clientSecret` are NEVER logged.
  *
- * Quotations are async (POST + poll GET) and bounded by a shared deadline: 8s on
- * the checkout path, where a shopper is waiting, and a wider label budget on the
- * admin path, where nobody is. Shipment/label calls are admin-side with their own
- * per-request bound. Non-2xx responses surface as typed `SkydropxApiError`.
+ * Quotations are async (POST + poll GET). TWO distinct bounds govern them, and
+ * conflating the two was the production defect this file was split to fix:
+ *   - a PER-REQUEST bound (`SKYDROPX_QUOTATION_REQUEST_TIMEOUT_MS`, ~8s) caps a
+ *     single POST/GET on BOTH the checkout and label paths, so one hung request
+ *     can never eat the poll rounds the surrounding cycle still needs;
+ *   - a CYCLE deadline for the whole multi-round quote-and-poll — the checkout
+ *     one is `SKYDROPX_QUOTE_CYCLE_BUDGET_MS` (~18s, derived from measurement,
+ *     see §1.2), the label one derives from `LABEL_QUOTE_BUDGET_MS` in service.ts.
+ * Shipment/label calls are admin-side with their own per-request bound. Non-2xx
+ * responses surface as typed `SkydropxApiError`.
  */
 import { MedusaError } from "@medusajs/framework/utils"
 import { isAllowedSkydropxBaseUrl } from "../../workflows/steps/probes/skydropx"
@@ -32,8 +38,16 @@ import {
 
 export const DEFAULT_BASE_URL = "https://api-pro.skydropx.com/api/v1"
 
-/** Checkout-facing quotation flow (token + create + poll) shares this budget. */
-export const SKYDROPX_QUOTATION_TIMEOUT_MS = 8_000
+/**
+ * PER-REQUEST bound for a single quotation POST/GET, on BOTH the checkout and
+ * label paths (`createQuotation`, `getQuotation`). A single hung request is
+ * capped here so the surrounding multi-round cycle keeps its poll rounds — the
+ * measured cold POST is ~0.6s, so 8s is generous headroom for one request while
+ * staying well inside the label budget that contains it (constants.unit.spec.ts
+ * asserts `<= LABEL_QUOTE_BUDGET_MS`). This is NOT the whole-cycle deadline; see
+ * `SKYDROPX_QUOTE_CYCLE_BUDGET_MS`.
+ */
+export const SKYDROPX_QUOTATION_REQUEST_TIMEOUT_MS = 8_000
 /** Admin-side shipment/label per-request bound. */
 export const SKYDROPX_REQUEST_TIMEOUT_MS = 15_000
 /** Token sub-bound (capped by the remaining shared budget). */
@@ -47,6 +61,78 @@ export const SKYDROPX_CANCEL_TIMEOUT_MS = 10_000
 export const TOKEN_EXPIRY_SKEW_MS = 60_000
 /** Poll interval for async quotation completion (≤ 1 req/s < 2 req/s cap). */
 export const QUOTE_POLL_INTERVAL_MS = 1_000
+
+/**
+ * MEASURED 2026-08-07, Skydropx SANDBOX, n=40 cold quotations across 40 unique
+ * destinations in 28 states. See
+ * openspec/changes/checkout-shipping-quote-reliability/m0-measurements.md §M0(a).
+ * Harness p95 11_574ms + ~1_000ms app-level overhead (credential resolve + cold
+ * OAuth token, measured directly in M0(b)).
+ *
+ * NOTE (n=40): this is a p95 over 40 samples, i.e. ~the 38th order statistic, CI
+ * roughly 11_502–12_252ms, drawn from ONE session/account/parcel in SANDBOX — the
+ * draws are not independent. Treat as a defensible estimate, not a population p95.
+ */
+export const SKYDROPX_COLD_QUOTE_P95_MS = 12_600
+/** Same sample: harness max 12_252ms + ~1_000ms app-level overhead. */
+export const SKYDROPX_COLD_QUOTE_MAX_MS = 13_300
+
+/**
+ * The poll loop can only OBSERVE completion on a 1s boundary, so a quote that
+ * finishes at 13_300ms is reported at 14_300ms. Anything below this is
+ * arithmetically incapable of completing the slowest observed quote. This is the
+ * FLOOR shared by both the checkout cycle budget and the label quote budget.
+ */
+export const MIN_VIABLE_QUOTE_BUDGET_MS =
+  SKYDROPX_COLD_QUOTE_MAX_MS + QUOTE_POLL_INTERVAL_MS // 14_300
+
+/**
+ * 18_000 is a JUDGEMENT (M0's recommendation), decomposed here for honesty, not a
+ * measured p99. It is the measured floor plus a named tail allowance:
+ *   MIN_VIABLE_QUOTE_BUDGET_MS (14_300) + TAIL_ALLOWANCE_MS (3_700) = 18_000.
+ * TAIL_ALLOWANCE_MS absorbs the three things n=40 SANDBOX could not see: peak
+ * carrier load, a cold-token/credential-resolve spike, and the untested
+ * production (api-pro) host delta. No unit test can falsify 3_700; only a
+ * production re-measure can retune it.
+ */
+export const TAIL_ALLOWANCE_MS = 3_700
+export const DERIVED_QUOTE_CYCLE_BUDGET_MS =
+  MIN_VIABLE_QUOTE_BUDGET_MS + TAIL_ALLOWANCE_MS // 18_000
+
+/**
+ * CYCLE deadline for the whole checkout quote-and-poll (create + N poll rounds),
+ * used ONLY at `service.ts` for the storefront path. The old single `8_000`
+ * literal doubled as this deadline and 40/40 cold quotes (min 8_163ms) blew it —
+ * the per-request bound is fine at 8s, the CYCLE is not.
+ *
+ * Read at module load with a clamped floor (CRITICAL-2): an operator override
+ * below the physical floor, or a future edit that drops the derived value below
+ * it, falls back to the clamped default rather than shipping a budget that cannot
+ * complete a cold quote.
+ */
+export function readQuoteCycleBudget(
+  raw: string | undefined = process.env.SKYDROPX_QUOTE_BUDGET_MS,
+  warn: (message: string) => void = console.warn
+): number {
+  const clampToFloor = (v: number) => Math.max(v, MIN_VIABLE_QUOTE_BUDGET_MS)
+  if (raw === undefined || raw.trim() === "") {
+    return clampToFloor(DERIVED_QUOTE_CYCLE_BUDGET_MS)
+  }
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed < MIN_VIABLE_QUOTE_BUDGET_MS) {
+    // Refuse to throw at boot — the provider must stay inert-safe in
+    // medusa-config.ts, so a bad tuning knob warns and falls back.
+    warn(
+      `[skydropx] Ignoring SKYDROPX_QUOTE_BUDGET_MS=${raw}: expected a number of ` +
+        `milliseconds >= ${MIN_VIABLE_QUOTE_BUDGET_MS} (measured 2026-08-07). ` +
+        `Falling back to ${clampToFloor(DERIVED_QUOTE_CYCLE_BUDGET_MS)}ms.`
+    )
+    return clampToFloor(DERIVED_QUOTE_CYCLE_BUDGET_MS)
+  }
+  return parsed
+}
+
+export const SKYDROPX_QUOTE_CYCLE_BUDGET_MS = readQuoteCycleBudget()
 
 /**
  * Flatten PRO's JSON:API shipment envelope into the shape the module uses.
@@ -307,7 +393,7 @@ export class SkydropxClient {
       "POST",
       "/quotations",
       body,
-      SKYDROPX_QUOTATION_TIMEOUT_MS,
+      SKYDROPX_QUOTATION_REQUEST_TIMEOUT_MS,
       deadline
     )
   }
@@ -320,15 +406,16 @@ export class SkydropxClient {
       "GET",
       `/quotations/${encodeURIComponent(id)}`,
       undefined,
-      SKYDROPX_QUOTATION_TIMEOUT_MS,
+      SKYDROPX_QUOTATION_REQUEST_TIMEOUT_MS,
       deadline
     )
   }
 
   /**
    * Async quotation model (spec Capability 3): create, then poll until
-   * `is_completed`, bounded by the shared `deadline` (8s checkout, label budget on
-   * the admin path). Never overruns the deadline; a never-completing quote
+   * `is_completed`, bounded by the shared cycle `deadline` the caller anchors
+   * (`SKYDROPX_QUOTE_CYCLE_BUDGET_MS` on checkout, the label budget on the admin
+   * path). Never overruns the deadline; a never-completing quote
    * surfaces `SkydropxApiError(0,"timeout")`.
    *
    * The deadline is re-checked AFTER the sleep, not only before it: the sleep

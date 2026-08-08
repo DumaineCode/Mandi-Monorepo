@@ -12,7 +12,7 @@ import {
   DEFAULT_BASE_URL,
   QUOTE_POLL_INTERVAL_MS,
   SKYDROPX_CANCEL_TIMEOUT_MS,
-  SKYDROPX_QUOTATION_TIMEOUT_MS,
+  SKYDROPX_QUOTATION_REQUEST_TIMEOUT_MS,
 } from "../client"
 import { SkydropxApiError } from "../types"
 
@@ -388,11 +388,11 @@ describe("SkydropxClient (PRO OAuth)", () => {
           },
           (e: SkydropxApiError) => e
         )
-        await jest.advanceTimersByTimeAsync(SKYDROPX_QUOTATION_TIMEOUT_MS + 1)
+        await jest.advanceTimersByTimeAsync(SKYDROPX_QUOTATION_REQUEST_TIMEOUT_MS + 1)
         const error = await pending
 
         expect(error.description).toBe(
-          `Skydropx request timed out after ${SKYDROPX_QUOTATION_TIMEOUT_MS}ms`
+          `Skydropx request timed out after ${SKYDROPX_QUOTATION_REQUEST_TIMEOUT_MS}ms`
         )
       } finally {
         jest.useRealTimers()
@@ -429,14 +429,14 @@ describe("SkydropxClient (PRO OAuth)", () => {
           now += ms as number
         })
 
-      const deadline = now + SKYDROPX_QUOTATION_TIMEOUT_MS
+      const deadline = now + SKYDROPX_QUOTATION_REQUEST_TIMEOUT_MS
       await expect(client.quoteAndPoll_(QUOTATION_BODY, deadline)).rejects.toMatchObject({
         errorCode: "timeout",
       })
 
       // 8000ms budget, 300ms spent creating, one poll per 1000ms sleep.
       const affordable = Math.floor(
-        (SKYDROPX_QUOTATION_TIMEOUT_MS - 300) / QUOTE_POLL_INTERVAL_MS
+        (SKYDROPX_QUOTATION_REQUEST_TIMEOUT_MS - 300) / QUOTE_POLL_INTERVAL_MS
       )
       expect(getCalls).toBe(affordable)
     })
