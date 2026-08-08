@@ -3633,3 +3633,67 @@ describe("the stale-selection seam, from selection to re-pick (2b.6)", () => {
     expect(selectShippingIsProvisional(repicked)).toBe(false)
   })
 })
+
+/**
+ * ---------------------------------------------------------------------------
+ * PLACE_ORDER_STARTED / PLACE_ORDER_SETTLED (PR2c, tasks 2c.7 / 2c.11)
+ * ---------------------------------------------------------------------------
+ *
+ * The CTA's own busy state. `placeOrderFlow` runs a browser tokenisation, a
+ * cart write and a payment-session creation before anything navigates, which is
+ * seconds of wall time on a slow connection with no visible change on the page.
+ *
+ * Task 2c.11 requires every tail to RE-ENABLE the button on any failure. That
+ * is one transition, so it is expressed as one action rather than as a flag the
+ * three tails each remember to reset — which is how a checkout ends up with a
+ * button that spins forever after a declined card.
+ */
+describe("placing the order", () => {
+  it("marks the checkout busy and clears any previous error", () => {
+    const state = checkoutReducer(
+      { ...baseState(), error: "El costo de envío cambió." },
+      { type: "PLACE_ORDER_STARTED" }
+    )
+
+    expect(state.placingOrder).toBe(true)
+    // A stale error beside a spinner reads as if the new attempt already
+    // failed.
+    expect(state.error).toBeNull()
+  })
+
+  it("re-enables the CTA and surfaces the reason when the attempt fails", () => {
+    const busy = checkoutReducer(baseState(), { type: "PLACE_ORDER_STARTED" })
+
+    const settled = checkoutReducer(busy, {
+      type: "PLACE_ORDER_SETTLED",
+      error: "No pudimos completar tu pedido. Inténtalo de nuevo.",
+    })
+
+    expect(settled.placingOrder).toBe(false)
+    expect(settled.error).toBe(
+      "No pudimos completar tu pedido. Inténtalo de nuevo."
+    )
+  })
+
+  /**
+   * The success path settles WITHOUT an error, because the browser is about to
+   * navigate and a flash of an error banner on the way out is worse than
+   * nothing. The busy flag still drops so a back-button return finds a usable
+   * button rather than a dead one.
+   */
+  it("settles cleanly when there is nothing to report", () => {
+    const busy = checkoutReducer(baseState(), { type: "PLACE_ORDER_STARTED" })
+
+    const settled = checkoutReducer(busy, {
+      type: "PLACE_ORDER_SETTLED",
+      error: null,
+    })
+
+    expect(settled.placingOrder).toBe(false)
+    expect(settled.error).toBeNull()
+  })
+
+  it("starts idle", () => {
+    expect(baseState().placingOrder).toBe(false)
+  })
+})

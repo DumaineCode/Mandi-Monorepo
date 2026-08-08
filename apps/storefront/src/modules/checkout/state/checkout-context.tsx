@@ -1,11 +1,20 @@
 "use client"
 
-import { persistCheckoutDraft } from "@lib/data/cart"
+import {
+  initiatePaymentSession,
+  persistCheckoutDraft,
+  placeOrder,
+  retrieveCart,
+  syncCheckoutAddresses,
+} from "@lib/data/cart"
 import {
   calculatePriceForShippingOption,
   listCartShippingMethods,
 } from "@lib/data/fulfillment"
 import { getPostalCode } from "@lib/data/postal-code"
+import { PLACE_ORDER_MESSAGES } from "@lib/util/place-order"
+import { getBaseURL } from "@lib/util/env"
+import { useParams } from "next/navigation"
 import {
   AUTOSAVE_DEBOUNCE_MS,
   classifyQuoteResult,
@@ -18,6 +27,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useCallback,
   useReducer,
   useRef,
   type Dispatch,
@@ -37,6 +47,11 @@ import {
   type CheckoutState,
 } from "./checkout-reducer"
 import { createCheckoutWriteScheduler } from "./checkout-write-scheduler"
+import {
+  createPlaceOrderFlow,
+  type OpenpayGateway,
+  type PlaceOrderOutcome,
+} from "./place-order-flow"
 
 /**
  * The single owner of checkout client state, and the only place effects run.
@@ -90,11 +105,19 @@ type CheckoutActions = {
    * synchronously at call time, and reading it out of a render-scoped value
    * would hand two writes fired in the same tick the same sequence.
    *
-   * PR2c's `syncCheckoutAddresses` MUST draw from here too — or, better, go
-   * through the write scheduler, which is the only thing that also guarantees
+   * PR2c's `syncCheckoutAddresses` draws from here by going through the write
+   * scheduler's `runExclusive`, which is the only thing that also guarantees
    * the write is not concurrent with the autosave.
    */
   nextWriteSequence: () => number
+  /**
+   * The single order-placement entry point (tasks 2c.7–2c.11).
+   *
+   * The gateway is passed IN because this provider is mounted outside
+   * `PaymentWrapper` and cannot read `OpenpayContext`; the CTA is inside it and
+   * reads the live value at click time. See `place-order-flow.ts`.
+   */
+  placeOrderFlow: (openpay: OpenpayGateway) => Promise<PlaceOrderOutcome>
 }
 
 type CheckoutCartValue = {
@@ -234,6 +257,82 @@ export function CheckoutProvider({
   }
 
   const scheduler = schedulerRef.current
+
+  // -------------------------------------------------------------------------
+  // Place order (D5, tasks 2c.7–2c.11)
+  // -------------------------------------------------------------------------
+
+  const params = useParams<{ countryCode: string }>()
+  const countryCode = params?.countryCode ?? "mx"
+
+  /**
+   * The CTA write goes through `runExclusive`, which is what makes it a
+   * NON-concurrent writer of the shipping address (B1).
+   *
+   * `runExclusive` reports only `written | failed`, because a scheduler has no
+   * business knowing what a caller's failures mean. The reason is captured in
+   * this closure instead and handed back to the flow, which is the layer that
+   * decides what the customer reads.
+   */
+  const syncAddresses = useCallback(
+    async (input: Parameters<typeof syncCheckoutAddresses>[0]) => {
+      let failure: string | null = null
+
+      const outcome = await scheduler.runExclusive(async () => {
+        const result = await syncCheckoutAddresses(input)
+
+        if (!result.ok) {
+          failure = result.error
+          return { ok: false as const }
+        }
+
+        return { ok: true as const, cart: result.cart }
+      })
+
+      if (outcome.status !== "written") {
+        return {
+          ok: false as const,
+          error: failure ?? PLACE_ORDER_MESSAGES.addressSyncFailed,
+        }
+      }
+
+      return { ok: true as const, cart: outcome.cart }
+    },
+    [scheduler]
+  )
+
+  /**
+   * Created once, like the scheduler and for the same reason: it owns the
+   * synchronous re-entrancy flag that stops a double click from placing two
+   * orders, and rebuilding it per render would reset that flag on every
+   * keystroke.
+   */
+  const placeOrderFlowRef = useRef<ReturnType<
+    typeof createPlaceOrderFlow
+  > | null>(null)
+
+  if (placeOrderFlowRef.current === null) {
+    placeOrderFlowRef.current = createPlaceOrderFlow({
+      readState: () => stateRef.current,
+      dispatch,
+      syncAddresses,
+      initiatePaymentSession,
+      placeOrder,
+      retrieveCart: () => retrieveCart(),
+      /**
+       * A full page load, deliberately, for both destinations this reaches: an
+       * external Mercado Pago checkout and a bank's 3DS challenge. Neither is a
+       * Next route, so `router.push` has nothing to do with them.
+       */
+      navigate: (url: string) => {
+        window.location.href = url
+      },
+      countryCode,
+      baseUrl: getBaseURL(),
+    })
+  }
+
+  const placeOrderFlow = placeOrderFlowRef.current.place
 
   // -------------------------------------------------------------------------
   // SEPOMEX lookup
@@ -508,7 +607,7 @@ export function CheckoutProvider({
    * never re-renders because someone typed a character (W6).
    */
   const actions = useMemo<CheckoutActions>(
-    () => ({ dispatch, nextWriteSequence }),
+    () => ({ dispatch, nextWriteSequence, placeOrderFlow }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     []
   )

@@ -40,6 +40,37 @@ export const isOpenpayProviderId = (providerId?: string | null): boolean =>
   providerId.startsWith(OPENPAY_PROVIDER_ID_PREFIX)
 
 /**
+ * The other two provider prefixes, here for the same reason Openpay's is
+ * (task 2c.7): `place-order.ts` has to dispatch on the selected provider to
+ * pick a payment tail, and it cannot import `lib/constants.tsx` without
+ * dragging React into a module whose purity is what makes it testable.
+ *
+ * `lib/constants.tsx` delegates to both, so each prefix still has exactly one
+ * definition. Two copies is how the tail that runs and the label that renders
+ * would come to disagree about which provider the customer picked.
+ */
+export const MERCADOPAGO_PROVIDER_ID_PREFIX = "pp_mercadopago_"
+
+export const isMercadopagoProviderId = (
+  providerId?: string | null
+): boolean =>
+  typeof providerId === "string" &&
+  providerId.startsWith(MERCADOPAGO_PROVIDER_ID_PREFIX)
+
+/**
+ * Medusa's built-in `manual` provider registers as `pp_system_default`.
+ *
+ * Matched by prefix rather than by equality to stay consistent with the other
+ * two — Medusa composes provider ids as `pp_{provider}_{id}` and the system
+ * default is the one that happens to have no suffix today.
+ */
+export const MANUAL_PROVIDER_ID_PREFIX = "pp_system_default"
+
+export const isManualProviderId = (providerId?: string | null): boolean =>
+  typeof providerId === "string" &&
+  providerId.startsWith(MANUAL_PROVIDER_ID_PREFIX)
+
+/**
  * Whether Openpay is actually purchasable on this cart, per the provider list
  * the backend returned for the cart's region (`listCartPaymentMethods`).
  *

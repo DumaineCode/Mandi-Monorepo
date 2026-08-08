@@ -1,4 +1,8 @@
-import { isOpenpayProviderId } from "@lib/util/checkout-readiness"
+import {
+  isManualProviderId,
+  isMercadopagoProviderId,
+  isOpenpayProviderId,
+} from "@lib/util/checkout-readiness"
 import { CreditCard } from "@medusajs/icons"
 import {
   CardBrandLogos,
@@ -72,7 +76,7 @@ export const isPaypal = (providerId?: string) => {
   return providerId?.startsWith("pp_paypal")
 }
 export const isManual = (providerId?: string) => {
-  return providerId?.startsWith("pp_system_default")
+  return isManualProviderId(providerId)
 }
 
 /**
@@ -91,7 +95,7 @@ export const isOpenpay = (providerId?: string) => {
 }
 
 export const isMercadopago = (providerId?: string) => {
-  return providerId?.startsWith("pp_mercadopago_")
+  return isMercadopagoProviderId(providerId)
 }
 
 // Add currencies that don't need to be divided by 100

@@ -686,3 +686,188 @@ describe("the no-op guard (F2)", () => {
     expect(h.sent[0].email).toBe("nuevo@example.com")
   })
 })
+
+/**
+ * ---------------------------------------------------------------------------
+ * `runExclusive` — the CTA write joins the same chain (PR2c, task 2c.7)
+ * ---------------------------------------------------------------------------
+ *
+ * PR2b left this as an explicit handoff: *"PR2c's `syncCheckoutAddresses` DOES
+ * write the address and MUST go through the scheduler."*
+ *
+ * The reason is B1 restated at the CTA. `syncCheckoutAddresses` writes
+ * `shipping_address`, which is the entity the whole `em.create` PII-destruction
+ * finding is about, and it runs at a moment when an autosave debounce armed by
+ * the customer's last blur is very likely still pending — 400 ms is roughly the
+ * gap between tabbing out of the final field and clicking the button. Two
+ * concurrent partial writers against one nested entity is the exact shape PR1a
+ * closed and PR2a reopened.
+ *
+ * `persistNow` cannot be reused for it: the payload is different (both
+ * addresses, in full) and it is not derived from the unsaved-draft diff. So the
+ * scheduler gains one method whose only job is to put a FOREIGN write on the
+ * same FIFO chain, under the same sequence counter.
+ */
+describe("runExclusive (PR2c)", () => {
+  it("cancels a pending autosave so it cannot fire mid-order", async () => {
+    const h = harness()
+    h.dispatchToState({
+      type: "FIELD_BLUR",
+      field: "address_1",
+      value: "Otra calle 9",
+    })
+
+    h.scheduler.scheduleAutosave(AUTOSAVE_DEBOUNCE_MS)
+
+    // The CTA is clicked 100ms after the last blur — well inside the debounce.
+    await vi.advanceTimersByTimeAsync(100)
+
+    const run = h.scheduler.runExclusive(async () => ({
+      ok: true as const,
+      cart: cartWith({}, { total: 1500 }),
+    }))
+
+    await vi.advanceTimersByTimeAsync(1000)
+    await run
+
+    // The autosave must never have gone out. If it had, its response would race
+    // the CTA write against the same cart_address row.
+    expect(h.sent).toHaveLength(0)
+  })
+
+  it("waits for an in-flight autosave instead of racing it", async () => {
+    const h = harness()
+    h.dispatchToState({
+      type: "FIELD_BLUR",
+      field: "address_1",
+      value: "Otra calle 9",
+    })
+
+    h.scheduler.scheduleAutosave(AUTOSAVE_DEBOUNCE_MS)
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DEBOUNCE_MS)
+
+    // The autosave is now OPEN and unresolved.
+    expect(h.openWrites).toBe(1)
+
+    let exclusiveStarted = false
+    const run = h.scheduler.runExclusive(async () => {
+      exclusiveStarted = true
+      return { ok: true as const, cart: cartWith({}, { total: 1500 }) }
+    })
+
+    await vi.advanceTimersByTimeAsync(0)
+
+    // THE ASSERTION. The CTA write has not begun while the autosave is open.
+    expect(exclusiveStarted).toBe(false)
+
+    await h.settleNext(cartWith({}, { total: 1000 }))
+    await run
+
+    expect(exclusiveStarted).toBe(true)
+  })
+
+  it("draws its sequence from the same counter as the autosave", async () => {
+    const h = harness()
+    h.dispatchToState({
+      type: "FIELD_BLUR",
+      field: "address_1",
+      value: "Otra calle 9",
+    })
+
+    h.scheduler.scheduleAutosave(AUTOSAVE_DEBOUNCE_MS)
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DEBOUNCE_MS)
+    await h.settleNext(cartWith({}, { total: 1000 }))
+
+    let seen: number | null = null
+    await h.scheduler.runExclusive(async (sequence) => {
+      seen = sequence
+      return { ok: true as const, cart: cartWith({}, { total: 1500 }) }
+    })
+
+    // A shared counter is what lets the reducer drop a response that a newer
+    // write has already superseded. A private counter would let the two writers
+    // issue the same number and the ordering guarantee would silently stop
+    // meaning anything.
+    expect(seen).toBe(2)
+  })
+
+  it("dispatches CART_UPDATED with the cart the write returned", async () => {
+    const h = harness()
+
+    await h.scheduler.runExclusive(async () => ({
+      ok: true as const,
+      cart: cartWith({}, { total: 1500 }),
+    }))
+
+    const updated = h.actions.filter((action) => action.type === "CART_UPDATED")
+    expect(updated).toHaveLength(1)
+    expect(h.readState().cart?.total).toBe(1500)
+  })
+
+  it("reports a failed write without poisoning the chain", async () => {
+    const h = harness()
+
+    const outcome = await h.scheduler.runExclusive(async () => ({
+      ok: false as const,
+    }))
+
+    expect(outcome.status).toBe("failed")
+    expect(
+      h.actions.some((action) => action.type === "CART_WRITE_FAILED")
+    ).toBe(true)
+
+    // The customer must be able to fix whatever went wrong and click again.
+    const retry = await h.scheduler.runExclusive(async () => ({
+      ok: true as const,
+      cart: cartWith({}, { total: 1500 }),
+    }))
+
+    expect(retry.status).toBe("written")
+  })
+
+  it("survives a write that REJECTS rather than returning a failure", async () => {
+    const h = harness()
+
+    const outcome = await h.scheduler.runExclusive(async () => {
+      throw new Error("boom")
+    })
+
+    expect(outcome.status).toBe("failed")
+
+    const retry = await h.scheduler.runExclusive(async () => ({
+      ok: true as const,
+      cart: cartWith({}, { total: 1500 }),
+    }))
+
+    expect(retry.status).toBe("written")
+  })
+
+  /**
+   * The total-change guard sends the customer back to confirm once more, and
+   * their next blur re-arms the autosave. That autosave must diff against the
+   * cart the CTA write produced — not the one before it — or it re-sends fields
+   * the CTA already persisted and, worse, patches against a stale address row.
+   */
+  it("leaves its cart as the base the next autosave diffs against", async () => {
+    const h = harness({ applyDispatches: false })
+
+    await h.scheduler.runExclusive(async () => ({
+      ok: true as const,
+      cart: cartWith({ address_1: "Calle nueva 1" }, { total: 1500 }),
+    }))
+
+    h.dispatchToState({
+      type: "FIELD_BLUR",
+      field: "address_1",
+      value: "Calle nueva 1",
+    })
+
+    h.scheduler.scheduleAutosave(AUTOSAVE_DEBOUNCE_MS)
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DEBOUNCE_MS)
+
+    // Nothing is unsaved relative to the CTA's cart, so no request goes out.
+    // Per F2 every one of those is a live Skydropx quote, so this is not merely
+    // tidy.
+    expect(h.sent).toHaveLength(0)
+  })
+})

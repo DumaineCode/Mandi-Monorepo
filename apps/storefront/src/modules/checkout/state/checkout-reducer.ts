@@ -155,6 +155,21 @@ export type CheckoutState = {
   /** @see `modules/checkout/components/payment-section` — PR2c. */
   paymentDetailsComplete: boolean
 
+  /**
+   * Whether `placeOrderFlow` is mid-attempt.
+   *
+   * A UI affordance, not the re-entrancy guard. The flow keeps its own
+   * synchronous flag, because this one is read through the provider's
+   * `stateRef`, which is assigned in an effect and therefore lags by one
+   * commit — two clicks inside the same commit would both see `false`. Ordering
+   * a second charge is not an acceptable outcome of a double click, so the
+   * authoritative guard lives where it can be synchronous.
+   *
+   * @see `modules/checkout/state/place-order-flow.ts`
+   * @see `modules/checkout/components/place-order-bar` — PR2c slice 2.
+   */
+  placingOrder: boolean
+
   error: string | null
 }
 
@@ -219,6 +234,17 @@ export type CheckoutAction =
     }
   | { type: "SELECT_PAYMENT_PROVIDER"; providerId: string }
   | { type: "SET_PAYMENT_DETAILS_COMPLETE"; complete: boolean }
+  | { type: "PLACE_ORDER_STARTED" }
+  | {
+      type: "PLACE_ORDER_SETTLED"
+      /**
+       * Required, not optional. Every tail has to say explicitly whether it is
+       * reporting a failure or standing down cleanly — `undefined` meaning "no
+       * error" is how a tail that forgot to pass anything ends up looking like
+       * a success.
+       */
+      error: string | null
+    }
   | { type: "SET_ERROR"; error: string | null }
 
 const draftFromAddress = (
@@ -449,6 +475,7 @@ export function initFromServer(init: CheckoutInit): CheckoutState {
 
     selectedPaymentProviderId: null,
     paymentDetailsComplete: false,
+    placingOrder: false,
 
     error: null,
   }
@@ -821,6 +848,18 @@ export function checkoutReducer(
 
     case "SET_PAYMENT_DETAILS_COMPLETE":
       return { ...state, paymentDetailsComplete: action.complete }
+
+    /**
+     * Clearing the error here is the point, not a side effect. A message left
+     * over from the previous attempt sitting beside a spinner reads as if the
+     * new attempt has already failed — and the most common reason for a second
+     * attempt is the total-change guard, which is not a failure at all.
+     */
+    case "PLACE_ORDER_STARTED":
+      return { ...state, placingOrder: true, error: null }
+
+    case "PLACE_ORDER_SETTLED":
+      return { ...state, placingOrder: false, error: action.error }
 
     case "SET_ERROR":
       return { ...state, error: action.error }
