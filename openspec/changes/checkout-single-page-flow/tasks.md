@@ -384,14 +384,92 @@ Floor is the CTA: `payment-section`, `payment-button` and `place-order-bar` are 
 
 - [ ] **2c.5** Rewrite `apps/storefront/src/modules/checkout/components/payment-button/index.tsx` to dispatch on **`state.selectedPaymentProviderId`**, not on `cart.payment_collection?.payment_sessions?.[0]?.provider_id` (`:33-59`). Under R5 that array is empty at render, so the old dispatch would render the disabled default branch forever and no order could ever be placed. **This retires explore risk #8 rather than deferring it** — the `payment_sessions[0]` vs `status === "pending"` asymmetry disappears because the dispatch stops reading sessions at all. Record it as resolved in the PR, not as a follow-up.
 - [x] **2c.6** ~~Delete `StripePaymentButton` (`payment-button/index.tsx:70-180ish`) and the `useElements`/`useStripe` imports (`:12`). Keep the disabled `Selecciona un método de pago` default branch.~~ **DONE IN PR1b — pulled forward.** 1b.18 deleted `stripe-wrapper.tsx`, which removed the app's only `<Elements>` provider; `useStripe()`/`useElements()` THROW outside that provider, so leaving this component would have left the branch carrying a crash-on-mount component and a live import of a package PR1b drops. The `case isStripeLike(...)` dispatch arm went with it; the disabled `Selecciona un método de pago` default branch was kept. **Nothing remains for PR2c under this task.**
-- [ ] **2c.7** Implement `placeOrderFlow()` in `checkout-context.tsx` per `design.md` D5, in exactly this order: (0) defensive `canPlaceOrder` re-check — a disabled button is an affordance, not a lock; (1) **provider pre-flight before any backend mutation** — Openpay tokenizes in the browser and asserts `deviceSessionId` is non-null; (2) `syncCheckoutAddresses` with **both** addresses carrying their ids; (3) **total-change guard**; (4) `initiatePaymentSession`; (5) provider tail. Step 1 before step 2 is deliberate: a card that fails tokenization must not have caused a single backend write.
-- [ ] **2c.8** Implement the **total-change guard** (D5 step 3): if the cart returned by step 2 has `total !== state.totalAtRender`, dispatch `CART_UPDATED` and an error — `El costo de envío cambió. Revisa el total y confirma de nuevo.` — and **abort**. Step 2 runs `updateCartWorkflow`, which per F2 re-prices shipping via a live carrier quote; charging a total the customer never saw is not acceptable, and Medusa would destroy the session we are about to create anyway (`explore §2b`). One honest extra click beats a mystery failure.
-- [ ] **2c.9** Implement the **Openpay tail** per spec *Openpay Places the Order in Tokenize → Initiate → Complete Order*: tokenize → `initiatePaymentSession` with `{ token_id, device_session_id, return_url, customer }` → `placeOrder()` → redirect to `/{countryCode}/order/{id}/confirmed`. On throw, re-read the cart and follow `requires_more` → `data.redirect_url` (3DS). **Every CTA click re-tokenizes** — an Openpay token is single-use and reusing one from a failed attempt is forbidden. If `deviceSessionId` is unavailable, fail with an inline Spanish error rather than initiating with `device_session_id: null`.
-- [ ] **2c.10** Implement the **Mercado Pago tail** per spec: `initiatePaymentSession` with `{ back_urls_base }` → read `init_point` → `window.location.href`. **`placeOrder` is NOT called** — the webhook is the source of truth (`explore §6`). If the session returns without a usable `init_point`, show an inline Spanish error and **do not navigate**. Silently navigating to `undefined` is forbidden.
-- [ ] **2c.11** Implement the **manual tail**: `initiatePaymentSession` → `placeOrder()`. All three tails must show an inline Spanish error and **re-enable the button** on any failure.
-- [ ] **2c.12** Rename `setAddresses` → `syncCheckoutAddresses` in `apps/storefront/src/lib/data/cart.ts`: sends **both** shipping and billing addresses **with their ids** (same merge rule as D3 — billing is exposed to the identical `EntityAssigner` replacement hazard), returns `{ ok: true; cart } | { ok: false; error }`. Update callers.
+- [x] **2c.7** Implement `placeOrderFlow()` in `checkout-context.tsx` per `design.md` D5, in exactly this order: (0) defensive `canPlaceOrder` re-check — a disabled button is an affordance, not a lock; (1) **provider pre-flight before any backend mutation** — Openpay tokenizes in the browser and asserts `deviceSessionId` is non-null; (2) `syncCheckoutAddresses` with **both** addresses carrying their ids; (3) **total-change guard**; (4) `initiatePaymentSession`; (5) provider tail. Step 1 before step 2 is deliberate: a card that fails tokenization must not have caused a single backend write.
+- [x] **2c.8** Implement the **total-change guard** (D5 step 3): if the cart returned by step 2 has `total !== state.totalAtRender`, dispatch `CART_UPDATED` and an error — `El costo de envío cambió. Revisa el total y confirma de nuevo.` — and **abort**. Step 2 runs `updateCartWorkflow`, which per F2 re-prices shipping via a live carrier quote; charging a total the customer never saw is not acceptable, and Medusa would destroy the session we are about to create anyway (`explore §2b`). One honest extra click beats a mystery failure.
+- [x] **2c.9** Implement the **Openpay tail** per spec *Openpay Places the Order in Tokenize → Initiate → Complete Order*: tokenize → `initiatePaymentSession` with `{ token_id, device_session_id, return_url, customer }` → `placeOrder()` → redirect to `/{countryCode}/order/{id}/confirmed`. On throw, re-read the cart and follow `requires_more` → `data.redirect_url` (3DS). **Every CTA click re-tokenizes** — an Openpay token is single-use and reusing one from a failed attempt is forbidden. If `deviceSessionId` is unavailable, fail with an inline Spanish error rather than initiating with `device_session_id: null`.
+- [x] **2c.10** Implement the **Mercado Pago tail** per spec: `initiatePaymentSession` with `{ back_urls_base }` → read `init_point` → `window.location.href`. **`placeOrder` is NOT called** — the webhook is the source of truth (`explore §6`). If the session returns without a usable `init_point`, show an inline Spanish error and **do not navigate**. Silently navigating to `undefined` is forbidden.
+- [x] **2c.11** Implement the **manual tail**: `initiatePaymentSession` → `placeOrder()`. All three tails must show an inline Spanish error and **re-enable the button** on any failure.
+- [x] **2c.12** Rename `setAddresses` → `syncCheckoutAddresses` in `apps/storefront/src/lib/data/cart.ts`: sends **both** shipping and billing addresses **with their ids** (same merge rule as D3 — billing is exposed to the identical `EntityAssigner` replacement hazard), returns `{ ok: true; cart } | { ok: false; error }`. Update callers.
 - [x] **2c.13** ~~Drop `@stripe/react-stripe-js` and `@stripe/stripe-js` from `apps/storefront/package.json:25-26` and regenerate the lockfile. Do this **last**, after 2c.4 and 2c.6, and verify `pnpm build` passes.~~ **DONE IN PR1b — pulled forward with 2c.6.** Its stated precondition was met: 2c.4 and 2c.6 both landed in PR1b, and a repo-wide grep confirmed zero remaining `from "@stripe/*"` imports in `apps/storefront/src` before the drop. `pnpm build` reaches `✓ Compiled successfully` — the import-resolution stage, which is the actual dangling-import gate. **Nothing remains for PR2c under this task.**
 - [ ] **2c.14** **STILL OPEN AND STILL CORRECT** — unaffected by the 2c.4/2c.6/2c.13 pull-forward. **Do not** remove `isStripeLike` or the `pp_stripe_*` `paymentInfoMap` entries from `apps/storefront/src/lib/constants.tsx`. Per RC-4 it still has a live caller at `modules/order/components/payment-details/index.tsx:43`, which is outside this change's scope. `design.md` §0's condition ("once it has no callers") is unmet. Add a one-line code comment recording the remaining caller and open a follow-up issue.
+
+> **PR2c SLICE 1 implementation notes — corrections to the task text, recorded rather than absorbed.**
+>
+> Slice 1 = **2c.7–2c.12 only** (the data + flow core). `payment-section`, `payment-button`,
+> `missing-items-list`, `place-order-bar`, `legal-notice` and the `payment`/`review` deletions are
+> **slice 2** and were deliberately not touched, so the existing four-step components still work
+> exactly as they did. Branch `feat/checkout-place-order-flow`.
+>
+> **The delivery plan's base is stale, and this is a correction not a deviation.** Line 104 says PR2c
+> branches from `feat/checkout-envio` on a feature-branch chain. PR1a, PR1b, PR2a and PR2b have all
+> been MERGED to `main` (merge `390da52` plus later commits) and **zero `checkout*` branches remain**
+> (`git branch -a`). The chain has collapsed, so slice 1 branches off `main` at `a344eb9`. The
+> tracker-only-merges-to-`main` protection the chain existed to provide is already spent.
+>
+> **2c.7 — `placeOrderFlow` is NOT in `checkout-context.tsx`, and that is deliberate.** It lives in
+> `modules/checkout/state/place-order-flow.ts` as a dependency-injected orchestrator. `design.md` D5
+> says "in `checkout-context.tsx`"; taken literally that puts the ordering rule that decides whether a
+> customer is charged, charged twice, or told why they were not, into the one file the node-only runner
+> cannot load. This change has already shipped three rules that way — PR2a's two concurrent writers,
+> PR2b's `classifyQuoteResult`, PR1b's fingerprinting gate — each defended by a confident docstring and
+> asserted nowhere. Same precedent and same shape as `checkout-write-scheduler.ts`. **Every step and
+> their order are D5's, unchanged; only the file placement differs.**
+>
+> **2c.7 — the Openpay gateway is a per-CALL argument, not a provider-held value.** `CheckoutProvider`
+> is mounted OUTSIDE `PaymentWrapper` (`checkout/page.tsx:64-83`), which is what supplies
+> `OpenpayContext`. A provider reading that context would get the DEFAULT value — `deviceSessionId:
+> null`, `tokenize` rejects — and every Openpay charge would fail, invisibly to any unit test. Slice 2's
+> CTA lives inside the wrapper and must call `placeOrderFlow(openpay)` with the live context value.
+>
+> **2c.8 — the flow does NOT dispatch `CART_UPDATED` itself.** D5 step 3 lists it inline, but that was
+> written before the write scheduler existed. `syncCheckoutAddresses` runs through
+> `scheduler.runExclusive`, which already dispatches it with the correct sequence; a second dispatch
+> would carry an already-superseded sequence and be dropped. The summary still shows the new total
+> before the customer re-confirms.
+>
+> **2c.8 — `state.totalAtRender` does not exist and was not added.** D5 names it as a state field. It
+> would be a second copy of `state.cart.total`, which is the value `CheckoutSummary` actually renders,
+> and the whole change treats a second copy of a rule as the defect. The guard compares the pre-write
+> `state.cart.total` against the cart the write returned — same number, one source.
+>
+> **2c.12 — "Update all callers" had no callers to update.** `setAddresses` was left with ZERO
+> production callers when PR2a deleted `addresses/index.tsx`. It was dead code still carrying the
+> id-less write that PR1a's whole finding is about. Verified by grep before and after.
+>
+> **New: `scheduler.runExclusive`.** PR2b's handoff said *"PR2c's `syncCheckoutAddresses` DOES write the
+> address and MUST go through the scheduler"*. `persistNow` could not be reused (its payload is the
+> unsaved-draft diff), so the scheduler gained one method that puts a foreign write on the same FIFO
+> chain under the same sequence counter.
+>
+> **New: `PLACE_ORDER_STARTED` / `PLACE_ORDER_SETTLED` + `state.placingOrder`.** Needed for 2c.11's
+> "re-enable the button on any failure". The authoritative re-entrancy guard is a SYNCHRONOUS closure
+> flag inside the flow, not this field: the provider reads state through a ref assigned in an effect,
+> so it lags a commit and two clicks in one commit would both see `false` and both charge the card.
+>
+> **New: `isMercadopagoProviderId` / `isManualProviderId` in `checkout-readiness.ts`.** Same reason
+> `isOpenpayProviderId` is there (PR1b): `lib/constants.tsx` carries JSX and cannot be imported by a
+> node-tested module. `constants.tsx` delegates, so each prefix still has one definition. RC-4 respected
+> — `isStripeLike` and the `pp_stripe_*` entries are untouched.
+>
+> ### ⚠️ BLOCKER FOUND, NOT FIXED — the billing-address deadlock (owner: slice 2)
+>
+> `getMissingOrderRequirements` emits `billing_address` whenever `cart.billing_address` is falsy
+> (`checkout-readiness.ts:325`). After the single-page migration the **only** production writer of
+> `billing_address` in the entire storefront is `syncCheckoutAddresses` — which runs on the CTA click,
+> behind the very check blocking it. `persistCheckoutDraft` never writes billing by design (D3), and
+> `setAddresses`, which used to write it at the address step, was deleted by this slice.
+>
+> **A cart that has never had a billing address can therefore never place an order.** The CTA reports
+> `Falta tu dirección de facturación.` forever. This is the same shape as the `?step=payment` deadlock
+> PR2c exists to remove. Verified by grep: `billing_address:` has exactly one production writer.
+>
+> Not fixed here because the fix is in `toReadinessInput`, whose `hasBillingAddress` is a CART fact and
+> probably wants to be a CLIENT one — precisely the `hasShippingMethod` vs `hasSelectedShippingOption`
+> split that file already makes, for the identical F1 reason. That is a strictness-floor change, which
+> this file calls a product decision rather than a refactor, and it is outside 2c.7–2c.12.
+>
+> **Pinned by a tripwire test** in `place-order-flow.spec.ts` ("TRIPWIRE: billing-address deadlock").
+> It is EXPECTED to fail the moment slice 2 addresses it — that failure is the handoff working.
 
 ### CTA presentation
 

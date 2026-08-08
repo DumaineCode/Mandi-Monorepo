@@ -1966,3 +1966,216 @@ Also owed before merge: a `pnpm build` against a live backend, and a maintainer 
 
 Nothing committed. The parent owns git. The working tree is **staged** (`git add -A apps/storefront`)
 so the diff is reviewable with `git diff --cached`; the two deletions were staged via `git rm`.
+
+---
+
+# PART 10 — PR2c **SLICE 1**. The data + flow core.
+
+Branch `feat/checkout-place-order-flow`, **branched off `main` at `a344eb9`**. Two work-unit commits,
+both on the branch: `a780f0f` and `3624f05`. **This is the first apply batch in this change that was
+actually committed** — every earlier PART left the tree staged for a parent to commit.
+
+Scope: tasks **2c.7–2c.12 only**. `payment-section`, `payment-button`, `missing-items-list`,
+`place-order-bar`, `legal-notice` and the `payment`/`review` deletions are **slice 2** and were not
+touched, so the existing four-step components still render and behave exactly as they did on `main`.
+
+## ⚠️ The delivery plan's base was stale. Corrected, not silently followed.
+
+`tasks.md` line 104 puts PR2c on `feat/checkout-envio` in a feature-branch chain. That table is now
+wrong: **PR1a, PR1b, PR2a and PR2b are all MERGED to `main`** (merge `390da52` plus later commits) and
+`git branch -a` shows **zero** `checkout*` branches. The chain has already collapsed and the protection
+it existed to give — only the tracker merges to `main`, so `main` never holds a half-migrated checkout
+— was spent when those merges landed.
+
+Slice 1 therefore branches off `main`. Recorded here as an explicit correction to the delivery plan.
+
+## Baseline before any edit
+
+| Gate | `main` @ `a344eb9` |
+|---|---|
+| `pnpm --filter @dtc/storefront test` | **657 tests / 11 files green** |
+| `npx tsc --noEmit` | 0 errors |
+| `next lint` | 10 pre-existing errors |
+
+Note the engram ledger recorded 574 tests at the end of PR2b; `main` is at 657 because later commits
+(`442fff9`, `d8c3237`) added the colonia work. 657 is the real baseline.
+
+## TDD Cycle Evidence
+
+Strict TDD, RED → GREEN → TRIANGULATE → REFACTOR. Every RED was a **virgin** RED — the symbol did not
+exist, so the failure was `is not a function` or an unresolved module, not a wrong assertion.
+
+| Task | Test file | Layer | Safety net | RED | GREEN | TRIANGULATE | REFACTOR |
+|---|---|---|---|---|---|---|---|
+| 2c.12 payload | `lib/util/cart-address-payload.spec.ts` | Unit | ✅ 36/36 | ✅ 11 failing, `is not a function` | ✅ 47 | ✅ +10 (cross-address, absent fields) | ✅ docstring corrected to match the mutants |
+| 2c.12 writer | `lib/data/cart.spec.ts` | Unit (SDK-mocked) | ✅ 23/23 | ✅ 9 failing, `is not a function` | ✅ 32 | ✅ abort paths × 4 | ➖ none needed |
+| 2c.9/2c.10 rules | `lib/util/place-order.spec.ts` | Unit | N/A (new) | ✅ module unresolved | ✅ 36 | ✅ 8-case `init_point` table, 3-case 3DS table | ➖ none needed |
+| 2c.7 scheduler | `state/checkout-write-scheduler.spec.ts` | Unit (fake timers) | ✅ 23/23 | ✅ 7 failing, `is not a function` | ✅ 30 | ✅ in-flight, reject, base-cart | ➖ none needed |
+| 2c.11 affordance | `state/checkout-reducer.spec.ts` | Unit | ✅ 214/214 | ✅ 4 failing | ✅ 218 | ✅ error / no-error / initial | ➖ none needed |
+| 2c.7–2c.11 flow | `state/place-order-flow.spec.ts` | Unit (DI) | N/A (new) | ✅ module unresolved | ✅ 38 | ✅ +2 from mutation | ✅ gateway → per-call input |
+
+**Suite: 657 → 774 tests, 11 → 13 spec files.** S10 holds (count up, never down).
+
+`npx tsc --noEmit` = **0**, which is the gate PR2b established (zero, not "no new errors").
+`next lint` = **10**, identical to `main`; all 10 are pre-existing, 4 of them in `cart.ts`'s
+commented-out gift-card stubs which this slice did not touch.
+`pnpm build` = **`✓ Compiled successfully in 19.3s`** — the import-resolution stage, which is the real
+dangling-import gate.
+
+## Mutation testing — 16 injected, 15 killed, 1 equivalent (documented)
+
+| # | Mutant | Result |
+|---|---|---|
+| M1 | billing resolver reads the SHIPPING relation | killed (8) |
+| M2 | billing payload reuses the shipping address object | killed (3) |
+| M3 | resolved id applied BEFORE the field spread | **survived — EQUIVALENT** |
+| M4 | falsy id sent as `null` instead of omitted | killed (1) |
+| M5 | billing FK read from the shipping scalar | killed (1) |
+| M6 | `deviceSessionId` guard removed | killed (1) |
+| M7 | total guard fires only when the total went UP | killed (2) |
+| M8 | re-entrancy guard removed | killed (2) |
+| M9 | card-incomplete guard removed | killed (1) |
+| M10 | step 0 readiness re-check removed | killed (3) |
+| M11 | MP tail falls through to `placeOrder` | killed (3) |
+| M12 | MP navigates without checking `init_point` | killed (4) |
+| M13 | unsupported provider falls through | killed (1) |
+| M14 | **address write hoisted ABOVE the pre-flight** | killed (4) |
+| M15 | 3DS follows `redirect_url` ignoring `status` | killed (1) |
+| M16 | session payload built from the PRE-sync cart | **survived first pass → killed** |
+
+**M14 is the one that matters.** "Step 1 before step 2 is deliberate: a card that fails tokenization
+must not have caused a single backend write" is a statement about ORDERING, and ordering is exactly
+what someone breaks in six months while "saving a round trip". Four tests fail when it is broken.
+
+**M16 — the informative survivor.** Building the payment-session payload from `state.cart` instead of
+from the cart step 2 returned passed a green 38-test suite, because every cart in the file already
+carried the billing address it was supposed to gain. D5 says step 2 before step 4 is MANDATORY
+*precisely* because the Openpay payload reads `cart.billing_address`, and Openpay rejects a charge with
+API error 1001 when `customer` is empty. A test where the pre-write and post-write billing differ kills
+it. **Fourth time in this change a confident docstring turned out to be asserted nowhere.**
+
+**M3 is equivalent, and saying so is the honest answer.** `pickPatchedFields` already drops `id`, so
+both orderings emit byte-identical payloads. The guard is the FIELD SET, not the spread order. The
+docstring claimed the ordering protected against a loosened filter; it was corrected to say what is
+true, and the spec now pins `PERSISTABLE_ADDRESS_FIELDS` not containing `id` directly.
+
+## What landed
+
+**`lib/util/cart-address-payload.ts`** — `buildCheckoutAddressesPayload` (both addresses, both ids),
+`resolveBillingAddressId`, and `resolveShippingAddressId` generalised onto a shared
+`resolveCartAddressId` core. The 36 pre-existing shipping tests pass unchanged, which is the approval
+proof the generalisation preserved behaviour.
+
+**`lib/data/cart.ts`** — `setAddresses` **DELETED**, `syncCheckoutAddresses` in its place. Both ids
+resolved server-side from ONE fresh read on Medusa's own default projection
+(`id,shipping_address_id,shipping_address.id,billing_address_id,billing_address.id`; `billing_address_id`
+is at `query-config.js:115`, verified in `node_modules`). Aborts without writing when either id is
+unresolved. Backend error text never crosses back to the browser. The S7 tripwire now covers both rows.
+
+**`lib/util/place-order.ts`** (new, pure) — `resolvePaymentTail`, `selectMercadoPagoInitPoint`,
+`selectOpenpayRedirectUrl`, `hasTotalChanged`, `buildOpenpaySessionData`, `PLACE_ORDER_MESSAGES`.
+
+**`state/place-order-flow.ts`** (new, DI orchestrator) — D5 steps 0–5.
+
+**`state/checkout-write-scheduler.ts`** — `runExclusive`, closing PR2b's handoff note.
+
+**`state/checkout-reducer.ts`** — `placingOrder` + `PLACE_ORDER_STARTED` / `PLACE_ORDER_SETTLED`.
+
+**`state/checkout-context.tsx`** — wiring only, no rules: `syncAddresses` through `runExclusive`, and
+`placeOrderFlow(openpay)` exposed on the actions context.
+
+**`lib/util/checkout-readiness.ts`** — `isMercadopagoProviderId`, `isManualProviderId`;
+`lib/constants.tsx` delegates to both. RC-4 respected: `isStripeLike` and the `pp_stripe_*` entries are
+untouched.
+
+## Deviations from the task text — recorded, not absorbed
+
+1. **`placeOrderFlow` is not in `checkout-context.tsx`.** D5 says it is. That file is a `.tsx` the
+   node-only runner cannot load, and this change has already shipped three rules that way, each
+   defended by a docstring and asserted nowhere. Same precedent as `checkout-write-scheduler.ts`.
+   Behaviour is D5's; only the file differs.
+2. **The Openpay gateway is a per-call argument.** `CheckoutProvider` is mounted OUTSIDE
+   `PaymentWrapper` (`checkout/page.tsx:64-83`). A provider reading `OpenpayContext` gets the DEFAULT
+   value — `deviceSessionId: null` — and every Openpay charge fails. Slice 2's CTA is inside the
+   wrapper and must pass the live value.
+3. **The flow does not dispatch `CART_UPDATED`.** `runExclusive` already does, with the right
+   sequence. D5 step 3 lists it inline because it predates the scheduler.
+4. **`state.totalAtRender` was not added.** It would be a second copy of `state.cart.total`, which is
+   what `CheckoutSummary` renders. This change treats a second copy of a rule as the defect.
+5. **2c.12's "update callers" found none.** `setAddresses` had ZERO production callers after PR2a
+   deleted `addresses/index.tsx` — dead code still carrying the id-less write PR1a's finding is about.
+6. **Unsupported provider returns `blocked`, not `failed`.** Nothing was attempted, which is the same
+   category as step 0 refusing an incomplete cart, and the distinction tells a caller whether the cart
+   was touched.
+
+## ⚠️ BLOCKER FOUND AND NOT FIXED — the billing-address deadlock (owner: slice 2)
+
+`getMissingOrderRequirements` emits `billing_address` whenever `cart.billing_address` is falsy
+(`checkout-readiness.ts:325`). After the single-page migration the **only** production writer of
+`billing_address` in the whole storefront is `syncCheckoutAddresses` — which runs on the CTA click,
+behind the very check blocking it. `persistCheckoutDraft` never writes billing by design (D3), and
+`setAddresses`, which used to write it at the address step, was deleted by this slice.
+
+**A cart that has never had a billing address can therefore never place an order.** The CTA would
+report `Falta tu dirección de facturación.` forever. That is structurally the same deadlock as the
+`?step=payment` one PR2c exists to remove — moved to a different place, not eliminated.
+
+Evidence: a repo-wide grep for `billing_address:` returns exactly one production writer
+(`cart-address-payload.ts:228`, reached only from `syncCheckoutAddresses`).
+
+Not fixed here because the fix belongs in `toReadinessInput`, whose `hasBillingAddress` is a CART fact
+and probably wants to be a CLIENT one — exactly the `hasShippingMethod` vs `hasSelectedShippingOption`
+split that file already makes, for the identical F1 reason. That is a strictness-floor change, which
+`tasks.md` calls a product decision rather than a refactor, and it is outside 2c.7–2c.12.
+
+**Pinned by a tripwire test** — `place-order-flow.spec.ts` → "TRIPWIRE: billing-address deadlock
+(open, for slice 2)". It is EXPECTED to fail the moment slice 2 addresses it. That failure is the
+handoff working, not a regression.
+
+## Other findings worth carrying
+
+- **`placeOrder`'s own decline copy is voseo.** `cart.ts:857` — *"Podés intentar de nuevo o con otra
+  tarjeta."* Pre-existing, out of slice scope, and the voseo guard does not reach it because it only
+  covers the readiness catalogue. It is customer-facing and it is Rioplatense. Worth a one-line fix in
+  slice 2.
+- **`MedusaRadio` a11y defect** recorded by PR2b for PR2c is still open — `aria-checked` hard-coded to
+  `true` in `common/components/radio`, still used by `payment-container`. Slice 2 owns it.
+
+## Line budget — slice 1 measured
+
+**3 641 insertions / 95 deletions = 3 736 changed lines** against a `review_budget_lines` of 400.
+
+Production **1 049** (+1 013 / −95 … `constants` 10, `cart.ts` 259, `cart-address-payload.ts` 178,
+`checkout-readiness.ts` 31, `place-order.ts` 287, `billing_address` 5, `checkout-context.tsx` 107,
+`checkout-reducer.ts` 39, `checkout-write-scheduler.ts` 90, `place-order-flow.ts` 424).
+Specs **2 641** (`cart.spec` 255, `cart-address-payload.spec` 436, `place-order.spec` 423,
+`checkout-reducer.spec` 64, `checkout-write-scheduler.spec` 185, `place-order-flow.spec` 943).
+
+**72 % of the diff is specs.** That is the direct consequence of the harness being node-only: the only
+way to verify a payment ordering rule in this repo is to extract it and drive it with injected
+dependencies, and that is what caught M14 and M16. Stating the number plainly rather than shaving it,
+as every earlier PART in this file has done. **`size:exception` required. This is a delivery decision
+for the maintainer, not one taken here.**
+
+## Manual QA owed for slice 1 (nothing here is provable by the runner)
+
+- [ ] Openpay happy path end to end against a live backend; confirm `deviceSessionId` is populated on a
+      cold, throttled load before the CTA, and that a rejected card re-enables the button and mints a
+      NEW token on retry.
+- [ ] Mercado Pago: exactly ONE preference created at the CTA (S8), `init_point` redirect works, and
+      `placeOrder` is never called.
+- [ ] Force a shipping re-price between render and CTA click; confirm the abort and
+      `El costo de envío cambió. Revisa el total y confirma de nuevo.` rather than a silent charge.
+- [ ] Confirm no double order on a double click over a throttled connection.
+- [ ] `pnpm build` against a live backend (owed since PR1b).
+
+## Handoff state slice 2 needs
+
+1. `placeOrderFlow(openpay)` is on the actions context via `useCheckoutActions()`. The CTA **must** be
+   inside `PaymentWrapper` and pass `useContext(OpenpayContext)` at click time.
+2. `state.placingOrder` drives the button's loading state; `state.error` carries the inline message.
+3. `selectReadinessInput(state)` → `getMissingOrderRequirements(...)` is the itemized list for 2c.15.
+4. **2c.20 still binds**: deleting `review/index.tsx` MUST land in the same commit as 2c.16/2c.18, or
+   the branch has a window with no way to place an order. Slice 1 left `payment/index.tsx` and
+   `review/index.tsx` fully intact and working for exactly this reason.
+5. The billing-address deadlock above must be resolved or the CTA cannot enable on a fresh cart.
