@@ -2464,3 +2464,284 @@ Everything else in findings 1–8 was accepted as stated.
       cannot reach.
 - [ ] **NEW.** Confirm a hung CTA write surfaces the failure and re-enables the button after
       `CHECKOUT_WRITE_TIMEOUT_MS` rather than spinning forever (R2, over a throttled connection).
+
+---
+
+# PART 12 — PR2c **SLICE 2**. Pago, the CTA, and the deletions.
+
+**Appended, not overwriting.** PARTs 1–11 stand as written. This part records slice 2: the UI that
+makes the checkout placeable again, and the removal of the two components whose `?step=` deadlock
+made it unplaceable.
+
+Branch `feat/checkout-pago-cta`, three commits on top of `f87178c` (slice 1's remediated HEAD), plus
+this record. Tasks **2c.1, 2c.2, 2c.3, 2c.5, 2c.14, 2c.15–2c.20, 2c.32, 2c.34, 2c.35** and the gates
+**2c.21–2c.24**. `2c.33` was already done at `f87178c` and was not touched.
+
+## The bug this closes, restated so the diff can be read against it
+
+`payment/index.tsx:67` opened its body on `searchParams.get("step") === "payment"`.
+`review/index.tsx:12` on `step === "review"`. PR2a and PR2b rewrote *Datos* and *Envío* as
+single-page sections that push no step at all, so the ONLY remaining writer of `?step=payment` was
+`payment/index.tsx:100` — inside the `Editar` button, which renders only when `paymentReady`, which
+needs an active payment session, which could only be created inside the body that parameter opens.
+Closed circle, merged to `main` in `390da52`. Customers filled everything in, got quotes, chose a
+shipping method, and never reached *Pago*.
+
+## Gates — every one measured, none reported from memory
+
+| Gate | Before (`f87178c`) | After |
+|---|---|---|
+| `pnpm --filter @dtc/storefront test` | 875 / 13 files | **895 / 13 files** (+20) |
+| `npx tsc --noEmit` | 0 | **0** |
+| `pnpm build` | ✓ | **✓ Compiled successfully in 11.6s** |
+| `next lint` errors | 10 | **9** (one left with the deleted `payment/`; zero net-new) |
+
+### The four static gates, verbatim
+
+**2c.22 (S5)** — `grep -rn "step=" apps/storefront/src` returns **13 lines, all of them prose**:
+seven docstring/comment references in `checkout-readiness.ts`, `checkout-form/index.tsx`,
+`contact-address-section`, `shipping-section` and the two payment return routes; four in `.spec.ts`
+docstrings; and `product-onboarding-cta/index.tsx:22`'s unrelated `onboarding_step=`. **Zero
+checkout-navigation readers or writers.**
+
+> **The gate as written is weaker than the gate as intended, and that is worth saying.**
+> `grep "step="` never matched a single real reader or writer in the first place: the readers were
+> `searchParams.get("step")` and the writers `createQueryString("step", …)`, neither of which
+> contains the string `step=`. It matched only the URL literals in the return routes, which PR1b had
+> already fixed. Running it on `f87178c` — with both deadlocked components fully intact — would have
+> returned the same "clean" answer. The gate that actually discriminates is
+> `grep -rn 'searchParams.get("step")\|createQueryString("step"\|getCheckoutStep\|checkout-step'`,
+> which returns **five lines, all prose**, and would have returned the readers on `f87178c`. Both
+> were run; both are recorded. The task text is not wrong about the target, only about the command.
+
+**2c.23 (S4)** — `contact-address-section`, `shipping-section` and `payment-section`: no
+`pointer-events-none`, no gating `opacity-50`, no `disabled` container in any of the three. The only
+`disabled` in the neighbourhood is `shipping-section:371`, on an individual option ROW the carrier
+could not price, which is a per-row affordance and not a section gate.
+
+**2c.24 (S2)** — `grep -rn "submit-address-button\|submit-delivery-option-button\|submit-payment-button"`
+→ **zero matches**. `Realizar pedido` appears in production code in exactly two places:
+`payment-button/index.tsx:15` (`PLACE_ORDER_LABEL`, the one label) and inside the legal notice's
+sentence, which quotes it.
+
+**2c.21 (S10)** — 895 tests, 13 spec files, green.
+
+## Strict TDD — three RED cycles, each watched failing first
+
+| # | Rule | RED | GREEN |
+|---|---|---|---|
+| 1 | `selectPlaceOrderView` — everything the CTA renders | 9 failed / 875 passed (`selectPlaceOrderView is not a function`) | 884 passed |
+| 2 | `SET_PAYMENT_DETAILS_COMPLETE` declines an unchanged value | 1 failed / 885 passed (new object for an unchanged value) | 886 passed |
+| 3 | `shouldCollectOpenpayDeviceData` — the §12b fingerprinting trigger | 9 failed / 886 passed | 895 passed |
+
+The extraction rule is the reason these exist at all. Slice 2 is almost entirely `.tsx`, which this
+repo's runner (`environment: "node"`, no jsdom, no `@testing-library`, Playwright an explicit
+non-goal) cannot load. So every decision went into a module a spec can reach and the components keep
+only rendering and wiring — which is what makes the table above possible rather than a formality.
+
+## Mutation testing — 11 injected, 11 killed
+
+Each mutant was applied to the shipped source, the full suite run, and the source restored.
+
+| Mutant | Rule | Result |
+|---|---|---|
+| M1 | `disabled` drops `\|\| state.placingOrder` | **killed** (1) |
+| M2 | `firstMissingMessage` takes the LAST entry | **killed** (1) |
+| M3 | `total` reads `item_subtotal` instead of `total` | **killed** (1) |
+| M4 | `provisional` hard-coded `false` | **killed** (7 — the whole `selectShippingIsProvisional` suite goes with it) |
+| M5 | currency fallback `""` instead of a currency | **killed** (1) |
+| M6 | currency hard-coded `"mxn"` | **killed** (1) |
+| M7 | `disabled` ignores `missing` entirely | **killed** (2) |
+| N1 | device collection drops the SELECTION condition (i.e. reverts to PR1b) | **killed** (2) |
+| N2 | device collection drops the REGIONAL condition | **killed** (3) |
+| N3 | `\|\|` instead of `&&` between the two | **killed** (5) |
+| N4 | `Boolean(selectedProviderId)` instead of the prefix predicate | **killed** (1) |
+
+M4 and M6 are the two worth naming. M4 proves `selectShippingIsProvisional` genuinely delegates
+rather than keeping a second derivation — the delegation is the point, and a mutant that survived it
+would mean the summary and the CTA could disagree again. M6 proves the currency is read off the cart
+rather than assumed: the store is MXN today, so a hard-coded `"mxn"` passes every fixture that does
+not deliberately use another currency, which is exactly the fixture-shaped false coverage this change
+has now been bitten by three times (M16, finding 3, M-E).
+
+## What landed
+
+| File | Action | What it does |
+|---|---|---|
+| `checkout-reducer.ts` | Modified | `selectPlaceOrderView` — one derivation of disabled / busy / error / total / provisional / missing. `selectShippingIsProvisional` now delegates to it. `SET_PAYMENT_DETAILS_COMPLETE` declines an unchanged value. |
+| `checkout-reducer.spec.ts` | Modified | +216. Nine specs for the view, two for the identity guard. |
+| `checkout-readiness.ts` | Modified | `shouldCollectOpenpayDeviceData` (§12b). |
+| `checkout-readiness.spec.ts` | Modified | +73. Nine specs for the trigger. |
+| `payment-section/index.tsx` | **Created** | *Pago*, single page. Radios, `SELECT_PAYMENT_PROVIDER`, zero network (R5). |
+| `payment-button/index.tsx` | Rewritten | `PlaceOrderButton`. One label. Reads `OpenpayContext` at click time. −216 / +90. |
+| `place-order-bar/index.tsx` | **Created** | `inline` and `sticky`, both from `selectPlaceOrderView`. |
+| `missing-items-list/index.tsx` | **Created** | The itemized `role="status"` list, outside the button. |
+| `legal-notice/index.tsx` | **Created** | The terms copy, verbatim, informational. |
+| `checkout-form/index.tsx` | Modified | Three sections, the notice, both CTA variants. |
+| `payment-container/index.tsx` | Modified | Decorative radio indicator (2c.35). |
+| `common/components/radio/index.tsx` | Modified | `aria-checked={checked}` (2c.35). |
+| `payment-wrapper/index.tsx` + `openpay-wrapper.tsx` | Modified | §12b: scripts wait for the customer's selection; context value memoized. |
+| `lib/constants.tsx` | Modified | 2c.14 — the two comments naming the remaining `isStripeLike` caller. |
+| `payment/index.tsx` | **Deleted** | −377. |
+| `review/index.tsx` | **Deleted** | −57. |
+
+## 2c.19 / 2c.20 — the same-commit constraint, confirmed
+
+`payment/index.tsx` and `review/index.tsx` were deleted in commit **`e57d29e`**, the SAME commit that
+adds `place-order-bar`, `legal-notice`, `payment-section`, `missing-items-list` and the rewritten
+`payment-button`. `git show --stat e57d29e` lists all of them. There is no commit on this branch at
+which the branch has no way to place an order — which was the specific failure the constraint exists
+to prevent, and the one this whole change exists to remove from `main`.
+
+## Line budget (2c.32) — `size:exception` applied
+
+Slice 2 vs `f87178c`: **17 files, +1 101 / −708**. Split: **production +812 / −708**, **spec +289 /
+−0**. The 708 deletions are two whole files (434 lines) plus the 216-line `payment-button` rewrite.
+
+PR2c as a whole (slice 1 + slice 2) vs `main`: **31 files, +7 129 / −892**.
+
+`size:exception` is applied with `design.md` §10's floor justification, unchanged and still correct:
+*"PR2c's floor is set by the CTA: `payment-section`, `payment-button` and `place-order-bar` are one
+flow, and the `review` deletion must land in the same commit as the CTA that replaces it or there is
+a window with no way to place an order."* Slice 2 IS that floor, and it still lands at 1 101 changed
+lines against a 600 budget. §10's estimate of ~1 000 for the whole of PR2c was low by a factor of
+seven once specs are counted — the same 70/30 spec-to-production split PARTs 10 and 11 recorded, and
+for the same reason: a node-only harness buys coverage with spec lines.
+
+## Deviations and corrections — recorded, not absorbed
+
+### 1. `design.md` D7's component tree puts the sticky CTA where Openpay cannot work
+
+D7 renders `<PlaceOrderBar variant="sticky"/>` as a sibling of `CheckoutSummary`, OUTSIDE
+`PaymentWrapper`. `PaymentWrapper` is what supplies `OpenpayContext`, so a CTA there would read the
+DEFAULT context value — `deviceSessionId: null`, a `tokenize` that rejects — and **every Openpay
+charge started from a phone would fail while the desktop one worked.** This is precisely the trap
+slice 1's handoff item 2 warns about, written into the design's own diagram.
+
+Both variants therefore render inside `CheckoutForm`, inside the wrapper. The sticky variant is
+`position: fixed`, so its position in the document has no bearing on where it appears. Nothing else
+about D9 changed.
+
+### 2. D5's four provider labels conflict with S2, and S2 wins
+
+D5 has `isStripeLike / isOpenpay / isMercadopago / isManual` selecting the button's LABEL as well as
+its tail, with a disabled `Selecciona un método de pago` default branch — and the old Mercado Pago
+branch said `Pagar con Mercado Pago`. 2c.24/S2 requires **exactly one order-placement button labelled
+`Realizar pedido`**. Two labels for one button cannot both be true.
+
+One label. "No method chosen" is already reported in the customer's own itemized list as `Elige un
+método de pago.` — the same string `PLACE_ORDER_MESSAGES.providerUnsupported` was pinned to by
+identity in slice 1's remediation, specifically so one condition would stop having two vocabularies.
+The provider tail is still selected per provider; it is selected inside `place-order-flow.ts` by
+`resolvePaymentTail`, where it is spec'd.
+
+### 3. Nothing is pre-selected in *Pago*, which the old component did
+
+`payment/index.tsx:53-56` pre-selected Openpay when it was offered. Not carried over, for two
+reasons. It satisfies the CTA's `payment_method` requirement on the customer's behalf, which is the
+choice-by-default this change removes everywhere else; and under §12b it would start device
+fingerprinting for a customer who never chose Openpay, which is the exact scope expansion §12b exists
+to undo. Cost: one extra click. **This is a behaviour change and belongs in the PR description.**
+
+### 4. 2c.5's "dispatch on `state.selectedPaymentProviderId`" became "do not dispatch at all"
+
+The task's substance — stop reading `cart.payment_collection.payment_sessions[0].provider_id` — is
+met completely, and explore risk **#8 is resolved, not deferred**: the `payment_sessions[0]` vs
+`status === "pending"` asymmetry disappears because nothing in the checkout reads payment sessions
+any more. What replaced it is not a four-way switch on the selection but no switch: the selection
+feeds `getMissingOrderRequirements` (enabled/disabled) and `resolvePaymentTail` (which tail runs),
+both pure, both spec'd.
+
+### 5. `design.md` §12b had no task number, and was implemented anyway
+
+The Openpay fingerprinting trigger is a settled decision in `design.md` §12b and in the PR2c preamble
+of `tasks.md` — *"PR2c must move the trigger to selection"*, *"the payment section owns this
+trigger"* — but it appears under no numbered task, so it was absent from the slice-2 work list. It
+was implemented (commit `b56aa4f`) because the component that owns it is the one this slice creates,
+and leaving it would mean shipping the section that is supposed to carry the gate without the gate.
+**Recorded as a gap in `tasks.md`, not as scope creep.**
+
+The gate is on the SCRIPTS, not on the wrapper mount: gating the mount would swap the element type at
+that position and remount the entire checkout subtree on a payment-method click, throwing away every
+section's local state. The context now memoizes its value, because the wrapper re-renders with the
+selection and would otherwise push a new object at every consumer per keystroke.
+
+### 6. 2c.35 was fixed in both places, not just the one it names
+
+The task names `payment-container`'s radio. The defect lives in the shared
+`common/components/radio`, which hard-codes `aria-checked="true"` — telling a screen-reader user that
+every option in the group is selected — and it has a second live caller, `address-select`. Fixing
+only the named caller would have left the bug live for the other one. So: `payment-container` stops
+using the shared component entirely (it also nested a `<button role="radio">` inside a Headless UI
+radio option, which is its own defect, and `shipping-section` had already set the decorative-indicator
+precedent), and the shared component's `aria-checked` now reflects `checked`.
+
+### 7. One rule added that no task asked for: the reducer declines an unchanged card-completeness value
+
+`OpenpayCardContainer` re-runs its validation effect on every card keystroke and reports
+unconditionally, so a sixteen-digit PAN is sixteen dispatches of which fifteen say nothing new. A
+fresh state object for each re-renders every consumer of `CheckoutStateContext` — both address
+sections, *Envío*, and both CTA variants — once per character. The effect cannot filter this itself
+without subscribing to the state it would filter against. Spec'd on identity (`toBe`), because
+equality would pass for a new object.
+
+## Risks and things left open
+
+1. **`deviceSessionId` now arrives later than it did.** Under PR1b the Openpay SDK loaded at checkout
+   mount; it now loads on selection. The card fields show their existing skeleton until `ready`, so a
+   customer physically cannot type a card before the SDK lands, and the flow fails closed with
+   `PLACE_ORDER_MESSAGES.deviceSessionMissing` rather than charging without a fraud signal. **2c.25's
+   cold-throttled-load check is the one that verifies this, and it now matters more than it did.**
+2. **Two CTA buttons exist in the DOM at once**, one hidden per breakpoint (`hidden small:block` /
+   `small:hidden`). S2 is satisfied per viewport, and both render the same label from the same
+   constant and the same state from the same selector. Distinct testids
+   (`place-order-button-inline` / `place-order-button-sticky`) so QA can tell them apart.
+3. **The gift-card bypass is still unreachable and still carried**, unchanged from PR1b.
+4. **Follow-up (2c.14 / RC-4):** `isStripeLike` and the `pp_stripe_*` / `pp_medusa-*` `paymentInfoMap`
+   entries stay in `lib/constants.tsx`. Checkout has zero references to either after this slice; the
+   one live caller is `modules/order/components/payment-details/index.tsx:31,40,43`, outside scope.
+   Both are now commented in place naming that caller. **Open the follow-up issue with T.5.**
+
+## Manual QA the maintainer still owes — NOTHING in this slice is provable by the runner
+
+Everything below is `MANUAL` by the spec's own verification table, and `sdd-verify` must not claim
+otherwise. This slice is the UI layer; removing or renaming any of its testids breaks zero automated
+tests.
+
+- [ ] **2c.25 — Openpay.** CP → options → method → card → CTA → 3DS → confirmation. Then a rejected
+      card: inline error under the CTA, button re-enabled, `payment_sessions` still **empty**. Then
+      retry: confirm a **NEW** token is requested (single-use; reuse is forbidden). Do the first pass
+      on a **cold, throttled** load — see risk 1.
+- [ ] **2c.26 — Mercado Pago.** CTA → **exactly one** preference created (S8) → `init_point` redirect
+      → return through the failure route → cart and address data intact, **no `?step=` in the URL** →
+      retry mints a fresh preference. Confirm `placeOrder` is **never** called. **Then press Back out
+      of Mercado Pago and confirm the CTA is usable again with no reload** — that is 2c.34's bfcache
+      release, wired at `checkout-context.tsx:384-400`, and it is the only escape from the redirect
+      lock.
+- [ ] **2c.27 — Manual provider**, if enabled in the environment. **If it is not enabled, record that
+      explicitly.** Do not silently skip the gate.
+- [ ] **2c.28 — Mobile.** The sticky bar clears the last form field AND the legal text (the form
+      column reserves `pb-[calc(6rem+env(safe-area-inset-bottom))]`); it respects the iOS home
+      indicator; the bar total equals the `CheckoutSummary` total **with a promotion applied**; the
+      disabled state announces its reasons to a screen reader; the button is ≥ 44 px
+      (`Button size="large"` is `h-12`).
+- [ ] **2c.29 — Browsing creates NO session** (R5, the core claim). Load checkout, select a payment
+      method, change shipping method, apply a promotion. `cart.payment_collection?.payment_sessions`
+      stays **empty** throughout and **no Mercado Pago preference call is made**.
+- [ ] **2c.30 — CTA itemization** (R8 / S9). Empty cart → only `Tu carrito está vacío.` Fill fields
+      one at a time and confirm the list shrinks **in order** and the CTA enables **exactly** when the
+      list empties. Remove the last line item and confirm the CTA reports only the empty-cart message.
+- [ ] **2c.31 — Total-change guard** (2c.8). Force a shipping re-price between render and CTA click;
+      confirm the abort and `El costo de envío cambió. Revisa el total y confirma de nuevo.` rather
+      than a silent charge.
+- [ ] **NEW — §12b.** With Mercado Pago selected and never Openpay, confirm `openpay.v1.min.js` and
+      `openpay-data.v1.min.js` are **never requested** (network tab). Then select Openpay and confirm
+      both load and the card fields go from skeleton to inputs.
+- [ ] **NEW — 2c.35.** With a screen reader, confirm the payment radios announce exactly one selected
+      option rather than all of them.
+- [ ] Everything PARTs 10 and 11 still owe.
+
+## Remaining in PR2c
+
+Only the manual QA above (2c.25–2c.31) and the tracker tasks T.1–T.5. Every buildable task in PR2c is
+now `[x]`.

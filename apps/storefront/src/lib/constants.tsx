@@ -25,6 +25,15 @@ export type PaymentInfo = {
 }
 
 /* Map of payment provider_id to their title and icon. Add in any payment providers you want to use. */
+/**
+ * The `pp_stripe_*` and `pp_medusa-*` entries below are KEPT deliberately
+ * (task 2c.14 / RC-4). `design.md` §0 authorises removing them "once it has no
+ * callers", and that condition is unmet: `modules/order/components/
+ * payment-details/index.tsx:31,40,43` still reads this map and `isStripeLike`
+ * for a placed order's payment row, which is outside this change's scope. The
+ * checkout no longer references either. Follow-up: drop both once the order
+ * module stops reading them.
+ */
 export const paymentInfoMap: Record<string, PaymentInfo> = {
   pp_stripe_stripe: {
     title: "Credit card",
@@ -66,6 +75,11 @@ export const paymentInfoMap: Record<string, PaymentInfo> = {
 }
 
 // This only checks if it is native stripe or medusa payments for card payments, it ignores the other stripe-based providers
+/**
+ * KEPT (task 2c.14 / RC-4). One live caller remains, outside checkout:
+ * `modules/order/components/payment-details/index.tsx:43`. Zero callers in
+ * `modules/checkout` after PR2c. Follow-up: delete with the map entries above.
+ */
 export const isStripeLike = (providerId?: string) => {
   return (
     providerId?.startsWith("pp_stripe_") || providerId?.startsWith("pp_medusa-")
