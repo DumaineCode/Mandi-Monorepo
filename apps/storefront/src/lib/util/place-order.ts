@@ -320,15 +320,25 @@ export const PLACE_ORDER_MESSAGES = {
    * The `deviceSessionId` failure. Openpay's anti-fraud collector populates it
    * at script load, so an absence here means `openpay-data.v1.min.js` has not
    * finished — a cold load on a slow connection, since it mounts at
-   * `strategy="lazyOnload"`. Reloading genuinely fixes it, so the message says
-   * so rather than apologising.
+   * `strategy="lazyOnload"`.
+   *
+   * ## It used to say "Recarga la página", and under §12b that is wrong advice
+   *
+   * This wording was written for the PR1b trigger, where the scripts loaded on
+   * checkout MOUNT — so a reload genuinely restarted the load that had not
+   * finished. §12b moved the trigger to SELECTION: `collectDeviceData` is
+   * `shouldCollectOpenpayDeviceData(...)`, which is false until the customer
+   * picks Openpay. A reload therefore loads NOTHING and returns the customer to
+   * a checkout with no payment method selected, where following the
+   * instruction a second time changes nothing. Waiting a moment is what
+   * actually works, so that is what it now says.
    *
    * The alternative is initiating with `device_session_id: null`, which the
    * task list forbids outright: Openpay would take the charge without its
    * fraud signal.
    */
   deviceSessionMissing:
-    "Todavía estamos preparando el pago seguro. Recarga la página e inténtalo de nuevo.",
+    "Todavía estamos preparando el pago seguro. Espera unos segundos e inténtalo de nuevo.",
   mercadoPagoUnavailable:
     "No pudimos abrir Mercado Pago. Inténtalo de nuevo en un momento.",
   /**

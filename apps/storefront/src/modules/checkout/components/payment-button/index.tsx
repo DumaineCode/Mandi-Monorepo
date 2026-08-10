@@ -8,11 +8,20 @@ import { OpenpayContext } from "../payment-wrapper/openpay-wrapper"
 import { CORAL_CTA } from "../submit-button"
 
 /**
- * The only order-placement label in the storefront (S2, task 2c.24). Exported
- * so the two `PlaceOrderBar` variants cannot drift into two different words for
- * the same action.
+ * The only order-placement label in the storefront (S2, task 2c.24).
+ *
+ * It used to be `export`ed, with a docstring claiming that was what kept the
+ * two `PlaceOrderBar` variants from drifting into two words for one action.
+ * Nothing imported it, and nothing needs to: both variants render THIS
+ * component, and this component renders this constant, so there is exactly one
+ * label by construction rather than by convention. The export was dead public
+ * surface defended by a claim about a drift that cannot happen.
+ *
+ * Kept as a named constant rather than inlined so task 2c.24's static gate —
+ * "exactly one order-placement button, labelled `Realizar pedido`" — has one
+ * literal to grep for.
  */
-export const PLACE_ORDER_LABEL = "Realizar pedido"
+const PLACE_ORDER_LABEL = "Realizar pedido"
 
 /**
  * The single order-placement button (tasks 2c.5, 2c.34).

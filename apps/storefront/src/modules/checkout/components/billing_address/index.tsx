@@ -115,12 +115,21 @@ const BillingAddress = () => {
         required
         data-testid="billing-country-select"
       />
+      {/*
+       * `required`, and it was missing. Amendment A6's own motivation is that
+       * "`city` **and** `province` are required here and were not marked
+       * `required` on the billing form" (`checkout-readiness.ts`), and only
+       * `city` got it. `province` is in `REQUIRED_ADDRESS_FIELDS`, so
+       * `missingBillingFields` blocks the CTA on it — a customer could satisfy
+       * every field the UI asked for and still be refused.
+       */}
       <Input
         label="Estado / Provincia"
         name="billing_address.province"
         autoComplete="address-level1"
         value={billingDraft.province}
         onChange={handleChange}
+        required
         data-testid="billing-province-input"
       />
       <Input
