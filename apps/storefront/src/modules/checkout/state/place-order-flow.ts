@@ -1,5 +1,8 @@
 import type { FreshCartRead } from "@lib/util/cart-address-payload"
-import { getMissingOrderRequirements } from "@lib/util/checkout-readiness"
+import {
+  getMissingOrderRequirements,
+  toReadinessInput,
+} from "@lib/util/checkout-readiness"
 import {
   buildOpenpaySessionData,
   hasTotalChanged,
@@ -12,6 +15,7 @@ import type { OpenpayCardFields } from "@modules/checkout/components/payment-wra
 import type { HttpTypes } from "@medusajs/types"
 
 import {
+  selectReadinessClientInput,
   selectReadinessInput,
   type AddressDraft,
   type CheckoutAction,
@@ -44,14 +48,20 @@ import {
  * ## The order, and why step 1 comes before step 2
  *
  * ```
- * -  cancelAutosave             — close the window before the total is snapshotted
- * 0  canPlaceOrder re-check     — a disabled button is an affordance, not a lock
- * 1  provider pre-flight        — tokenize in the browser; assert deviceSessionId
- * 2  syncCheckoutAddresses      — both addresses, both row ids, via the scheduler
- * 3  total-change guard         — F2 re-prices shipping on any cart write
- * 4  initiatePaymentSession     — the FIRST session this checkout has created
- * 5  provider tail              — complete, or redirect, per provider
+ * -   cancelAutosave            — close the window before the total is snapshotted
+ * 0   canPlaceOrder re-check    — a disabled button is an affordance, not a lock
+ * 1   provider pre-flight       — tokenize in the browser; assert deviceSessionId
+ * 2   syncCheckoutAddresses     — both addresses, both row ids, via the scheduler
+ * 3   total-change guard        — F2 re-prices shipping on any cart write
+ * 3.5 readiness re-check        — step 0 read the CART; step 2 wrote the DRAFT
+ * 4   initiatePaymentSession    — the FIRST session this checkout has created
+ * 5   provider tail             — complete, or redirect, per provider
  * ```
+ *
+ * Step 3.5 is not a duplicate of step 0. Step 0 judges what the customer is
+ * LOOKING at; step 3.5 judges what the flow has just WRITTEN, and the two are
+ * different objects by construction — `cancelAutosave()` above guarantees the
+ * draft reached the cart for the first time in step 2.
  *
  * Step 1 before step 2 is deliberate: a card that fails tokenisation must not
  * have caused a single backend write. Step 2 before step 4 is mandatory: the
@@ -392,6 +402,43 @@ export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
     // summary is showing the new figure by the time the customer reads this.
     if (hasTotalChanged(state.cart?.total, synced.cart)) {
       const error = PLACE_ORDER_MESSAGES.totalChanged
+      deps.dispatch({ type: "PLACE_ORDER_SETTLED", error })
+      return { status: "aborted", error }
+    }
+
+    // ---------------------------------------------------------------------
+    // Step 3.5 — re-check readiness against the cart that was actually WRITTEN.
+    // ---------------------------------------------------------------------
+    //
+    // Step 0 asked the catalogue about `state.cart`. Step 2 sent
+    // `state.draft`. Those are the same object only while the autosave has
+    // caught up — and `cancelAutosave()` at the top of this function
+    // GUARANTEES it has not. `handleChange` in `shipping-address/index.tsx`
+    // mutates the draft on every keystroke with no blur required, so a
+    // customer who selects the phone field, deletes it and presses the CTA
+    // reaches step 0 with the cart's old phone and reaches step 4 with an
+    // empty one. That is deterministic, not a race.
+    //
+    // The consequence is a charge for an order that can never ship: Skydropx
+    // refuses the label with `{"address_to":{"phone":["no puede estar en
+    // blanco"]}}` — the exact post-sale incident whose docstring occupies
+    // `checkout-readiness.ts`. `first_name`, `last_name`, `address_1`,
+    // `phone`, `email` and `company` are all exposed this way. The
+    // quote-relevant fields are not, because clearing them moves
+    // `quoteSignature` and `shipping_method_stale` blocks step 0 — which is
+    // exactly why the hole reads as closed.
+    //
+    // Same catalogue, same wording, same first-entry rule as step 0: no new
+    // vocabulary is introduced for a condition the customer can already read on
+    // the page. The CLIENT half comes from the pre-write snapshot, which is the
+    // set of facts step 0 judged and the set the customer was looking at when
+    // they clicked; only the CART half moves.
+    const stillMissing = getMissingOrderRequirements(
+      toReadinessInput(synced.cart, selectReadinessClientInput(state))
+    )
+
+    if (stillMissing.length > 0) {
+      const error = stillMissing[0].message
       deps.dispatch({ type: "PLACE_ORDER_SETTLED", error })
       return { status: "aborted", error }
     }

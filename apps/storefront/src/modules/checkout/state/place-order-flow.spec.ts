@@ -158,6 +158,16 @@ const harness = (
      * "the flow read the billing draft" vacuous. See {@link BILLING_ADDRESS}.
      */
     billingDraft?: Record<string, string>
+    /**
+     * The SHIPPING form's contents, as the customer currently holds them.
+     *
+     * `initFromServer` derives this from `cart.shipping_address`, so by default
+     * the draft and the cart agree and no test can tell which of the two the
+     * flow read. Overriding it is how a test states that the customer has
+     * edited a field the autosave has not persisted — which is the whole of
+     * the step-3.5 re-check below.
+     */
+    draft?: Record<string, string>
   } = {}
 ) => {
   const cart = options.cart ?? readyCart()
@@ -167,6 +177,13 @@ const harness = (
     customer: null,
     shippingOptions: [],
   })
+
+  if (options.draft) {
+    state = {
+      ...state,
+      draft: { ...state.draft, ...options.draft } as typeof state.draft,
+    }
+  }
 
   const sameAsBilling = options.sameAsBilling ?? true
 
@@ -732,6 +749,159 @@ describe("step 3 — total-change guard", () => {
     await h.flow.place()
 
     expect(h.initiate).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * Step 3.5 — the readiness re-check against the cart that was actually WRITTEN
+ * ---------------------------------------------------------------------------
+ *
+ * ## The gate reads the CART; step 2 writes the DRAFT
+ *
+ * `toReadinessInput` sources the shipping address from `cart.shipping_address`
+ * (`checkout-readiness.ts`), and the reducer defends that on the ground that
+ * "a field the customer has typed but the autosave has not yet persisted is
+ * genuinely not ready". That is sound for ADDING data and inverted for
+ * REMOVING it — and step 2 persists the removal.
+ *
+ * `shipping-address/index.tsx`'s `handleChange` mutates the draft on every
+ * KEYSTROKE, no blur required, and `run` calls `cancelAutosave()` as its first
+ * action, which guarantees the draft is never persisted before step 0 reads
+ * the cart. So this is not a race — it is deterministic.
+ *
+ * The customer: a complete persisted address, the phone field selected and
+ * emptied, then *Realizar pedido*. Step 0 passes on `cart.shipping_address`,
+ * step 2 writes `phone: ""`, and without this re-check step 4 creates the
+ * payment session and the customer is CHARGED for an order Skydropx will
+ * refuse to label — `{"address_to":{"phone":["no puede estar en blanco"]}}`,
+ * the exact post-sale incident `checkout-readiness.ts` records.
+ *
+ * The quote-relevant fields cannot reach this: clearing `postal_code`, `city`,
+ * `province`, `country_code` or `address_2` moves `quoteSignature`, which
+ * clears the selection and raises `shipping_method_stale` at step 0. That
+ * partial protection is exactly why the hole reads as closed.
+ */
+describe("step 3.5 — the post-write readiness re-check", () => {
+  /**
+   * Models step 2 honestly: `syncCheckoutAddresses` sends `state.draft`, so the
+   * cart it returns carries whatever the customer currently holds. A stub that
+   * echoed the PRE-write cart back would make this whole class of defect
+   * invisible, which is how it shipped.
+   */
+  const writesTheDraft = (draft: Record<string, string>) => ({
+    draft,
+    syncAddresses: async () => ({
+      ok: true as const,
+      cart: readyCart({
+        shipping_address: { id: "caaddr_ship", ...ADDRESS, ...draft },
+      }),
+    }),
+  })
+
+  it("aborts before creating a payment session when the write emptied the phone", async () => {
+    const h = harness(writesTheDraft({ phone: "" }))
+
+    const outcome = await h.flow.place()
+
+    expect(outcome.status).toBe("aborted")
+    // Nothing was charged and nothing was created: this is the whole point.
+    expect(h.initiate).not.toHaveBeenCalled()
+    expect(h.placeOrder).not.toHaveBeenCalled()
+    expect(h.navigate).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The FIRST entry from the same catalogue the itemized list renders, so the
+   * customer is not handed a second vocabulary for a condition they can already
+   * read on the page — the same rule step 0 follows.
+   */
+  it("reports the catalogue's own wording and re-enables the button", async () => {
+    const h = harness(writesTheDraft({ phone: "" }))
+
+    const outcome = await h.flow.place()
+
+    expect(outcome.status === "aborted" && outcome.error).toBe(
+      "Falta tu teléfono."
+    )
+    expect(h.readState().error).toBe("Falta tu teléfono.")
+    expect(h.readState().placingOrder).toBe(false)
+  })
+
+  /**
+   * `first_name` is not quote-relevant either, so it reaches step 2 by the same
+   * route. Named separately because a guard that only re-checked `phone` would
+   * pass the test above and still ship an order with no recipient name.
+   */
+  it("catches a cleared name, not just the phone", async () => {
+    const h = harness(writesTheDraft({ first_name: "", last_name: "" }))
+
+    const outcome = await h.flow.place()
+
+    expect(outcome.status).toBe("aborted")
+    expect(outcome.status === "aborted" && outcome.error).toBe(
+      "Completa tu dirección de envío."
+    )
+    expect(h.initiate).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The FIRST entry, not merely "an" entry.
+   *
+   * The catalogue is ordered by page position, so the first entry is the next
+   * thing the customer can act on — and it is the same entry the sticky bar is
+   * showing them. Reporting the last one instead sends them to the bottom of
+   * the form to fix something that is not next. Two requirements have to be
+   * missing at once for the difference to be observable, which is why the
+   * single-field cases above cannot stand in for this one.
+   */
+  it("reports the FIRST missing entry when several are", async () => {
+    const h = harness(writesTheDraft({ phone: "", address_1: "" }))
+
+    const outcome = await h.flow.place()
+
+    // Catalogue order: … phone, shipping_address, colonia, …
+    expect(outcome.status === "aborted" && outcome.error).toBe(
+      "Falta tu teléfono."
+    )
+  })
+
+  /**
+   * The re-check reads the cart the write RETURNED, not the one held in state.
+   * An unchanged address must not cost the customer an extra click, or every
+   * order acquires a spurious second confirmation.
+   */
+  it("lets an unchanged address straight through", async () => {
+    const h = harness(writesTheDraft({}))
+
+    const outcome = await h.flow.place()
+
+    expect(outcome.status).toBe("placed")
+    expect(h.initiate).toHaveBeenCalledTimes(1)
+  })
+
+  /**
+   * Ordering. The total-change guard runs FIRST, so a write that both re-priced
+   * shipping and emptied a field reports the total — the thing the customer
+   * must confirm before anything else is worth telling them.
+   */
+  it("runs after the total-change guard", async () => {
+    const h = harness({
+      draft: { phone: "" },
+      syncAddresses: async () => ({
+        ok: true as const,
+        cart: readyCart({
+          total: 1250,
+          shipping_address: { id: "caaddr_ship", ...ADDRESS, phone: "" },
+        }),
+      }),
+    })
+
+    const outcome = await h.flow.place()
+
+    expect(outcome.status === "aborted" && outcome.error).toBe(
+      "El costo de envío cambió. Revisa el total y confirma de nuevo."
+    )
   })
 })
 

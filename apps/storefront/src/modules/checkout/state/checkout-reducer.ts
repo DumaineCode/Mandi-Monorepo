@@ -7,6 +7,7 @@ import {
   toReadinessInput,
   type MissingRequirement,
   type OrderReadinessInput,
+  type ReadinessClientInput,
 } from "@lib/util/checkout-readiness"
 import {
   buildQuoteSignature,
@@ -1352,22 +1353,24 @@ export function selectPlaceOrderView(state: CheckoutState): PlaceOrderView {
 }
 
 /**
- * The adapter into the CTA predicate.
+ * The CLIENT half of the readiness input — everything the customer holds on
+ * screen, with no cart in it.
  *
- * Built from the CART and not from the draft, deliberately: the cart is what
- * gets ordered, so a field the customer has typed but the autosave has not yet
- * persisted is genuinely not ready. The 400 ms debounce keeps the lag short.
+ * Named and exported so the cart half can be varied while this one cannot
+ * drift. `place-order-flow.ts` re-runs the catalogue against the cart the
+ * address write actually RETURNED (step 3.5), and it has to ask the identical
+ * client questions step 0 asked, or the two gates would disagree about the same
+ * checkout for reasons that have nothing to do with the cart. A second copy of
+ * this object literal is precisely the defect class this change is about.
  *
- * `canPlaceOrder` is NOT re-derived anywhere in this module — it is defined as
- * the emptiness of `getMissingOrderRequirements`, and a second copy is how the
- * button and its explanation drift apart.
- *
- * @see `modules/checkout/components/place-order-bar` — PR2c, first consumer.
+ * @see {@link selectReadinessInput} — the same fields against `state.cart`.
+ * @see `modules/checkout/state/place-order-flow.ts` — the same fields against
+ * the post-write cart.
  */
-export function selectReadinessInput(
+export function selectReadinessClientInput(
   state: CheckoutState
-): OrderReadinessInput {
-  return toReadinessInput(state.cart, {
+): ReadinessClientInput {
+  return {
     selectedShippingOptionId: state.selectedShippingOptionId,
     selectionSignature: state.selectionSignature,
     currentQuoteSignature: state.quoteSignature,
@@ -1380,5 +1383,35 @@ export function selectReadinessInput(
      */
     sameAsBilling: state.sameAsBilling,
     billingDraft: state.billingDraft,
-  })
+  }
+}
+
+/**
+ * The adapter into the CTA predicate.
+ *
+ * Built from the CART and not from the draft, deliberately: the cart is what
+ * gets ordered, so a field the customer has typed but the autosave has not yet
+ * persisted is genuinely not ready. The 400 ms debounce keeps the lag short.
+ *
+ * ## What that reasoning does NOT cover, and who closes it
+ *
+ * It is sound for ADDING data and inverted for REMOVING it. A customer who
+ * empties a field the cart still holds is reported ready by this input, and the
+ * CTA's own step 2 then persists the emptying — so the order is placed against
+ * an address that no longer satisfies the catalogue. This selector is not the
+ * place to fix that: at RENDER time the draft genuinely is unsaved, and gating
+ * the button on it would block a customer mid-keystroke. The rule is re-run
+ * against the WRITTEN cart in `place-order-flow.ts` step 3.5, which is the
+ * first moment the two can be compared honestly.
+ *
+ * `canPlaceOrder` is NOT re-derived anywhere in this module — it is defined as
+ * the emptiness of `getMissingOrderRequirements`, and a second copy is how the
+ * button and its explanation drift apart.
+ *
+ * @see `modules/checkout/components/place-order-bar` — PR2c, first consumer.
+ */
+export function selectReadinessInput(
+  state: CheckoutState
+): OrderReadinessInput {
+  return toReadinessInput(state.cart, selectReadinessClientInput(state))
 }
