@@ -604,6 +604,46 @@ describe("initFromServer", () => {
     expect(baseState().draft.postal_code).toBe("06700")
   })
 
+  /**
+   * The failed-payment return (judgment-day finding 7).
+   *
+   * A customer arriving from a declined 3DS challenge or an abandoned Mercado
+   * Pago checkout has to be told SOMETHING, or the only reading of the screen
+   * is "my click didn't register" and their retry costs a second authorization
+   * hold. `checkout/page.tsx` decides WHETHER via `selectCheckoutEntryError`;
+   * this is the seat the answer lands in, and it is the same `state.error` the
+   * place-order flow writes — one channel, one `ErrorMessage`, cleared by the
+   * same `PLACE_ORDER_STARTED`.
+   */
+  it("seeds an entry error so a failed payment return says something", () => {
+    const state = initFromServer({
+      cart: cartWith({}),
+      customer: null,
+      shippingOptions: [],
+      error: "Tu pago no se completó.",
+    })
+
+    expect(state.error).toBe("Tu pago no se completó.")
+  })
+
+  it("carries no error on an ordinary entry", () => {
+    expect(baseState().error).toBeNull()
+  })
+
+  /** The retry clears it — a stale decline must not sit over a fresh attempt. */
+  it("clears the entry error when the next attempt starts", () => {
+    const entered = initFromServer({
+      cart: cartWith({}),
+      customer: null,
+      shippingOptions: [],
+      error: "Tu pago no se completó.",
+    })
+
+    expect(
+      checkoutReducer(entered, { type: "PLACE_ORDER_STARTED" }).error
+    ).toBeNull()
+  })
+
   it("seeds the selection from the cart and does not mark it stale", () => {
     const state = baseState({
       shipping_methods: [{ shipping_option_id: "so_std" }],

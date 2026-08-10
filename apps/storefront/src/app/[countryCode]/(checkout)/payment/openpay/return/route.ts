@@ -18,13 +18,20 @@ import { NextRequest, NextResponse } from "next/server"
 
 /**
  * `step=review` is gone with the four-step checkout; `error=payment_failed`
- * STAYS.
+ * STAYS, and it is now READ.
  *
- * Surfacing that parameter to the customer is an explicit non-goal, so it is
- * still produced and still read by nothing. Dropping it would destroy signal for
- * free — it is the only marker distinguishing "came back from a failed 3DS
- * challenge" from "navigated to checkout" in an access log, and the follow-up
- * that surfaces it needs the parameter to already be there.
+ * Surfacing it was an explicit non-goal for most of this change, so it was
+ * produced and consumed by nothing. That was defensible while `?step=`
+ * deadlocked the checkout anyway — the customer could not have acted on the
+ * message. It stopped being defensible in the slice that starts taking money:
+ * a customer landing here from a declined 3DS challenge saw a pristine
+ * checkout, read it as "my click didn't register", and retried — which is a
+ * SECOND authorization hold on the same card.
+ *
+ * `checkout/page.tsx` now reads it through `selectCheckoutEntryError` and seeds
+ * `state.error`. The parameter's value must stay exactly `payment_failed`:
+ * that rule matches on the literal and deliberately refuses anything else,
+ * because the query string is attacker-controlled.
  */
 const failureRedirect = (request: NextRequest, countryCode: string) =>
   NextResponse.redirect(

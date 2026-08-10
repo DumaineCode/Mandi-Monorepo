@@ -3,6 +3,7 @@ import { retrieveCustomer } from "@lib/data/customer"
 import { listCartShippingMethods } from "@lib/data/fulfillment"
 import { listCartPaymentMethods } from "@lib/data/payment"
 import { getProviderConfig } from "@lib/data/provider-config"
+import { selectCheckoutEntryError } from "@lib/util/place-order"
 import ItemsPreviewTemplate from "@modules/cart/templates/preview"
 import PaymentWrapper from "@modules/checkout/components/payment-wrapper"
 import { CheckoutProvider } from "@modules/checkout/state/checkout-context"
@@ -15,7 +16,11 @@ export const metadata: Metadata = {
   title: "Checkout",
 }
 
-export default async function Checkout() {
+export default async function Checkout({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}) {
   const cart = await retrieveCart()
 
   if (!cart) {
@@ -48,6 +53,25 @@ export default async function Checkout() {
     listCartShippingMethods(cart.id),
     listCartPaymentMethods(cart.region?.id ?? ""),
   ])
+
+  /**
+   * The `?error=payment_failed` both payment-return routes have always set, and
+   * which nothing has ever read.
+   *
+   * A customer whose 3DS challenge declined, or who abandoned Mercado Pago,
+   * landed here on a pristine checkout with nothing to explain it — so the only
+   * available reading was "my click didn't register", and the retry cost them a
+   * SECOND authorization hold. The decision is
+   * `selectCheckoutEntryError`, in a module a spec can contradict; this is
+   * wiring. It seeds the same `state.error` the place-order flow writes, so
+   * there is one channel for "why you have not been charged" and
+   * `PLACE_ORDER_STARTED` clears it on the next attempt.
+   *
+   * Surfacing this parameter was recorded as a NON-GOAL (`proposal.md` §4,
+   * `design.md` §13, `tasks.md`). Deliberately overridden in this slice, which
+   * is the one that starts taking money — see `apply-progress.md` PART 13.
+   */
+  const entryError = selectCheckoutEntryError(await searchParams)
 
   return (
     <div
@@ -92,6 +116,7 @@ export default async function Checkout() {
           cart,
           customer,
           shippingOptions: shippingOptions ?? [],
+          error: entryError,
         }}
       >
         {/* No `cart` prop: under C1 the wrapper mounts from provider config and

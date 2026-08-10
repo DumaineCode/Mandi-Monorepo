@@ -179,6 +179,18 @@ export type CheckoutInit = {
   cart: HttpTypes.StoreCart | null
   customer: HttpTypes.StoreCustomer | null
   shippingOptions: HttpTypes.StoreCartShippingOption[] | null
+  /**
+   * An error the checkout is ENTERED with, rather than one it produced.
+   *
+   * The only producer is `selectCheckoutEntryError`, which reads
+   * `?error=payment_failed` — the parameter both payment-return routes have
+   * always set and nothing has ever read. It lands in the same `state.error`
+   * the place-order flow writes, and is therefore rendered by the same
+   * `ErrorMessage` beside the CTA and cleared by the same
+   * `PLACE_ORDER_STARTED`. One channel for "why you have not been charged",
+   * not two.
+   */
+  error?: string | null
 }
 
 export type CheckoutAction =
@@ -479,7 +491,12 @@ export function initFromServer(init: CheckoutInit): CheckoutState {
     paymentDetailsComplete: false,
     placingOrder: false,
 
-    error: null,
+    /**
+     * Normally `null`. Non-null only when the customer arrived from a failed
+     * 3DS challenge or an abandoned Mercado Pago checkout — see
+     * `CheckoutInit.error` and `selectCheckoutEntryError`.
+     */
+    error: init.error ?? null,
   }
 }
 

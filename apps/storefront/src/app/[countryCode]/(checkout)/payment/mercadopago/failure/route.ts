@@ -10,9 +10,12 @@ import { NextRequest, NextResponse } from "next/server"
  * authorize here); this route only navigates.
  *
  * `step=payment` is gone with the four-step checkout; `error=payment_failed`
- * STAYS. Surfacing it to the customer is an explicit non-goal, so it is still
- * produced and still read by nothing — but dropping it would destroy signal for
- * free, and the follow-up that surfaces it needs the parameter to already exist.
+ * STAYS, and it is now READ. `checkout/page.tsx` passes it through
+ * `selectCheckoutEntryError` and seeds `state.error`, so a customer who
+ * abandoned or was rejected by Mercado Pago is told why they are back here
+ * instead of reading the return as a click that never registered. The value
+ * must stay exactly `payment_failed` — that rule matches on the literal and
+ * refuses anything else, because the query string is attacker-controlled.
  */
 export async function GET(
   request: NextRequest,

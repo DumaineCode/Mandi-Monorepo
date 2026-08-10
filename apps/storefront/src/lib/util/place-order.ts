@@ -341,5 +341,75 @@ export const PLACE_ORDER_MESSAGES = {
    */
   providerUnsupported: MISSING_REQUIREMENT_MESSAGES.payment_method,
   addressSyncFailed: "No pudimos guardar tus datos. Inténtalo de nuevo.",
+  /**
+   * The customer came back from a declined 3DS challenge or from Mercado Pago
+   * without paying. See {@link selectCheckoutEntryError}.
+   *
+   * It deliberately does NOT say "no se te cobró nada". For Openpay an
+   * authorization hold may genuinely exist on the card, and reassuring the
+   * customer otherwise is worse than saying nothing — they would stop looking
+   * at their statement. What IS knowable is the order outcome, so that is what
+   * it states, followed by what to do next.
+   */
+  paymentFailed:
+    "Tu pago no se completó y no se creó ningún pedido. Revisa tu método de pago e inténtalo de nuevo.",
   generic: "No pudimos completar tu pedido. Inténtalo de nuevo.",
 } as const
+
+/**
+ * The error to seed into `state.error` when the checkout is ENTERED, from the
+ * page's query string.
+ *
+ * ## The customer this exists for
+ *
+ * `payment/openpay/return/route.ts` and `payment/mercadopago/failure/route.ts`
+ * both redirect to `/{cc}/checkout?error=payment_failed`, and until this
+ * function existed that parameter had zero readers anywhere under
+ * `(checkout)/`. A customer whose 3DS challenge declined therefore landed on a
+ * PRISTINE checkout — shipping restored, no error, no spinner,
+ * `selectedPaymentProviderId: null`, CTA disabled beside "Elige un método de
+ * pago." The only available reading of that screen is "my click didn't
+ * register", so they re-select, re-enter the card and click again. On Openpay
+ * that is a SECOND authorization hold on the same card, which on a Mexican
+ * debit card is real money frozen.
+ *
+ * ## This is an explicit NON-GOAL being overridden, not overlooked
+ *
+ * `proposal.md` §4, `design.md` §13 and `tasks.md` both record "making
+ * `error=payment_failed` visible to the customer" as out of scope, and the
+ * return routes' own docstrings say so. That was defensible while `?step=`
+ * deadlocked the page anyway: the customer could not have acted on the message.
+ * It stops being defensible in the slice that starts taking money, where the
+ * inline decline path (`settleFailed` → `state.error`) is excellent and this
+ * one — the one that involves the customer's bank — says nothing at all.
+ * Recorded as a deliberate override in `apply-progress.md`, not absorbed.
+ *
+ * ## Closed set, never an echo
+ *
+ * The parameter is attacker-controlled — it sits in a URL anyone can send to
+ * anyone. This function only ever SELECTS from strings the storefront owns. A
+ * version that rendered the parameter would let a crafted link place arbitrary
+ * text above the customer's card form, which is a phishing surface at the exact
+ * moment they are typing a PAN. Matching is exact: no trimming, no
+ * case-folding, no prefix match.
+ *
+ * The array shape is handled because Next hands a repeated query parameter back
+ * as one, and `?error=x&error=payment_failed` is trivially constructible.
+ *
+ * Pure, and in this module rather than in `checkout/page.tsx`, because that
+ * file is a `.tsx` the node runner cannot load — a rule left there is a rule
+ * nothing can contradict.
+ */
+export function selectCheckoutEntryError(
+  searchParams:
+    | Record<string, string | string[] | undefined>
+    | null
+    | undefined
+): string | null {
+  const raw = searchParams?.error
+  const values = Array.isArray(raw) ? raw : raw === undefined ? [] : [raw]
+
+  return values.includes("payment_failed")
+    ? PLACE_ORDER_MESSAGES.paymentFailed
+    : null
+}

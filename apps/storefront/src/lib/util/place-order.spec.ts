@@ -7,6 +7,7 @@ import {
   hasTotalChanged,
   PLACE_ORDER_MESSAGES,
   resolvePaymentTail,
+  selectCheckoutEntryError,
   selectMercadoPagoInitPoint,
   selectOpenpayRedirectUrl,
   shouldReleasePlaceOrderLock,
@@ -555,5 +556,86 @@ describe("place-order copy", () => {
       expect(message.trim()).toBe(message)
       expect(message.endsWith(".")).toBe(true)
     }
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * selectCheckoutEntryError — the failed-payment return (judgment-day finding 7)
+ * ---------------------------------------------------------------------------
+ *
+ * ## The customer this exists for
+ *
+ * `payment/openpay/return/route.ts` and `payment/mercadopago/failure/route.ts`
+ * both redirect to `/{cc}/checkout?error=payment_failed`. Until now that
+ * parameter had ZERO readers anywhere under `(checkout)/`. So a customer whose
+ * 3DS challenge declined landed on a pristine checkout: shipping restored, no
+ * error, no spinner, `selectedPaymentProviderId: null`, CTA disabled beside
+ * "Elige un método de pago."
+ *
+ * The only available reading of that screen is "my click didn't register", so
+ * they re-select, re-enter the card and click again — which on Openpay is a
+ * SECOND authorization hold on the same card, and on a Mexican debit card that
+ * is real money frozen.
+ *
+ * ## Why it is a pure rule and not an `if` in the page
+ *
+ * `checkout/page.tsx` is a `.tsx` the node runner cannot load. A rule left
+ * there is a rule nothing can contradict — the failure mode this change has
+ * been bitten by four times.
+ */
+describe("selectCheckoutEntryError", () => {
+  it("reports the failure the return routes signal", () => {
+    expect(selectCheckoutEntryError({ error: "payment_failed" })).toBe(
+      PLACE_ORDER_MESSAGES.paymentFailed
+    )
+  })
+
+  it("says nothing on an ordinary checkout entry", () => {
+    expect(selectCheckoutEntryError({})).toBeNull()
+    expect(selectCheckoutEntryError(undefined)).toBeNull()
+  })
+
+  /**
+   * The parameter is attacker-controlled: it is in a URL anyone can send to
+   * anyone. This function may only ever select from a closed set of strings the
+   * storefront owns — NEVER echo what it was given. A version that rendered the
+   * parameter would let a link put arbitrary text above the customer's card
+   * form, which is a phishing surface at the exact moment they are typing a PAN.
+   */
+  it("never echoes the parameter back at the customer", () => {
+    const injected = "Tu banco requiere que llames al 800-000-0000"
+
+    expect(selectCheckoutEntryError({ error: injected })).toBeNull()
+    expect(selectCheckoutEntryError({ error: "PAYMENT_FAILED" })).toBeNull()
+    expect(selectCheckoutEntryError({ error: "payment_failed " })).toBeNull()
+  })
+
+  /**
+   * Next hands a repeated query parameter back as an array. `?error=x&error=y`
+   * is trivially constructible, so the array shape is not exotic — and a
+   * `String(value) === "payment_failed"` implementation would answer `false`
+   * for `["payment_failed"]` and silently drop the one case that matters.
+   */
+  it("handles the repeated-parameter array shape", () => {
+    expect(selectCheckoutEntryError({ error: ["payment_failed"] })).toBe(
+      PLACE_ORDER_MESSAGES.paymentFailed
+    )
+    expect(
+      selectCheckoutEntryError({ error: ["something_else", "payment_failed"] })
+    ).toBe(PLACE_ORDER_MESSAGES.paymentFailed)
+    expect(selectCheckoutEntryError({ error: [] })).toBeNull()
+  })
+
+  /**
+   * It must not claim no money moved — an Openpay authorization hold may
+   * genuinely exist and telling the customer otherwise is worse than saying
+   * nothing. It states the ORDER outcome, which is knowable, and what to do.
+   */
+  it("states the order outcome without claiming nothing was charged", () => {
+    const message = PLACE_ORDER_MESSAGES.paymentFailed
+
+    expect(message).toContain("no se completó")
+    expect(message).not.toMatch(/no se (te )?(realizó|hizo|cobró)/i)
   })
 })
