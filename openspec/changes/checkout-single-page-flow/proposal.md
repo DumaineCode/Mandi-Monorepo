@@ -85,7 +85,7 @@ This is stated as a deliverable shape, not as an implementation design. `sdd-des
 ### Non-goals (recorded, deliberately not solved here)
 
 - **Reducing or restructuring form fields.** R7.
-- **Making `error=payment_failed` visible.** No component reads `searchParams.get("error")` today (`explore §1`); the param is silently dropped. The return routes must be edited anyway because they write `?step=`, but the edit is limited to removing the step parameter. Surfacing the error to the customer is a separate change.
+- ~~**Making `error=payment_failed` visible.**~~ **RETIRED in PR2c slice 2 (task 2c.43).** This non-goal assumed the checkout stayed silent for the customer either way — true while the `?step=` deadlock (the bug this change fixes) blocked every checkout regardless. Once the CTA works, a returning failed-payment customer who sees nothing retries and risks a second authorization hold. `selectCheckoutEntryError` now surfaces it as an inline error.
 - **Fixing the `payment-button` `payment_sessions[0]` vs `status === "pending"` inconsistency** (`explore` risk #8) — **except** where R5 forces touching that dispatch path. In that case the change stays minimal and is explicitly noted for follow-up.
 - **Adding jsdom / @testing-library / Playwright to `apps/storefront`.** That is its own scoped change with its own review cost.
 - **Backend changes of any kind.** This change is storefront-only.

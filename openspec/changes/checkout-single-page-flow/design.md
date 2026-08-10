@@ -568,7 +568,7 @@ with `isStripeLike / isOpenpay / isMercadopago / isManual` (`lib/constants.tsx:6
 
 `payment/mercadopago/failure/route.ts:19` redirects to `?step=payment&error=payment_failed`. It becomes `/{cc}/checkout?error=payment_failed`. The customer lands on the single-page checkout, the cart is untouched, the address draft rehydrates from `cart.shipping_address` (persisted by autosave — R6 pays for itself here), and the CTA is immediately usable for a retry. Under R5 there is no dead session and no stale `init_point`: the next CTA click mints a fresh preference.
 
-`error=payment_failed` is preserved but still read by nothing — surfacing it is an explicit non-goal. Dropping the parameter would destroy signal for free, so it stays.
+`error=payment_failed` is preserved and now read: `selectCheckoutEntryError` (`lib/util/place-order.ts`) seeds it into `state.error` via `CheckoutInit` (`checkout/page.tsx:74,119`), and the CTA surfaces it exactly like an inline decline. **Amendment (PR2c slice 2, task 2c.43):** the original non-goal below was written when `?step=` deadlocked the whole page, so the customer could not have acted on the message either way — a silent parameter cost nothing then. It costs a second authorization hold now that the CTA actually works, so the non-goal is retired.
 
 ---
 
@@ -894,7 +894,7 @@ All four decisions were put to the user and answered. `sdd-tasks` must treat the
 Still open, unchanged:
 
 - `retrieveCart`'s own `force-cache`-with-possibly-empty-tag issue is **out of scope** here and recorded as a follow-up.
-- `error=payment_failed` remains read by nothing — unchanged non-goal.
+- `error=payment_failed` remains read by nothing — unchanged non-goal. **RETIRED in PR2c slice 2 (task 2c.43)**: a returning failed-payment customer now sees an inline error instead of a silent checkout. See §5 Edge case 5.
 
 ---
 
