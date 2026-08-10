@@ -243,7 +243,43 @@ export const OpenpayCardContainer = ({
             payment method.
           </Text>
         ) : ready ? (
-          <div className="my-4 flex flex-col gap-y-2 transition-all duration-150 ease-in-out">
+          <div
+            className="my-4 flex flex-col gap-y-2 transition-all duration-150 ease-in-out"
+            /**
+             * The card form is a text-entry region nested inside a
+             * `RadioGroup`, and Headless UI's group handler does not look at
+             * `event.target`.
+             *
+             * `@headlessui/react@2.2.9` attaches `onKeyDown` to the RadioGroup
+             * ROOT (`payment-section/index.tsx` renders it; these inputs are
+             * children of a `Radio` inside it) and switches on `event.key`
+             * alone. `ArrowLeft`/`ArrowUp` and `ArrowRight`/`ArrowDown` call
+             * `preventDefault()`, `stopPropagation()`, move focus to the
+             * neighbouring row and fire `change(value)`. `Space` does the same
+             * to the currently focused option. React dispatches from its root
+             * container during the native bubble phase, so that
+             * `preventDefault()` lands before the browser's default action.
+             *
+             * Two customer-visible consequences, both at the moment of
+             * purchase. Pressing the left arrow to correct a digit in the PAN
+             * does not move the caret — it selects Mercado Pago instead, which
+             * unmounts this form and discards everything typed into it. And
+             * the space bar does nothing in "Nombre en la tarjeta", so
+             * `JUAN PÉREZ` becomes `JUANPÉREZ` — which still passes
+             * `holderName.trim().length > 0` and is tokenized and sent to the
+             * issuer as the cardholder name.
+             *
+             * Stopping the SYNTHETIC event here keeps it from reaching the
+             * group's handler while leaving the inputs' own default behaviour
+             * intact. Radio navigation still works everywhere else in the
+             * group, because nothing outside this div is a text field.
+             *
+             * NOT reachable by this repo's runner — `environment: "node"`, no
+             * jsdom, no `@testing-library`. Verified by manual QA; see task
+             * 2c.36 in `tasks.md` for the exact steps.
+             */
+            onKeyDown={(event) => event.stopPropagation()}
+          >
             <Text className="txt-medium-plus text-ui-fg-base mb-1">
               Enter your card details:
             </Text>

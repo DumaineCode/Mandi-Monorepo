@@ -503,6 +503,20 @@ Floor is the CTA: `payment-section`, `payment-button` and `place-order-bar` are 
 
 ---
 
+## PR2c slice 2 remediation — judgment-day findings
+
+Two blind adversarial reviewers each returned NOT SAFE TO MERGE on a *different* CRITICAL. Fixes and their verification are recorded in `apply-progress.md` PART 13. Everything below that is **MANUAL QA is blocking merge** — the runner is `environment: "node"` with no jsdom and no `@testing-library`, so none of it is reachable by a spec and none of it may be signed off from code reading.
+
+- [x] **2c.36 — CRITICAL, fixed.** The gate read the CART, step 2 wrote the DRAFT. `apps/storefront/src/lib/util/checkout-readiness.ts:729` (`toReadinessInput` → `cart?.shipping_address`) vs `apps/storefront/src/modules/checkout/state/place-order-flow.ts:275,371` (`cancelAutosave()` first, then `state.draft` written). A customer who emptied `phone`, `first_name`, `last_name`, `address_1`, `email` or `company` and pressed the CTA was charged for an order Skydropx can never label. Closed by step 3.5, which re-runs `getMissingOrderRequirements` against the cart the write returned. Covered by `place-order-flow.spec.ts` → *step 3.5 — the post-write readiness re-check* (6 cases, 5 mutants killed). **Automated — no manual QA owed.**
+- [ ] **2c.37 — CRITICAL / MANUAL QA (blocking merge).** The card form sits inside a Headless UI `RadioGroup` that swallows Space and hijacks the arrow keys. Fixed at `apps/storefront/src/modules/checkout/components/payment-container/index.tsx:246` (`onKeyDown` → `stopPropagation` on the card-fields wrapper). Verified against `@headlessui/react@2.2.9`'s `radio-group.js`, whose root `onKeyDown` switches on `event.key` with no `event.target` check. **Not reachable by the node runner.** Verify on a real desktop browser AND a real phone:
+  1. Select *Tarjeta de crédito/débito*.
+  2. In **Nombre en la tarjeta**, type `JUAN PEREZ` **with the space bar**. The space MUST appear. Before the fix it did not, and the mangled `JUANPEREZ` was tokenized and sent to the issuer.
+  3. In **Número de tarjeta**, type a full PAN, then press **←** and **→**. The caret MUST move inside the field. The selected payment method MUST stay on Openpay and the card form MUST NOT unmount.
+  4. Press **↑** and **↓** inside the PAN, the expiry and the CVV. Same expectation.
+  5. Move focus OUT of the card form onto a payment-method row and press **↑**/**↓**. Radio navigation between methods MUST still work — the fix must not have disabled it.
+
+---
+
 ## Tracker merge
 
 - [ ] **T.1** With PR1b → PR2c all merged into `feat/checkout-single-page-flow`, re-run `cd apps/storefront && pnpm test` and `pnpm build` on the tracker.
