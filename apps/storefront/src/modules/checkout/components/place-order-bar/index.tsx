@@ -42,16 +42,35 @@ const PlaceOrderBar = ({ variant }: { variant: "inline" | "sticky" }) => {
 
   if (variant === "inline") {
     return (
-      <div className="hidden small:block" data-testid="place-order-inline">
-        {button}
-        <ErrorMessage
-          error={view.error}
-          data-testid="place-order-error-message"
-        />
+      <div data-testid="place-order-inline">
         {/*
-         * EVERY unmet requirement, in catalogue order (2c.15). The desktop
-         * column has the room, and this is the list the sticky bar's single
-         * line points back at.
+         * The BUTTON is desktop-only. Below `small` the sticky bar is the CTA,
+         * and two `Realizar pedido` buttons on one screen would contradict S2.
+         */}
+        <div className="hidden small:block">
+          {button}
+          <ErrorMessage
+            error={view.error}
+            data-testid="place-order-error-message"
+          />
+        </div>
+
+        {/*
+         * EVERY unmet requirement, in catalogue order (2c.15) — at EVERY
+         * viewport, which is the correction.
+         *
+         * This whole block used to be `hidden small:block`, and `small` is
+         * 1024 px (`tailwind.config.js`), so the complete list was
+         * `display: none` at precisely the widths where the sticky bar renders
+         * and where it is the only CTA. Spec *Mobile Renders a Sticky Bottom
+         * CTA Bar* says "the complete itemized list renders in the page flow
+         * above the CTA", and the sticky bar's own docstring pointed here — a
+         * customer on a phone missing `phone` + `colonia` + `payment_method`
+         * saw one sentence, fixed it, saw a second appear, and so on. R8/S9
+         * itemization was undelivered on the majority-traffic viewport.
+         *
+         * This instance is the live region at every viewport; the bar's line is
+         * `announce={false}` so the same sentence is not read twice.
          */}
         <MissingItemsList
           items={view.missing}
@@ -130,9 +149,12 @@ const PlaceOrderBar = ({ variant }: { variant: "inline" | "sticky" }) => {
        * ONE line, not the whole list (D9): a fixed bar on a small viewport
        * cannot grow to four items without covering the form behind it. It is
        * the FIRST entry because the catalogue is ordered by page position, so
-       * the first entry is the next thing the customer can act on. The complete
-       * list renders in page flow above — `MissingItemsList` in the form
-       * column on mobile, and the inline variant on desktop.
+       * the first entry is the next thing the customer can act on.
+       *
+       * The complete list renders in page flow above, in the `inline` variant
+       * — which now renders its list at EVERY viewport. It used to be
+       * `hidden small:block` in its entirety, and `small` is 1024 px, so that
+       * claim was false at exactly the widths where this bar exists.
        *
        * `view.firstMissing` and NOT a `.slice(0, 1)` here. The selector already
        * makes this decision, in a module a spec can load; re-deriving it in
@@ -142,6 +164,7 @@ const PlaceOrderBar = ({ variant }: { variant: "inline" | "sticky" }) => {
       <MissingItemsList
         items={view.firstMissing ? [view.firstMissing] : []}
         className="mt-2"
+        announce={false}
         data-testid="place-order-sticky-missing-item"
       />
     </div>

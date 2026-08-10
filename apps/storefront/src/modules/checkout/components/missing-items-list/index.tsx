@@ -32,15 +32,32 @@ import type { MissingRequirement } from "@lib/util/checkout-readiness"
 const MissingItemsList = ({
   items,
   className,
+  announce = true,
   "data-testid": dataTestId,
 }: {
   items: readonly MissingRequirement[]
   className?: string
+  /**
+   * Whether this instance is the live region for its viewport.
+   *
+   * Exactly one must be, and on mobile there are now two instances: the
+   * complete list in page flow (R8 / S9) and the sticky bar's single-line
+   * echo of its first entry (D9). Announcing both would read the same sentence
+   * twice, the second time as a strict prefix of the first. The IN-FLOW list
+   * keeps the live region because it is the complete one; the bar's line is a
+   * visual restatement for the sighted customer whose full list has scrolled
+   * off screen.
+   *
+   * On desktop the sticky bar does not render at all, so the in-flow list is
+   * the only instance either way.
+   */
+  announce?: boolean
   "data-testid"?: string
 }) => (
   <div
-    role="status"
-    aria-live="polite"
+    {...(announce
+      ? { role: "status" as const, "aria-live": "polite" as const }
+      : { "aria-hidden": true as const })}
     className={className}
     data-testid={dataTestId}
   >

@@ -514,6 +514,12 @@ Two blind adversarial reviewers each returned NOT SAFE TO MERGE on a *different*
   3. In **Número de tarjeta**, type a full PAN, then press **←** and **→**. The caret MUST move inside the field. The selected payment method MUST stay on Openpay and the card form MUST NOT unmount.
   4. Press **↑** and **↓** inside the PAN, the expiry and the CVV. Same expectation.
   5. Move focus OUT of the card form onto a payment-method row and press **↑**/**↓**. Radio navigation between methods MUST still work — the fix must not have disabled it.
+- [ ] **2c.38 — MAJOR / MANUAL QA (blocking merge).** The complete itemized list rendered at no viewport where the sticky bar exists. `apps/storefront/src/modules/checkout/components/place-order-bar/index.tsx:45` was `hidden small:block` and `small` is `1024px` (`apps/storefront/tailwind.config.js:83`), so the list the sticky bar's docstring pointed at was `display: none` on every phone. Fixed by moving the `hidden small:block` onto the BUTTON only, so the list renders at every width; the bar's single line is now `announce={false}` so the same sentence is not read twice. **Verify on a real phone:**
+  1. Reach checkout with `phone`, `colonia` and `payment_method` all missing at once.
+  2. All three sentences MUST be visible in page flow above the sticky bar, in catalogue order. The bar MUST show only the first.
+  3. With VoiceOver/TalkBack on, satisfy one requirement. The list MUST be announced **once**, not twice.
+  4. Confirm there is exactly ONE `Realizar pedido` button on screen at mobile width (S2) and exactly one at desktop width.
+- [ ] **2c.39 — SPEC/DESIGN CONFLICT, recorded not resolved (blocking merge — needs a product answer, per RC-1 the spec owns the WHAT).** `specs/storefront-checkout/spec.md` scenario *The last form field is reachable* requires "the legal text **and the in-flow CTA** are visible above the sticky bar, not underneath it". `design.md` D9 and task 2c.17 require the opposite — the in-flow CTA is desktop-only (`hidden small:block`) and the bar MUST NOT render on desktop, so the two CTAs never coexist. As built, the in-flow CTA is not visible on mobile at any scroll position, which makes that scenario literally unsatisfiable. 2c.38 fixed the itemized-list half of the same sentence and deliberately did **not** touch the CTA half, because rendering a second `Realizar pedido` on mobile would contradict S2 / 2c.24 ("exactly one order-placement button"). **Decide which of the three the product wants and amend the losing document — do not let the implementation pick.**
 
 ---
 
