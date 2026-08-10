@@ -94,7 +94,15 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
         )}
         {...props}
       >
-        {isLoading ? "Loading..." : children}
+        {/*
+          Spanish, because this REPLACES the button's own label while a request
+          is in flight — including `Realizar pedido` for the one to three
+          seconds an Openpay tokenize plus address sync plus session creation
+          takes. An English word appearing on a Mexican checkout at the moment
+          of purchase is the same defect `billing_address/index.tsx` names: a
+          page that switches language halfway down is not a thing to preserve.
+        */}
+        {isLoading ? "Procesando..." : children}
       </button>
     )
   }

@@ -70,6 +70,18 @@ export const paymentInfoMap: Record<string, PaymentInfo> = {
   pp_mercadopago_mercadopago: {
     title: "Mercado Pago",
     icon: <MercadoPagoLogo />,
+    /**
+     * The off-site warning, and it is not decoration.
+     *
+     * This tail does not call `placeOrder`: it navigates the browser to
+     * `init_point`, a hosted Checkout Pro page on another origin. Openpay's row
+     * shows its card fields inline, so that customer can see what they are
+     * getting; this row had a title, a logo and nothing else, so pressing a
+     * button labelled *Realizar pedido* silently sent the customer to a
+     * different site — the single most alarming thing a checkout can do to
+     * someone about to pay.
+     */
+    caption: "Continúas en el sitio de Mercado Pago para completar tu pago",
   },
   // Add more payment providers here
 }

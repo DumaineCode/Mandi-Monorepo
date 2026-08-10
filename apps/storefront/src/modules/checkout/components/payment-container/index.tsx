@@ -192,11 +192,11 @@ export const OpenpayCardContainer = ({
     const holderValid = holderName.trim().length > 0
 
     if (digits.length >= MIN_PAN_DIGITS && !numberValid) {
-      setError("Invalid card number")
+      setError("Número de tarjeta inválido")
     } else if (expiry.length >= EXPIRY_INPUT_LENGTH && !expiryValid) {
-      setError("Invalid expiration date")
+      setError("Fecha de vencimiento inválida")
     } else if (cvv2.length >= MIN_CVV_LENGTH && !cvvValid) {
-      setError("Invalid security code")
+      setError("Código de seguridad inválido")
     } else {
       setError(null)
     }
@@ -239,8 +239,8 @@ export const OpenpayCardContainer = ({
             className="txt-medium text-ui-fg-subtle my-4"
             data-testid="openpay-unavailable-message"
           >
-            Card payments are temporarily unavailable. Please choose another
-            payment method.
+            Los pagos con tarjeta no están disponibles en este momento. Elige
+            otro método de pago.
           </Text>
         ) : ready ? (
           <div
@@ -281,14 +281,14 @@ export const OpenpayCardContainer = ({
             onKeyDown={(event) => event.stopPropagation()}
           >
             <Text className="txt-medium-plus text-ui-fg-base mb-1">
-              Enter your card details:
+              Ingresa los datos de tu tarjeta:
             </Text>
             <input
               type="text"
               inputMode="numeric"
               autoComplete="cc-number"
-              placeholder="Card number"
-              aria-label="Card number"
+              placeholder="Número de tarjeta"
+              aria-label="Número de tarjeta"
               className={cardInputClasses}
               value={cardNumber}
               onChange={(e) => setCardNumber(formatCardNumber(e.target.value))}
@@ -298,8 +298,8 @@ export const OpenpayCardContainer = ({
             <input
               type="text"
               autoComplete="cc-name"
-              placeholder="Name on card"
-              aria-label="Name on card"
+              placeholder="Nombre en la tarjeta"
+              aria-label="Nombre en la tarjeta"
               className={cardInputClasses}
               value={holderName}
               onChange={(e) => setHolderName(e.target.value)}
@@ -310,8 +310,8 @@ export const OpenpayCardContainer = ({
                 type="text"
                 inputMode="numeric"
                 autoComplete="cc-exp"
-                placeholder="MM/YY"
-                aria-label="Expiration date (MM/YY)"
+                placeholder="MM/AA"
+                aria-label="Fecha de vencimiento (MM/AA)"
                 className={cardInputClasses}
                 value={expiry}
                 onChange={(e) => setExpiry(formatExpiry(e.target.value))}
@@ -323,7 +323,7 @@ export const OpenpayCardContainer = ({
                 inputMode="numeric"
                 autoComplete="cc-csc"
                 placeholder="CVV"
-                aria-label="Security code"
+                aria-label="Código de seguridad"
                 className={cardInputClasses}
                 value={cvv2}
                 onChange={(e) => setCvv2(e.target.value.replace(/\D/g, ""))}
