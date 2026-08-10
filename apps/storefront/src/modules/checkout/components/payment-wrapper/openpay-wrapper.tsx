@@ -96,14 +96,45 @@ export type OpenpayContextValue = {
   setCardData: (card: OpenpayCardFields | null) => void
 }
 
-export const OpenpayContext = createContext<OpenpayContextValue>({
+/**
+ * What a consumer reads OUTSIDE `OpenpayWrapper`, and it fails CLOSED.
+ *
+ * ## The state this describes is reachable in production
+ *
+ * `getProviderConfig()` returns `{ openpay: null }` on any failure, and
+ * `PaymentWrapper` then renders `<div>{children}</div>` with no provider at
+ * all. `PaymentSection` still renders the Openpay row, because it reads
+ * `availablePaymentMethods` — a different source, answered by
+ * `listCartPaymentMethods`, which succeeded. So `OpenpayCardContainer` mounts
+ * and reads this object.
+ *
+ * `unavailable` was `false` here, which is a claim that Openpay might still
+ * become ready. Outside the provider it cannot: there is no `<Script>`, no
+ * `deviceData.setup()`, nothing that could ever flip `ready`. The container's
+ * branch is `unavailable ? message : ready ? form : skeleton`, so the customer
+ * got `<SkeletonCardDetails />` FOREVER — no timeout — with the CTA disabled
+ * beside "Completa los datos de tu tarjeta.", pointing at a card form that does
+ * not exist. The `openpay-unavailable-message` written for exactly this case
+ * could not render, because the default failed open on the one field that
+ * selects it.
+ *
+ * Same principle as `isOpenpayOffered` and `hasShippingMethod`: absence of
+ * evidence is not evidence of availability. Named and exported so a spec can
+ * hold it — see `openpay-wrapper.spec.ts`; almost nothing else in this file is
+ * reachable from a node runner.
+ */
+export const OPENPAY_CONTEXT_DEFAULT: OpenpayContextValue = {
   ready: false,
-  unavailable: false,
+  unavailable: true,
   deviceSessionId: null,
   tokenize: () => Promise.reject(new Error("Openpay is not initialized")),
   cardData: null,
   setCardData: () => {},
-})
+}
+
+export const OpenpayContext = createContext<OpenpayContextValue>(
+  OPENPAY_CONTEXT_DEFAULT
+)
 
 const OPENPAY_CORE_SRC = "https://js.openpay.mx/openpay.v1.min.js"
 const OPENPAY_DATA_SRC = "https://js.openpay.mx/openpay-data.v1.min.js"
