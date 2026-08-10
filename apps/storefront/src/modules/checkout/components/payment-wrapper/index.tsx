@@ -1,7 +1,11 @@
 "use client"
 
-import { isOpenpayOffered } from "@lib/util/checkout-readiness"
+import {
+  isOpenpayOffered,
+  shouldCollectOpenpayDeviceData,
+} from "@lib/util/checkout-readiness"
 import type { HttpTypes } from "@medusajs/types"
+import { useCheckoutState } from "@modules/checkout/state/checkout-context"
 import React from "react"
 import OpenpayWrapper, { type OpenpayPublicConfig } from "./openpay-wrapper"
 
@@ -104,13 +108,40 @@ const PaymentWrapper: React.FC<PaymentWrapperProps> = ({
   const openpayOffered = isOpenpayOffered(availablePaymentMethods)
 
   /**
+   * The §12b trigger: the SCRIPTS wait for the customer to pick Openpay.
+   *
+   * Read here rather than inside `OpenpayWrapper` so the wrapper stays a
+   * presentation-free host with no knowledge of checkout state. This component
+   * re-renders per keystroke as a result, which costs nothing: `children` is a
+   * stable element created by the server component above, so React skips the
+   * subtree, and the wrapper memoizes its context value.
+   */
+  const { selectedPaymentProviderId } = useCheckoutState()
+
+  const collectDeviceData = shouldCollectOpenpayDeviceData(
+    availablePaymentMethods,
+    selectedPaymentProviderId
+  )
+
+  /**
    * `configMissing` short-circuit preserved: `getProviderConfig` returns
    * `{ openpay: null }` rather than throwing on any failure
    * (`provider-config.ts:83-89`), and `OpenpayWrapper` degrades to `unavailable`
    * when merchantId/publicKey are absent.
+   *
+   * The MOUNT gate is unchanged from PR1b — belt and braces. The scripts are
+   * now gated twice over, and a future relaxation of either gate alone still
+   * cannot start collection.
    */
   if (openpayConfig && openpayOffered) {
-    return <OpenpayWrapper config={openpayConfig}>{children}</OpenpayWrapper>
+    return (
+      <OpenpayWrapper
+        config={openpayConfig}
+        collectDeviceData={collectDeviceData}
+      >
+        {children}
+      </OpenpayWrapper>
+    )
   }
 
   return <div>{children}</div>

@@ -9,6 +9,7 @@ import {
   isOpenpayOffered,
   isOpenpayProviderId,
   missingBillingFields,
+  shouldCollectOpenpayDeviceData,
   MISSING_REQUIREMENT_MESSAGES,
   OPENPAY_PROVIDER_ID_PREFIX,
   toReadinessInput,
@@ -295,6 +296,78 @@ describe("isOpenpayOffered", () => {
     ).not.toThrow()
     expect(isOpenpayOffered([{ id: undefined }, { id: null }])).toBe(false)
   })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * shouldCollectOpenpayDeviceData (`design.md` §12b, PR2c)
+ * ---------------------------------------------------------------------------
+ *
+ * The trigger for Openpay's device-fingerprinting collector, moved from
+ * "checkout mount" to "the customer picked Openpay".
+ *
+ * `isOpenpayOffered` alone scoped collection to regions where Openpay is
+ * purchasable, which still fingerprinted everyone who opened the page and paid
+ * with Mercado Pago, or abandoned. §12b settles that only customers who
+ * actually choose to pay by card through Openpay may be profiled — LFPDPPP
+ * jurisdiction, and the scope expansion was decided inside a refactor rather
+ * than deliberately.
+ *
+ * Both conditions, and the AND between them, are the rule. Dropping either one
+ * is a silent widening of who gets fingerprinted, which is exactly the class of
+ * change nobody notices in review.
+ */
+describe("shouldCollectOpenpayDeviceData", () => {
+  const provider = (id: string) => ({ id })
+  const offered = [provider(MERCADOPAGO), provider(OPENPAY)]
+
+  it("is true once the customer has picked Openpay in a region that offers it", () => {
+    expect(shouldCollectOpenpayDeviceData(offered, OPENPAY)).toBe(true)
+  })
+
+  /**
+   * The case §12b is about. Openpay is on offer and the page is open; nobody
+   * has chosen anything. Under the PR1b gate this returned true.
+   */
+  it("is false while no payment method has been chosen", () => {
+    expect(shouldCollectOpenpayDeviceData(offered, null)).toBe(false)
+    expect(shouldCollectOpenpayDeviceData(offered, "")).toBe(false)
+    expect(shouldCollectOpenpayDeviceData(offered, undefined)).toBe(false)
+  })
+
+  it("is false for a customer paying with another provider", () => {
+    expect(shouldCollectOpenpayDeviceData(offered, MERCADOPAGO)).toBe(false)
+    expect(shouldCollectOpenpayDeviceData(offered, MANUAL)).toBe(false)
+  })
+
+  /**
+   * The PR1b condition survives, and it is not redundant. A provider id is
+   * client state: it arrives from a radio group and could be set to an Openpay
+   * id in a region where Openpay is not purchasable — by a stale restore, or by
+   * anyone with devtools. Collection must still refuse.
+   */
+  it("is false when Openpay is not offered for the cart's region", () => {
+    expect(
+      shouldCollectOpenpayDeviceData([provider(MERCADOPAGO)], OPENPAY)
+    ).toBe(false)
+  })
+
+  /** Fails closed on a failed lookup, exactly as the mount gate does. */
+  it.each([
+    ["null (the lookup failed)", null],
+    ["undefined (no prop passed)", undefined],
+  ])("is false without throwing for %s", (_label, methods) => {
+    expect(() => shouldCollectOpenpayDeviceData(methods, OPENPAY)).not.toThrow()
+    expect(shouldCollectOpenpayDeviceData(methods, OPENPAY)).toBe(false)
+  })
+
+  /** Prefix, never containment — a look-alike must not start collection. */
+  it.each(["pp_evil_pp_openpay_x", "pp_openpayments_foo", "pp_openpay"])(
+    "is false for a look-alike selection %j",
+    (id) => {
+      expect(shouldCollectOpenpayDeviceData([provider(id)], id)).toBe(false)
+    }
+  )
 })
 
 describe("getMissingOrderRequirements", () => {

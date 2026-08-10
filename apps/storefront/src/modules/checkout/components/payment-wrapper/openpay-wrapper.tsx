@@ -1,7 +1,13 @@
 "use client"
 
 import Script from "next/script"
-import React, { createContext, useCallback, useEffect, useState } from "react"
+import React, {
+  createContext,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react"
 
 /**
  * Card fields collected by OpenpayCardContainer. These values live ONLY in
@@ -109,11 +115,24 @@ type OpenpayWrapperProps = {
    * component. `null`/missing → graceful degradation (card payments disabled).
    */
   config?: OpenpayPublicConfig | null
+  /**
+   * Whether the customer has chosen to pay through Openpay (`design.md` §12b).
+   *
+   * Gates the SCRIPTS, not the provider. The context is mounted either way, so
+   * flipping this cannot remount the checkout subtree underneath it — a remount
+   * here would throw away every section's local state on a payment-method
+   * click.
+   *
+   * The decision itself is `shouldCollectOpenpayDeviceData`, in a module a spec
+   * can load. This prop is wiring.
+   */
+  collectDeviceData?: boolean
   children: React.ReactNode
 }
 
 const OpenpayWrapper: React.FC<OpenpayWrapperProps> = ({
   config,
+  collectDeviceData = false,
   children,
 }) => {
   const [coreLoaded, setCoreLoaded] = useState(false)
@@ -188,42 +207,58 @@ const OpenpayWrapper: React.FC<OpenpayWrapperProps> = ({
     [ready]
   )
 
+  /**
+   * Memoized, which it was not before and now has to be.
+   *
+   * This component re-renders whenever the selected provider moves, and the
+   * selection lives in a context that churns per keystroke. An unmemoized value
+   * would push a new object at every `OpenpayContext` consumer — the card
+   * container and the CTA — on every character typed anywhere in the checkout.
+   */
+  const value = useMemo(
+    () => ({
+      ready,
+      unavailable,
+      deviceSessionId,
+      tokenize,
+      cardData,
+      setCardData,
+    }),
+    [ready, unavailable, deviceSessionId, tokenize, cardData]
+  )
+
   return (
-    <OpenpayContext.Provider
-      value={{ ready, unavailable, deviceSessionId, tokenize, cardData, setCardData }}
-    >
+    <OpenpayContext.Provider value={value}>
       {/* WHEN THESE LOAD, AND WHAT THEY COLLECT.
-
-          Neither half of what this comment used to say is true any more, and it
-          said the opposite of the truth on both counts. It claimed the scripts
-          load "ONLY while an Openpay session is active on the payment step".
-          There is no payment step (R5/C1 collapsed checkout to one page), and
-          the mount no longer looks at payment sessions at all.
-
-          What actually happens: `payment-wrapper/index` mounts this wrapper
-          from provider configuration plus regional availability, and it wraps
-          the whole checkout form. So both scripts begin loading on CHECKOUT
-          MOUNT — as soon as the page renders, before the customer has entered
-          an address, chosen a provider, or committed to paying anything.
 
           `openpay.v1.min.js` is the tokenization SDK. `openpay-data.v1.min.js`
           is NOT: it is Openpay's antifraud DEVICE-FINGERPRINTING collector. On
           load, `handleDataScriptLoaded` calls `deviceData.setup()`, which
-          profiles the browser and returns a device session id that identifies
-          this device to Openpay. That collection used to begin only after a
-          customer reached the payment step and an Openpay session existed —
-          i.e. after they had chosen Openpay. It now begins for every visitor
-          who opens checkout in a region where Openpay is on offer.
+          profiles the browser and returns a device session id identifying this
+          device to Openpay.
 
-          `strategy="lazyOnload"` defers this past hydration. It does not make
-          it conditional; it only makes it late. The ONLY thing that scopes this
-          collection is the mount gate in `payment-wrapper/index`, which is why
-          that gate checks regional availability and not just merchant keys.
+          Neither loads until `collectDeviceData` is true, which per
+          `design.md` §12b means the customer has SELECTED Openpay as their
+          payment method — not merely opened the checkout. PR1b scoped this to
+          regions where Openpay is purchasable, which still profiled every
+          visitor who paid with Mercado Pago or abandoned. The rule is
+          `shouldCollectOpenpayDeviceData`, in `lib/util/checkout-readiness.ts`
+          where a spec can contradict it; this is the wire.
 
-          Anything that widens where this wrapper mounts widens who gets
-          fingerprinted. Treat this as a data-collection boundary, not a script
-          tag. */}
-      {!configMissing && (
+          `strategy="lazyOnload"` defers past hydration. It does not make the
+          load conditional; it only makes it late. The gate is what makes it
+          conditional.
+
+          The cost is a short pending state on the card fields while the SDK
+          arrives — the container already renders its skeleton until `ready`, so
+          the customer cannot type a card before it lands. That is the trade
+          §12b accepts. Treat this as a data-collection boundary, not a script
+          tag: anything that widens `collectDeviceData` widens who is profiled.
+
+          The CONTEXT still mounts unconditionally, and must. Gating the
+          provider instead of the scripts would remount the whole checkout
+          subtree on a payment-method click. */}
+      {collectDeviceData && !configMissing && (
         <Script
           src={OPENPAY_CORE_SRC}
           strategy="lazyOnload"

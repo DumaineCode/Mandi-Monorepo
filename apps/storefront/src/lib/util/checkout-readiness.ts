@@ -102,6 +102,43 @@ export const isOpenpayOffered = (
   paymentMethods.some((method) => isOpenpayProviderId(method?.id))
 
 /**
+ * Whether Openpay's device-fingerprinting collector may run
+ * (`design.md` §12b, PR2c).
+ *
+ * ## The trigger moved, and this is the rule it moved to
+ *
+ * `openpay-data.v1.min.js` is not the tokenization SDK; it is an antifraud
+ * collector that profiles the browser on load. Under PR1b it started for every
+ * visitor who opened `/checkout` in a region where Openpay was purchasable —
+ * including everyone who went on to pay with Mercado Pago, and everyone who
+ * abandoned. The user's settled decision is narrower: only customers who
+ * actually choose to pay by card through Openpay may be profiled.
+ *
+ * So collection now requires BOTH facts, and the conjunction is the point.
+ * {@link isOpenpayOffered} answers "is Openpay purchasable on this cart" and is
+ * kept because a provider id is CLIENT state — a stale restore or a devtools
+ * edit could select Openpay in a region that does not offer it, and collection
+ * must still refuse. The selection answers "did this customer ask for it".
+ * Dropping either one silently widens who gets fingerprinted, which is the kind
+ * of change that passes review unnoticed.
+ *
+ * Extracted rather than inlined for the same reason `isOpenpayOffered` was: its
+ * call site is a `.tsx`, this project's runner is node-only, and a rule left in
+ * a component is a rule nothing can contradict. This one decides whether a
+ * third party profiles a customer's device.
+ *
+ * What this does NOT change is C1: the wrapper still does not depend on a
+ * payment session existing, which is what makes R5 possible. The trigger moved
+ * from "checkout mount" to "method selected", both of which happen before the
+ * CTA. The card fields show their pending skeleton while the scripts load.
+ */
+export const shouldCollectOpenpayDeviceData = (
+  paymentMethods: readonly { id?: string | null }[] | null | undefined,
+  selectedProviderId: string | null | undefined
+): boolean =>
+  isOpenpayOffered(paymentMethods) && isOpenpayProviderId(selectedProviderId)
+
+/**
  * The catalogue. Nine codes, ordered top-to-bottom by page position so the
  * itemized list matches the order the customer will read (R8 / S9).
  *
