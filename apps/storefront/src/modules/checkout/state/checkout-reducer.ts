@@ -5,6 +5,7 @@ import {
 import {
   getMissingOrderRequirements,
   toReadinessInput,
+  type MissingRequirement,
   type OrderReadinessInput,
 } from "@lib/util/checkout-readiness"
 import {
@@ -1256,9 +1257,82 @@ export function selectWriteBaseCart(
  * @see `modules/checkout/templates/checkout-summary/index.tsx` — the consumer.
  */
 export function selectShippingIsProvisional(state: CheckoutState): boolean {
-  return getMissingOrderRequirements(selectReadinessInput(state)).some(
-    (requirement) => requirement.code === "shipping_method_stale"
-  )
+  return selectPlaceOrderView(state).provisional
+}
+
+/**
+ * Everything the final CTA renders — one derivation, three consumers.
+ *
+ * @see `modules/checkout/components/place-order-bar` — both variants.
+ * @see `modules/checkout/components/missing-items-list` — the itemized list.
+ */
+export type PlaceOrderView = {
+  /** Every unmet requirement, in catalogue order (R8 / S9). */
+  missing: MissingRequirement[]
+  /** The sticky bar's single line (D9). `null` when nothing is missing. */
+  firstMissingMessage: string | null
+  /** The `disabled` attribute for BOTH CTA variants. */
+  disabled: boolean
+  /** An attempt is in flight — the button's loading affordance. */
+  placing: boolean
+  /** The inline message under the CTA. */
+  error: string | null
+  /** `cart.total`, the field `CartTotals` renders. `null` before the cart resolves. */
+  total: number | null
+  currencyCode: string
+  /** D4: the total is de-emphasised rather than presented as final. */
+  provisional: boolean
+}
+
+/**
+ * The single source for the CTA's rendered state (tasks 2c.15–2c.17).
+ *
+ * ## Why this is a selector and not three components each working it out
+ *
+ * `PlaceOrderBar` renders twice — `inline` on desktop, `sticky` on mobile (D9)
+ * — and `MissingItemsList` renders the same catalogue a third time. All three
+ * are `.tsx` files, which this repo's node-only runner cannot load, so any rule
+ * left inside them is a rule nothing can contradict. Three independent
+ * derivations of "is the button disabled" and "what is the total" is three
+ * chances for the mobile bar to be enabled while the desktop one is not, or for
+ * the bar's total to disagree with the summary's.
+ *
+ * ## Every field is a definition, not a second opinion
+ *
+ * - `disabled` is the emptiness of `missing` OR an attempt already running. It
+ *   is never a re-reading of the conditions `getMissingOrderRequirements`
+ *   already checked; that copy is exactly how a button and its explanation
+ *   drift apart.
+ * - `provisional` is the PRESENCE of `shipping_method_stale` in the very list
+ *   the bar is rendering, which is why {@link selectShippingIsProvisional}
+ *   delegates here rather than deriving it a second time.
+ * - `total` is `cart.total` — the same field `CartTotals` renders — because the
+ *   spec requires the bar and the summary to be incapable of disagreeing.
+ *
+ * `placing` is the AFFORDANCE. The authoritative re-entrancy lock is a
+ * synchronous closure flag inside `place-order-flow.ts`, because this value
+ * reaches the button through a ref that lags by one commit.
+ */
+export function selectPlaceOrderView(state: CheckoutState): PlaceOrderView {
+  const missing = getMissingOrderRequirements(selectReadinessInput(state))
+
+  return {
+    missing,
+    firstMissingMessage: missing.length > 0 ? missing[0].message : null,
+    disabled: missing.length > 0 || state.placingOrder,
+    placing: state.placingOrder,
+    error: state.error,
+    total: state.cart?.total ?? null,
+    /**
+     * `"mxn"` and not `""`: `convertToLocale` falls back to a BARE NUMBER when
+     * the currency code is empty, so a cart fetched without `currency_code`
+     * would put an unlabelled figure next to a purchase button.
+     */
+    currencyCode: state.cart?.currency_code ?? "mxn",
+    provisional: missing.some(
+      (requirement) => requirement.code === "shipping_method_stale"
+    ),
+  }
 }
 
 /**
