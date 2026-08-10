@@ -116,6 +116,7 @@ export type MissingRequirementCode =
   | "shipping_address"
   | "colonia"
   | "billing_address"
+  | "billing_address_incomplete"
   | "shipping_method"
   | "shipping_method_stale"
   | "payment_method"
@@ -148,6 +149,13 @@ export const MISSING_REQUIREMENT_MESSAGES: Record<
   shipping_address: "Completa tu dirección de envío.",
   colonia: "Elige tu colonia.",
   billing_address: "Falta tu dirección de facturación.",
+  /**
+   * The BASE of a composed message, and the only entry in this catalogue that
+   * is not the whole string the customer reads. `buildBillingIncompleteMessage`
+   * appends the field list; called with no fields it returns exactly this, so
+   * the catalogue is still the single source of the wording.
+   */
+  billing_address_incomplete: "Completa tu dirección de facturación.",
   shipping_method: "Elige un método de envío.",
   shipping_method_stale:
     "Vuelve a elegir el método de envío: cambiaste el código postal.",
@@ -173,6 +181,32 @@ const REQUIRED_ADDRESS_FIELDS = [
   "province",
   "country_code",
 ] as const
+
+/** A field the billing address must carry. @see {@link missingBillingFields} */
+export type BillingRequiredField = (typeof REQUIRED_ADDRESS_FIELDS)[number]
+
+/**
+ * What each billing field is CALLED to the customer (Amendment A6, task 2c.33).
+ *
+ * Lower-case because they are spliced into a sentence, not used as headings,
+ * and worded to match the labels on the billing form rather than the API field
+ * names — a customer told `country_code` is missing has been handed our schema
+ * instead of an instruction.
+ *
+ * `address_1` is `calle y número` and not `dirección`, because the form already
+ * uses `Dirección` for that input while the section heading is also
+ * "Dirección de facturación"; repeating it would name the section rather than
+ * the field.
+ */
+export const BILLING_FIELD_LABELS: Record<BillingRequiredField, string> = {
+  first_name: "nombre",
+  last_name: "apellido",
+  address_1: "calle y número",
+  postal_code: "código postal",
+  city: "ciudad",
+  province: "estado",
+  country_code: "país",
+}
 
 export type ReadinessAddressSnapshot = {
   first_name?: string | null
@@ -204,6 +238,19 @@ export type OrderReadinessInput = {
    * See {@link toReadinessInput} for the deadlock that made it one.
    */
   hasBillingAddress: boolean
+  /**
+   * WHICH billing fields are absent, in catalogue order (Amendment A6).
+   *
+   * Only read when {@link hasBillingAddress} is `false`, and only to choose
+   * between the two mutually exclusive billing codes and compose the message.
+   * Optional so every existing caller and fixture keeps meaning what it meant:
+   * absent behaves as "we were not told", which reports the undifferentiated
+   * `billing_address` — the pre-A6 behaviour.
+   *
+   * It cannot contradict {@link hasBillingAddress}, because
+   * {@link toReadinessInput} derives BOTH from {@link missingBillingFields}.
+   */
+  billingMissingFields?: readonly BillingRequiredField[]
   /** Whether `cart.shipping_methods` carries a row. Server-side fact. */
   hasShippingMethod: boolean
   /**
@@ -256,9 +303,76 @@ const isAbsent = (value: string | null | undefined): boolean =>
 export function billingDraftIsComplete(
   draft: ReadinessAddressSnapshot | null | undefined
 ): boolean {
-  return (
-    !!draft && REQUIRED_ADDRESS_FIELDS.every((field) => !isAbsent(draft[field]))
-  )
+  return missingBillingFields(draft).length === 0
+}
+
+/**
+ * WHICH billing fields are still absent, in catalogue order (Amendment A6,
+ * task 2c.33).
+ *
+ * ## Why this exists and `billingDraftIsComplete` alone did not
+ *
+ * A5 made billing readiness a client fact and closed the deadlock, but it left
+ * the customer who unchecks "misma dirección de facturación" and mistypes one
+ * field reading `Falta tu dirección de facturación.` beside a nine-input form
+ * and a CTA that will not move. Shipping does better than that — it splits
+ * `phone` and `colonia` out of the generic address message precisely so the
+ * customer is told which single control to fix — and billing had no equivalent.
+ *
+ * Two of those inputs made it worse than merely vague: `city` and `province`
+ * are required here and were not marked `required` on the billing form, and
+ * there is no `<form>` left to run native validation anyway. A customer could
+ * satisfy every field the UI asked for and still be refused.
+ *
+ * ## One rule, two shapes
+ *
+ * `billingDraftIsComplete` is DEFINED as the emptiness of this list, the same
+ * way `canPlaceOrder` is defined as the emptiness of
+ * {@link getMissingOrderRequirements}. A second derivation is how the boolean
+ * that blocks the CTA and the list that explains it come to disagree.
+ *
+ * Order is significant: the message reads as a list the customer scans against
+ * the form, so it runs in the same direction the form does.
+ */
+export function missingBillingFields(
+  draft: ReadinessAddressSnapshot | null | undefined
+): BillingRequiredField[] {
+  return REQUIRED_ADDRESS_FIELDS.filter((field) => isAbsent(draft?.[field]))
+}
+
+/**
+ * Joins field labels the way Spanish reads them: `a`, `a y b`, `a, b y c`.
+ *
+ * No `y` → `e` rule before an i-/hi- sound, deliberately. The label set is
+ * fixed and closed ({@link BILLING_FIELD_LABELS}) and not one of its seven
+ * entries begins with one, so the rule would be a branch no input can reach —
+ * i.e. a branch no test can prove and no reviewer can check. Adding a label
+ * that needs it is a change to this function, and the labels live next to it.
+ */
+const joinLabels = (labels: readonly string[]): string =>
+  labels.length <= 1
+    ? labels.join("")
+    : `${labels.slice(0, -1).join(", ")} y ${labels[labels.length - 1]}`
+
+/**
+ * The `billing_address_incomplete` message, naming the fields.
+ *
+ * With no fields it returns the bare catalogue entry, which is what keeps
+ * {@link MISSING_REQUIREMENT_MESSAGES} the single source of the wording: this
+ * function only ever APPENDS.
+ */
+export function buildBillingIncompleteMessage(
+  fields: readonly BillingRequiredField[]
+): string {
+  const base = MISSING_REQUIREMENT_MESSAGES.billing_address_incomplete
+
+  if (fields.length === 0) {
+    return base
+  }
+
+  return `${base} Falta: ${joinLabels(
+    fields.map((field) => BILLING_FIELD_LABELS[field])
+  )}.`
 }
 
 /**
@@ -272,6 +386,16 @@ export function getMissingOrderRequirements(
   input: OrderReadinessInput
 ): MissingRequirement[] {
   const codes: MissingRequirementCode[] = []
+
+  /**
+   * Messages that are COMPOSED rather than looked up, keyed by their code.
+   *
+   * Exactly one entry is possible today (`billing_address_incomplete`, A6). It
+   * is a map rather than a local so the return statement stays one expression
+   * and the catalogue lookup remains the default for every other code — a
+   * composed message is an exception, and it should have to say so.
+   */
+  const composed = new Map<MissingRequirementCode, string>()
 
   /**
    * `cart_empty` short-circuits everything else. Listing "falta tu teléfono" to
@@ -357,7 +481,37 @@ export function getMissingOrderRequirements(
   }
 
   if (!input.hasBillingAddress) {
-    codes.push("billing_address")
+    /**
+     * ## Two codes, one slot (Amendment A6, task 2c.33)
+     *
+     * NOTHING typed is a different problem from a TYPO, and telling both
+     * customers the same sentence serves neither. An untouched form gets
+     * `billing_address` — naming all seven fields at someone who has not
+     * started is a wall rather than help. A form with something in it gets
+     * `billing_address_incomplete`, which names what is left.
+     *
+     * Mutually exclusive and in the same position, exactly like
+     * `shipping_method` / `shipping_method_stale`, so the ordered list the
+     * customer scans keeps one line for billing either way.
+     *
+     * An ABSENT field list falls to `billing_address`. That is the pre-A6
+     * behaviour and it is the right default: a caller that did not say which
+     * fields are missing has not established that any particular one is.
+     */
+    const missingFields = input.billingMissingFields ?? []
+
+    if (
+      missingFields.length > 0 &&
+      missingFields.length < REQUIRED_ADDRESS_FIELDS.length
+    ) {
+      codes.push("billing_address_incomplete")
+      composed.set(
+        "billing_address_incomplete",
+        buildBillingIncompleteMessage(missingFields)
+      )
+    } else {
+      codes.push("billing_address")
+    }
   }
 
   if (!input.hasShippingMethod) {
@@ -474,7 +628,10 @@ export function getMissingOrderRequirements(
     }
   }
 
-  return codes.map(toRequirement)
+  return codes.map((code) => ({
+    code,
+    message: composed.get(code) ?? MISSING_REQUIREMENT_MESSAGES[code],
+  }))
 }
 
 const toRequirement = (code: MissingRequirementCode): MissingRequirement => ({
@@ -563,6 +720,16 @@ export function toReadinessInput(
      */
     hasBillingAddress:
       client.sameAsBilling || billingDraftIsComplete(client.billingDraft),
+    /**
+     * Amendment A6. Derived from the SAME function `hasBillingAddress` is, so
+     * the two cannot contradict each other, and short-circuited under
+     * `sameAsBilling` for the reason above: a customer who checked the box has
+     * no billing form on screen, and naming fields on a form they cannot see
+     * is worse than saying nothing.
+     */
+    billingMissingFields: client.sameAsBilling
+      ? []
+      : missingBillingFields(client.billingDraft),
     /**
      * `?? 0` and not `!== 0`. The predicate this replaces used
      * `shipping_methods?.length === 0`, which is FALSE for an absent field, so a

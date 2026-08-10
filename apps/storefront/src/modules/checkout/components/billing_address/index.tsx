@@ -103,6 +103,7 @@ const BillingAddress = () => {
         autoComplete="address-level2"
         value={billingDraft.city}
         onChange={handleChange}
+        required
         data-testid="billing-city-input"
       />
       <CountrySelect

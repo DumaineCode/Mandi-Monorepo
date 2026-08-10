@@ -3,14 +3,18 @@ import { describe, expect, it } from "vitest"
 
 import {
   billingDraftIsComplete,
+  buildBillingIncompleteMessage,
   canPlaceOrder,
   getMissingOrderRequirements,
   isOpenpayOffered,
   isOpenpayProviderId,
+  missingBillingFields,
+  MISSING_REQUIREMENT_MESSAGES,
   OPENPAY_PROVIDER_ID_PREFIX,
   toReadinessInput,
   type MissingRequirementCode,
   type OrderReadinessInput,
+  type ReadinessAddressSnapshot,
   type ReadinessClientInput,
 } from "./checkout-readiness"
 
@@ -499,13 +503,18 @@ describe("getMissingOrderRequirements", () => {
           paymentDetailsComplete: false,
         })
       ),
+      // A6: the composed billing message is the only one built at runtime, so
+      // it is the one a fixed-string guard would otherwise never see.
+      ...getMissingOrderRequirements(
+        input({ hasBillingAddress: false, billingMissingFields: ["city"] })
+      ),
     ]
 
-    // Every one of the ten codes has to be represented, or this guard is
+    // Every one of the eleven codes has to be represented, or this guard is
     // asserting over a subset and the untested message is the one that drifts.
     expect(
       new Set(everything.map((requirement) => requirement.code)).size
-    ).toBe(10)
+    ).toBe(11)
 
     for (const { message } of everything) {
       expect(message).not.toMatch(VOSEO_IMPERATIVES)
@@ -1018,6 +1027,12 @@ describe("hasBillingAddress is a client fact (A5)", () => {
     expect(codes(readiness)).toEqual(["billing_address"])
   })
 
+  /**
+   * A5 blocked these; A6 (task 2c.33) is what finally tells the customer WHICH
+   * one. The code moves from `billing_address` to `billing_address_incomplete`
+   * for every partially-typed draft, which is the behaviour change and is
+   * asserted here rather than only in the A6 block below.
+   */
   it.each([
     ["a missing first name", { first_name: "" }],
     ["a missing last name", { last_name: "   " }],
@@ -1033,7 +1048,7 @@ describe("hasBillingAddress is a client fact (A5)", () => {
     )
 
     expect(readiness.hasBillingAddress).toBe(false)
-    expect(codes(readiness)).toEqual(["billing_address"])
+    expect(codes(readiness)).toEqual(["billing_address_incomplete"])
   })
 
   /**
@@ -1117,6 +1132,326 @@ describe("billingDraftIsComplete", () => {
         address_2: "",
       })
     ).toBe(true)
+  })
+
+  /**
+   * The two are ONE rule with two shapes, and this pins that they cannot
+   * disagree. `billingDraftIsComplete` is defined AS the emptiness of
+   * {@link missingBillingFields} — the same relationship `canPlaceOrder` has
+   * with `getMissingOrderRequirements`, and for the same reason: a second
+   * derivation is how the boolean that blocks the CTA and the list that
+   * explains it drift apart in front of the customer.
+   */
+  it.each([
+    ["a complete draft", BILLING_DRAFT],
+    ["a draft missing one field", { ...BILLING_DRAFT, city: "" }],
+    ["a draft missing several", { ...BILLING_DRAFT, city: "", province: " " }],
+    ["an all-empty draft", {}],
+    ["null", null],
+  ])(
+    "agrees with missingBillingFields for %s",
+    (_label, draft: ReadinessAddressSnapshot | null) => {
+      expect(billingDraftIsComplete(draft)).toBe(
+        missingBillingFields(draft).length === 0
+      )
+    }
+  )
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * Amendment A6 — billing gets field-level validation (task 2c.33)
+ * ---------------------------------------------------------------------------
+ *
+ * A5 (slice 1) made billing readiness a CLIENT fact and closed the deadlock.
+ * What it left behind is the reason this exists: the customer who unchecks
+ * "misma dirección de facturación" and mistypes ONE field is told only
+ * `Falta tu dirección de facturación.` — a sentence that names no field, on a
+ * nine-input form, beside a CTA that will not move.
+ *
+ * Two of those inputs made it worse. `city` and `province` are required by
+ * `billingDraftIsComplete` and were NOT marked `required` in the billing form,
+ * and there is no `<form>` left to run native validation anyway (D5 writes both
+ * addresses at CTA time). So a customer could fill every field the UI marked
+ * as required and still be refused, with no way to find out why.
+ *
+ * ## The split, and why it is two codes rather than one
+ *
+ * - NOTHING typed → `billing_address`. The customer has not started; naming
+ *   seven fields at them is a wall, not help. The A5 message is unchanged.
+ * - SOMETHING typed but not enough → `billing_address_incomplete`, whose
+ *   message NAMES the missing fields in catalogue order.
+ *
+ * The two are mutually exclusive and occupy the same slot in the ordered list,
+ * exactly as `shipping_method` / `shipping_method_stale` do.
+ *
+ * ## The composed message is the first one in the catalogue that is not fixed
+ *
+ * `MISSING_REQUIREMENT_MESSAGES` still holds a base string for the code, and
+ * `buildBillingIncompleteMessage([])` returns exactly that base — so the
+ * catalogue stays the single source of the words, and only the field list is
+ * appended. The voseo guard above consumes the composed form for that reason.
+ */
+describe("billing field-level validation (A6)", () => {
+  const readyCart = () =>
+    ({
+      items: [{ id: "li_1" }],
+      email: "cliente@example.mx",
+      shipping_address: {
+        first_name: "Ana",
+        last_name: "Ruiz",
+        address_1: "Av. Insurgentes Sur 1602",
+        address_2: "Roma Norte",
+        postal_code: "06700",
+        city: "Cuauhtémoc",
+        province: "CDMX",
+        country_code: "mx",
+        phone: "5512345678",
+      },
+      shipping_methods: [{ id: "sm_1" }],
+      billing_address: null,
+    } as unknown as HttpTypes.StoreCart)
+
+  describe("missingBillingFields", () => {
+    it("returns nothing for a complete draft", () => {
+      expect(missingBillingFields(BILLING_DRAFT)).toEqual([])
+    })
+
+    it.each([
+      ["null", null],
+      ["undefined", undefined],
+    ])("reports every required field for %s", (_label, draft) => {
+      expect(missingBillingFields(draft)).toEqual([
+        "first_name",
+        "last_name",
+        "address_1",
+        "postal_code",
+        "city",
+        "province",
+        "country_code",
+      ])
+    })
+
+    /**
+     * ORDER is asserted, not just membership. The message reads as a list the
+     * customer scans against the form, so it has to run in the same direction
+     * the form does — and `Set`/`Object.keys` orderings are exactly how that
+     * quietly stops being true.
+     */
+    it("reports the missing fields in catalogue order", () => {
+      expect(
+        missingBillingFields({
+          ...BILLING_DRAFT,
+          country_code: "",
+          first_name: "",
+          city: "",
+        })
+      ).toEqual(["first_name", "city", "country_code"])
+    })
+
+    it("treats whitespace as absent, consistently with every other field", () => {
+      expect(missingBillingFields({ ...BILLING_DRAFT, city: "   " })).toEqual([
+        "city",
+      ])
+    })
+
+    /**
+     * The A5 asymmetry, restated at field level: nothing is ever SHIPPED to the
+     * billing address, so the two fields that exist for fulfilment reasons are
+     * not required and must never appear in the list the customer is asked to
+     * complete.
+     */
+    it("never reports the phone or the colonia", () => {
+      expect(
+        missingBillingFields({ ...BILLING_DRAFT, phone: "", address_2: "" })
+      ).toEqual([])
+    })
+  })
+
+  describe("buildBillingIncompleteMessage", () => {
+    it("returns the bare catalogue message when nothing is named", () => {
+      expect(buildBillingIncompleteMessage([])).toBe(
+        MISSING_REQUIREMENT_MESSAGES.billing_address_incomplete
+      )
+    })
+
+    it("names one field", () => {
+      expect(buildBillingIncompleteMessage(["postal_code"])).toBe(
+        "Completa tu dirección de facturación. Falta: código postal."
+      )
+    })
+
+    it("joins two fields with y", () => {
+      expect(buildBillingIncompleteMessage(["city", "province"])).toBe(
+        "Completa tu dirección de facturación. Falta: ciudad y estado."
+      )
+    })
+
+    it("joins three or more with commas and a final y", () => {
+      expect(
+        buildBillingIncompleteMessage(["first_name", "city", "country_code"])
+      ).toBe(
+        "Completa tu dirección de facturación. Falta: nombre, ciudad y país."
+      )
+    })
+
+    /**
+     * The labels are what the customer reads, so they are asserted one by one
+     * rather than through the map they come from. Asserting
+     * `BILLING_FIELD_LABELS[f]` against itself would pass for any wording,
+     * including a field NAME leaking through — `country_code`, `address_1` —
+     * which is precisely the failure this whole amendment exists to prevent.
+     */
+    it.each([
+      ["first_name", "nombre"],
+      ["last_name", "apellido"],
+      ["address_1", "calle y número"],
+      ["postal_code", "código postal"],
+      ["city", "ciudad"],
+      ["province", "estado"],
+      ["country_code", "país"],
+    ] as const)("labels %s as %s", (field, label) => {
+      expect(buildBillingIncompleteMessage([field])).toBe(
+        `Completa tu dirección de facturación. Falta: ${label}.`
+      )
+    })
+  })
+
+  describe("the code the predicate emits", () => {
+    it("reports billing_address when the customer has typed nothing", () => {
+      const readiness = toReadinessInput(readyCart(), client())
+
+      expect(codes(readiness)).toEqual(["billing_address"])
+      expect(messageFor(readiness, "billing_address")).toBe(
+        "Falta tu dirección de facturación."
+      )
+    })
+
+    it("reports billing_address_incomplete once one field is typed", () => {
+      const readiness = toReadinessInput(
+        readyCart(),
+        client({ billingDraft: { first_name: "Ana" } })
+      )
+
+      expect(codes(readiness)).toEqual(["billing_address_incomplete"])
+    })
+
+    it("names exactly the fields that are missing", () => {
+      const readiness = toReadinessInput(
+        readyCart(),
+        client({
+          billingDraft: { ...BILLING_DRAFT, postal_code: "", city: "" },
+        })
+      )
+
+      expect(messageFor(readiness, "billing_address_incomplete")).toBe(
+        "Completa tu dirección de facturación. Falta: código postal y ciudad."
+      )
+    })
+
+    /**
+     * Reactivity, at the level the runner can reach: the list shrinks as the
+     * customer types, and the code flips back to nothing once the draft is
+     * whole. The `.tsx` re-render is manual QA (2c.30); the RULE is here.
+     */
+    it("shrinks as the customer fills the form and then clears", () => {
+      const draft = { ...BILLING_DRAFT, postal_code: "", city: "" }
+
+      expect(
+        messageFor(
+          toReadinessInput(readyCart(), client({ billingDraft: draft })),
+          "billing_address_incomplete"
+        )
+      ).toContain("código postal y ciudad")
+
+      expect(
+        messageFor(
+          toReadinessInput(
+            readyCart(),
+            client({ billingDraft: { ...draft, postal_code: "06500" } })
+          ),
+          "billing_address_incomplete"
+        )
+      ).toBe("Completa tu dirección de facturación. Falta: ciudad.")
+
+      expect(
+        codes(
+          toReadinessInput(
+            readyCart(),
+            client({ billingDraft: BILLING_DRAFT })
+          )
+        )
+      ).toEqual([])
+    })
+
+    /**
+     * `sameAsBilling` short-circuits BEFORE the field list is computed. Pinned
+     * because the obvious refactor — always compute the list, then decide — is
+     * how a customer who checked the box gets told their billing city is
+     * missing.
+     */
+    it("says nothing about billing fields under sameAsBilling", () => {
+      const readiness = toReadinessInput(
+        readyCart(),
+        client({ sameAsBilling: true, billingDraft: {} })
+      )
+
+      expect(readiness.billingMissingFields).toEqual([])
+      expect(codes(readiness)).toEqual([])
+    })
+
+    /**
+     * The two billing codes are mutually exclusive and share one slot. Asserted
+     * against a cart missing several things so the POSITION is what is being
+     * checked, not merely the presence.
+     */
+    it("occupies the same slot in the ordered list as billing_address", () => {
+      const withNothingTyped = codes(
+        toReadinessInput(
+          {
+            ...readyCart(),
+            shipping_methods: [],
+          } as unknown as HttpTypes.StoreCart,
+          client()
+        )
+      )
+      const withSomethingTyped = codes(
+        toReadinessInput(
+          {
+            ...readyCart(),
+            shipping_methods: [],
+          } as unknown as HttpTypes.StoreCart,
+          client({ billingDraft: { first_name: "Ana" } })
+        )
+      )
+
+      expect(withNothingTyped).toEqual(["billing_address", "shipping_method"])
+      expect(withSomethingTyped).toEqual([
+        "billing_address_incomplete",
+        "shipping_method",
+      ])
+    })
+
+    /**
+     * The adapter derives BOTH billing facts from one function, so a caller
+     * cannot hand the predicate a `hasBillingAddress: true` alongside a
+     * non-empty field list. Asserted on the adapter rather than trusted.
+     */
+    it("never reports missing fields alongside a satisfied billing claim", () => {
+      for (const billingDraft of [null, {}, BILLING_DRAFT]) {
+        for (const sameAsBilling of [true, false]) {
+          const readiness = toReadinessInput(
+            readyCart(),
+            client({ sameAsBilling, billingDraft })
+          )
+
+          expect(
+            readiness.hasBillingAddress &&
+              readiness.billingMissingFields!.length > 0
+          ).toBe(false)
+        }
+      }
+    })
   })
 })
 
