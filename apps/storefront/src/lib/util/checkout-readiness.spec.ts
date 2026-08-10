@@ -2,14 +2,21 @@ import type { HttpTypes } from "@medusajs/types"
 import { describe, expect, it } from "vitest"
 
 import {
+  billingDraftIsComplete,
+  buildBillingIncompleteMessage,
   canPlaceOrder,
   getMissingOrderRequirements,
   isOpenpayOffered,
   isOpenpayProviderId,
+  missingBillingFields,
+  shouldCollectOpenpayDeviceData,
+  MISSING_REQUIREMENT_MESSAGES,
   OPENPAY_PROVIDER_ID_PREFIX,
   toReadinessInput,
   type MissingRequirementCode,
   type OrderReadinessInput,
+  type ReadinessAddressSnapshot,
+  type ReadinessClientInput,
 } from "./checkout-readiness"
 
 const OPENPAY = "pp_openpay_openpay"
@@ -63,6 +70,41 @@ const withAddress = (
 
 const codes = (value: OrderReadinessInput): MissingRequirementCode[] =>
   getMissingOrderRequirements(value).map((requirement) => requirement.code)
+
+/**
+ * A complete billing address as the CUSTOMER typed it — the client-side draft,
+ * not a persisted `cart_address` row. See the deadlock block below for why the
+ * distinction is the whole point.
+ */
+const BILLING_DRAFT = {
+  first_name: "Ana",
+  last_name: "Ruiz",
+  address_1: "Río Lerma 232",
+  address_2: "Cuauhtémoc",
+  postal_code: "06500",
+  city: "Ciudad de México",
+  province: "CDMX",
+  country_code: "mx",
+  phone: "5598765432",
+}
+
+/**
+ * The CLIENT half of {@link toReadinessInput}, defaulted to the STRICTEST case:
+ * a customer who has unchecked "same as billing" and typed nothing into the
+ * billing form. Each call states only its own deviation.
+ */
+const client = (
+  overrides: Partial<ReadinessClientInput> = {}
+): ReadinessClientInput => ({
+  selectedShippingOptionId: "so_std",
+  selectionSignature: null,
+  currentQuoteSignature: null,
+  selectedPaymentProviderId: MANUAL,
+  paymentDetailsComplete: false,
+  sameAsBilling: false,
+  billingDraft: null,
+  ...overrides,
+})
 
 const messageFor = (
   value: OrderReadinessInput,
@@ -256,6 +298,78 @@ describe("isOpenpayOffered", () => {
   })
 })
 
+/**
+ * ---------------------------------------------------------------------------
+ * shouldCollectOpenpayDeviceData (`design.md` §12b, PR2c)
+ * ---------------------------------------------------------------------------
+ *
+ * The trigger for Openpay's device-fingerprinting collector, moved from
+ * "checkout mount" to "the customer picked Openpay".
+ *
+ * `isOpenpayOffered` alone scoped collection to regions where Openpay is
+ * purchasable, which still fingerprinted everyone who opened the page and paid
+ * with Mercado Pago, or abandoned. §12b settles that only customers who
+ * actually choose to pay by card through Openpay may be profiled — LFPDPPP
+ * jurisdiction, and the scope expansion was decided inside a refactor rather
+ * than deliberately.
+ *
+ * Both conditions, and the AND between them, are the rule. Dropping either one
+ * is a silent widening of who gets fingerprinted, which is exactly the class of
+ * change nobody notices in review.
+ */
+describe("shouldCollectOpenpayDeviceData", () => {
+  const provider = (id: string) => ({ id })
+  const offered = [provider(MERCADOPAGO), provider(OPENPAY)]
+
+  it("is true once the customer has picked Openpay in a region that offers it", () => {
+    expect(shouldCollectOpenpayDeviceData(offered, OPENPAY)).toBe(true)
+  })
+
+  /**
+   * The case §12b is about. Openpay is on offer and the page is open; nobody
+   * has chosen anything. Under the PR1b gate this returned true.
+   */
+  it("is false while no payment method has been chosen", () => {
+    expect(shouldCollectOpenpayDeviceData(offered, null)).toBe(false)
+    expect(shouldCollectOpenpayDeviceData(offered, "")).toBe(false)
+    expect(shouldCollectOpenpayDeviceData(offered, undefined)).toBe(false)
+  })
+
+  it("is false for a customer paying with another provider", () => {
+    expect(shouldCollectOpenpayDeviceData(offered, MERCADOPAGO)).toBe(false)
+    expect(shouldCollectOpenpayDeviceData(offered, MANUAL)).toBe(false)
+  })
+
+  /**
+   * The PR1b condition survives, and it is not redundant. A provider id is
+   * client state: it arrives from a radio group and could be set to an Openpay
+   * id in a region where Openpay is not purchasable — by a stale restore, or by
+   * anyone with devtools. Collection must still refuse.
+   */
+  it("is false when Openpay is not offered for the cart's region", () => {
+    expect(
+      shouldCollectOpenpayDeviceData([provider(MERCADOPAGO)], OPENPAY)
+    ).toBe(false)
+  })
+
+  /** Fails closed on a failed lookup, exactly as the mount gate does. */
+  it.each([
+    ["null (the lookup failed)", null],
+    ["undefined (no prop passed)", undefined],
+  ])("is false without throwing for %s", (_label, methods) => {
+    expect(() => shouldCollectOpenpayDeviceData(methods, OPENPAY)).not.toThrow()
+    expect(shouldCollectOpenpayDeviceData(methods, OPENPAY)).toBe(false)
+  })
+
+  /** Prefix, never containment — a look-alike must not start collection. */
+  it.each(["pp_evil_pp_openpay_x", "pp_openpayments_foo", "pp_openpay"])(
+    "is false for a look-alike selection %j",
+    (id) => {
+      expect(shouldCollectOpenpayDeviceData([provider(id)], id)).toBe(false)
+    }
+  )
+})
+
 describe("getMissingOrderRequirements", () => {
   it("returns an empty list for a fully ready cart", () => {
     expect(getMissingOrderRequirements(input())).toEqual([])
@@ -310,13 +424,10 @@ describe("getMissingOrderRequirements", () => {
   })
 
   it("does not throw and reports only cart_empty for a null cart", () => {
-    const readiness = toReadinessInput(null, {
-      selectedShippingOptionId: null,
-      selectionSignature: null,
-      currentQuoteSignature: null,
-      selectedPaymentProviderId: null,
-      paymentDetailsComplete: false,
-    })
+    const readiness = toReadinessInput(
+      null,
+      client({ selectedShippingOptionId: null, selectedPaymentProviderId: null })
+    )
 
     expect(() => getMissingOrderRequirements(readiness)).not.toThrow()
     expect(getMissingOrderRequirements(readiness)).toEqual([
@@ -442,7 +553,7 @@ describe("getMissingOrderRequirements", () => {
    * string would otherwise sail through review looking like Spanish.
    */
   const VOSEO_IMPERATIVES =
-    /(Elegí|Completá|Volvé|Ingresá|Seleccioná|Revisá|Confirmá|Verificá|Probá)/i
+    /(Podés|Tenés|Querés|Hacé|Andá|Elegí|Completá|Volvé|Ingresá|Seleccioná|Revisá|Confirmá|Verificá|Probá)/i
 
   it("uses the Mexican tú imperative, never voseo", () => {
     const everything = [
@@ -465,13 +576,18 @@ describe("getMissingOrderRequirements", () => {
           paymentDetailsComplete: false,
         })
       ),
+      // A6: the composed billing message is the only one built at runtime, so
+      // it is the one a fixed-string guard would otherwise never see.
+      ...getMissingOrderRequirements(
+        input({ hasBillingAddress: false, billingMissingFields: ["city"] })
+      ),
     ]
 
-    // Every one of the ten codes has to be represented, or this guard is
+    // Every one of the eleven codes has to be represented, or this guard is
     // asserting over a subset and the untested message is the one that drifts.
     expect(
       new Set(everything.map((requirement) => requirement.code)).size
-    ).toBe(10)
+    ).toBe(11)
 
     for (const { message } of everything) {
       expect(message).not.toMatch(VOSEO_IMPERATIVES)
@@ -487,8 +603,18 @@ describe("getMissingOrderRequirements", () => {
   it("has a voseo guard that recognises actual voseo", () => {
     expect("Elegí un método de envío").toMatch(VOSEO_IMPERATIVES)
     expect("Volvé a elegir el método de envío").toMatch(VOSEO_IMPERATIVES)
+    /**
+     * The form this guard used to miss. `lib/data/cart.ts` shipped *"Podés
+     * intentar de nuevo o con otra tarjeta."* — a voseo PRESENT rather than an
+     * imperative — past both catalogue guards, and it is the most-shown decline
+     * string in the whole checkout.
+     */
+    expect("Podés intentar de nuevo o con otra tarjeta.").toMatch(
+      VOSEO_IMPERATIVES
+    )
     expect("Elige un método de envío.").not.toMatch(VOSEO_IMPERATIVES)
     expect("Completa tu dirección de envío.").not.toMatch(VOSEO_IMPERATIVES)
+    expect("Puedes intentar de nuevo.").not.toMatch(VOSEO_IMPERATIVES)
   })
 
   /**
@@ -755,13 +881,10 @@ describe("hasCompleteShippingContact port (D8)", () => {
     cart: HttpTypes.StoreCart | null | undefined
   ): MissingRequirementCode[] =>
     getMissingOrderRequirements(
-      toReadinessInput(cart, {
-        selectedShippingOptionId: "so_std",
-        selectionSignature: null,
-        currentQuoteSignature: null,
-        selectedPaymentProviderId: MANUAL,
-        paymentDetailsComplete: false,
-      })
+      // `sameAsBilling` because these carts model the four-step flow's default
+      // checkbox: this block is about the shipping contact rule (D8), and
+      // letting billing block here would test the wrong predicate.
+      toReadinessInput(cart, client({ sameAsBilling: true }))
     ).map((requirement) => requirement.code)
 
   it("blocks nothing when address, email and phone are all present", () => {
@@ -843,23 +966,14 @@ describe("hasCompleteShippingContact port (D8)", () => {
    * destination change. Collapsing either into the other re-opens the hole.
    */
   it("maps the client selection separately from the cart row", () => {
-    const withSelection = toReadinessInput(buildCart(), {
-      selectedShippingOptionId: "so_std",
-      selectionSignature: null,
-      currentQuoteSignature: null,
-      selectedPaymentProviderId: MANUAL,
-      paymentDetailsComplete: false,
-    })
+    const withSelection = toReadinessInput(buildCart(), client())
     expect(withSelection.hasShippingMethod).toBe(true)
     expect(withSelection.hasSelectedShippingOption).toBe(true)
 
-    const cleared = toReadinessInput(buildCart(), {
-      selectedShippingOptionId: null,
-      selectionSignature: null,
-      currentQuoteSignature: null,
-      selectedPaymentProviderId: MANUAL,
-      paymentDetailsComplete: false,
-    })
+    const cleared = toReadinessInput(
+      buildCart(),
+      client({ selectedShippingOptionId: null })
+    )
     // Same cart, same row — only the radio changed.
     expect(cleared.hasShippingMethod).toBe(true)
     expect(cleared.hasSelectedShippingOption).toBe(false)
@@ -880,6 +994,540 @@ describe("hasCompleteShippingContact port (D8)", () => {
  * must NOT hold — the new predicate is deliberately stricter (phone,
  * per-field address completeness, staleness, payment selection).
  */
+/**
+ * ---------------------------------------------------------------------------
+ * `hasBillingAddress` is a CLIENT fact — Amendment A5
+ * ---------------------------------------------------------------------------
+ *
+ * ## The deadlock this closes
+ *
+ * `hasBillingAddress` used to be `Boolean(cart.billing_address)`. After the
+ * single-page migration the ONLY production writer of `cart.billing_address`
+ * left in the storefront is `syncCheckoutAddresses`, and that runs at D5 step
+ * 2 — i.e. BEHIND this very gate. `persistCheckoutDraft` never writes billing
+ * by design (D3), and `setAddresses`, the historical writer, was deleted by
+ * PR2c slice 1.
+ *
+ * So a cart that never had a billing address could never acquire one: the CTA
+ * reported `Falta tu dirección de facturación.` forever. That is the exact
+ * shape of the `?step=payment` deadlock this whole change exists to remove — a
+ * requirement whose only writer sits behind the gate that guards it.
+ *
+ * ## The fix, and why it is the same fix this file already made once
+ *
+ * `hasShippingMethod` (a CART fact) and `hasSelectedShippingOption` (a CLIENT
+ * fact) are kept apart ~12 lines above for the identical F1 reason. Billing
+ * gets the same treatment: what the gate needs to know is not "does the cart
+ * carry a row yet" but "has the customer told us what to write" — and the
+ * answer to that is client state, available before any write.
+ *
+ * Two ways to answer yes:
+ *
+ * 1. `sameAsBilling` — the customer asserts billing IS the shipping address.
+ *    Nothing further is checked here BECAUSE the shipping address is already
+ *    checked, field by field, by `shipping_address`, `colonia` and `phone`.
+ *    Adding a second copy of that check is the defect class this change is
+ *    about.
+ * 2. A COMPLETE separate billing draft. Completeness matters: an all-empty
+ *    billing row satisfies "not null" and then makes Openpay reject the charge
+ *    with API error 1001, because `buildOpenpaySessionData` sources its
+ *    `customer` object from `cart.billing_address`.
+ *
+ * The guarantee the old cart-fact version bought is NOT lost. `design.md` D5
+ * makes step 2 before step 4 mandatory precisely so the billing row exists on
+ * the cart before the Openpay payload is built, and that ordering is asserted
+ * in `place-order-flow.spec.ts` (mutation M11/M16). The row still has to exist
+ * before the charge; it just no longer has to exist before the customer is
+ * allowed to try.
+ */
+describe("hasBillingAddress is a client fact (A5)", () => {
+  const readyCart = (overrides: Record<string, unknown> = {}) =>
+    ({
+      items: [{ id: "li_1" }],
+      email: "cliente@example.mx",
+      shipping_address: {
+        first_name: "Ana",
+        last_name: "Ruiz",
+        address_1: "Av. Insurgentes Sur 1602",
+        address_2: "Roma Norte",
+        postal_code: "06700",
+        city: "Cuauhtémoc",
+        province: "CDMX",
+        country_code: "mx",
+        phone: "5512345678",
+      },
+      shipping_methods: [{ id: "sm_1" }],
+      billing_address: null,
+      ...overrides,
+    } as unknown as HttpTypes.StoreCart)
+
+  /**
+   * THE REGRESSION TEST. This is the executable form of the deadlock: a cart
+   * that is complete in every other respect, with no billing row and no way to
+   * get one, must be placeable.
+   */
+  it("lets a cart with NO billing row through when the addresses are the same", () => {
+    const readiness = toReadinessInput(
+      readyCart(),
+      client({ sameAsBilling: true })
+    )
+
+    expect(readiness.hasBillingAddress).toBe(true)
+    expect(codes(readiness)).toEqual([])
+  })
+
+  it("accepts a complete separate billing draft with no billing row either", () => {
+    const readiness = toReadinessInput(
+      readyCart(),
+      client({ sameAsBilling: false, billingDraft: BILLING_DRAFT })
+    )
+
+    expect(readiness.hasBillingAddress).toBe(true)
+    expect(codes(readiness)).toEqual([])
+  })
+
+  /**
+   * The other half of the fix, and the reason it is `billingDraftIsComplete`
+   * rather than a null check. An all-empty billing form is what the customer
+   * sees the moment they uncheck the box on a cart that never had a separate
+   * billing address; waving it through produces Openpay API error 1001 at the
+   * charge, which the customer reads as a decline.
+   */
+  it("blocks an empty billing draft when the customer unchecked the box", () => {
+    const readiness = toReadinessInput(readyCart(), client())
+
+    expect(readiness.hasBillingAddress).toBe(false)
+    expect(codes(readiness)).toEqual(["billing_address"])
+  })
+
+  /**
+   * A5 blocked these; A6 (task 2c.33) is what finally tells the customer WHICH
+   * one. The code moves from `billing_address` to `billing_address_incomplete`
+   * for every partially-typed draft, which is the behaviour change and is
+   * asserted here rather than only in the A6 block below.
+   */
+  it.each([
+    ["a missing first name", { first_name: "" }],
+    ["a missing last name", { last_name: "   " }],
+    ["a missing street", { address_1: "" }],
+    ["a missing postal code", { postal_code: "" }],
+    ["a missing city", { city: "" }],
+    ["a missing province", { province: "" }],
+    ["a missing country", { country_code: "" }],
+  ])("blocks a separate billing draft with %s", (_label, overrides) => {
+    const readiness = toReadinessInput(
+      readyCart(),
+      client({ billingDraft: { ...BILLING_DRAFT, ...overrides } })
+    )
+
+    expect(readiness.hasBillingAddress).toBe(false)
+    expect(codes(readiness)).toEqual(["billing_address_incomplete"])
+  })
+
+  /**
+   * The gate stops reading the cart entirely. Stated as its own case because
+   * "it happens to agree with the cart today" is exactly how a client fact
+   * silently reverts to a cart fact.
+   */
+  it("ignores a billing row the cart already has when the draft is empty", () => {
+    const readiness = toReadinessInput(
+      readyCart({ billing_address: { id: "caaddr_bill", first_name: "Ana" } }),
+      client()
+    )
+
+    // The cart carries a row, and it is still not enough: that row is
+    // incomplete, so it is the one that would produce Openpay error 1001.
+    expect(readiness.hasBillingAddress).toBe(false)
+  })
+
+  /**
+   * `sameAsBilling` short-circuits WITHOUT re-checking the address, and that is
+   * safe only because the shipping codes already fired. Pinned so a later
+   * "tidy-up" cannot collapse the two checks into one and lose the ordering.
+   */
+  it("does not re-check the shipping address under sameAsBilling", () => {
+    const readiness = toReadinessInput(
+      readyCart({ shipping_address: null }),
+      client({ sameAsBilling: true })
+    )
+
+    expect(readiness.hasBillingAddress).toBe(true)
+    // The shipping codes are what block this cart, and they say so precisely.
+    expect(codes(readiness)).toEqual(["phone", "shipping_address", "colonia"])
+  })
+})
+
+describe("billingDraftIsComplete", () => {
+  it("accepts a fully typed address", () => {
+    expect(billingDraftIsComplete(BILLING_DRAFT)).toBe(true)
+  })
+
+  it.each([
+    ["null", null],
+    ["undefined", undefined],
+  ])("rejects %s", (_label, value) => {
+    expect(billingDraftIsComplete(value)).toBe(false)
+  })
+
+  it("rejects an all-empty draft, which is what an untouched form holds", () => {
+    expect(
+      billingDraftIsComplete({
+        first_name: "",
+        last_name: "",
+        address_1: "",
+        address_2: "",
+        postal_code: "",
+        city: "",
+        province: "",
+        country_code: "",
+        phone: "",
+      })
+    ).toBe(false)
+  })
+
+  /**
+   * `phone` and `address_2` are deliberately NOT required, and the asymmetry
+   * with the shipping address is intentional rather than an oversight.
+   *
+   * Both shipping codes exist for a fulfilment reason: Skydropx rejects a quote
+   * with no `area_level3` (the colonia) and the origin/destination pre-flight
+   * needs a phone. Nothing is ever shipped to the BILLING address, and Openpay
+   * accepts a `customer` object with `phone_number: undefined` — which
+   * `buildOpenpaySessionData` already emits and `place-order.spec.ts` already
+   * pins. Requiring them here would block a checkout over a field no downstream
+   * system asks for.
+   */
+  it("does not require the phone or the colonia", () => {
+    expect(
+      billingDraftIsComplete({
+        ...BILLING_DRAFT,
+        phone: "",
+        address_2: "",
+      })
+    ).toBe(true)
+  })
+
+  /**
+   * The two are ONE rule with two shapes, and this pins that they cannot
+   * disagree. `billingDraftIsComplete` is defined AS the emptiness of
+   * {@link missingBillingFields} — the same relationship `canPlaceOrder` has
+   * with `getMissingOrderRequirements`, and for the same reason: a second
+   * derivation is how the boolean that blocks the CTA and the list that
+   * explains it drift apart in front of the customer.
+   */
+  it.each([
+    ["a complete draft", BILLING_DRAFT],
+    ["a draft missing one field", { ...BILLING_DRAFT, city: "" }],
+    ["a draft missing several", { ...BILLING_DRAFT, city: "", province: " " }],
+    ["an all-empty draft", {}],
+    ["null", null],
+  ])(
+    "agrees with missingBillingFields for %s",
+    (_label, draft: ReadinessAddressSnapshot | null) => {
+      expect(billingDraftIsComplete(draft)).toBe(
+        missingBillingFields(draft).length === 0
+      )
+    }
+  )
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * Amendment A6 — billing gets field-level validation (task 2c.33)
+ * ---------------------------------------------------------------------------
+ *
+ * A5 (slice 1) made billing readiness a CLIENT fact and closed the deadlock.
+ * What it left behind is the reason this exists: the customer who unchecks
+ * "misma dirección de facturación" and mistypes ONE field is told only
+ * `Falta tu dirección de facturación.` — a sentence that names no field, on a
+ * nine-input form, beside a CTA that will not move.
+ *
+ * Two of those inputs made it worse. `city` and `province` are required by
+ * `billingDraftIsComplete` and were NOT marked `required` in the billing form,
+ * and there is no `<form>` left to run native validation anyway (D5 writes both
+ * addresses at CTA time). So a customer could fill every field the UI marked
+ * as required and still be refused, with no way to find out why.
+ *
+ * ## The split, and why it is two codes rather than one
+ *
+ * - NOTHING typed → `billing_address`. The customer has not started; naming
+ *   seven fields at them is a wall, not help. The A5 message is unchanged.
+ * - SOMETHING typed but not enough → `billing_address_incomplete`, whose
+ *   message NAMES the missing fields in catalogue order.
+ *
+ * The two are mutually exclusive and occupy the same slot in the ordered list,
+ * exactly as `shipping_method` / `shipping_method_stale` do.
+ *
+ * ## The composed message is the first one in the catalogue that is not fixed
+ *
+ * `MISSING_REQUIREMENT_MESSAGES` still holds a base string for the code, and
+ * `buildBillingIncompleteMessage([])` returns exactly that base — so the
+ * catalogue stays the single source of the words, and only the field list is
+ * appended. The voseo guard above consumes the composed form for that reason.
+ */
+describe("billing field-level validation (A6)", () => {
+  const readyCart = () =>
+    ({
+      items: [{ id: "li_1" }],
+      email: "cliente@example.mx",
+      shipping_address: {
+        first_name: "Ana",
+        last_name: "Ruiz",
+        address_1: "Av. Insurgentes Sur 1602",
+        address_2: "Roma Norte",
+        postal_code: "06700",
+        city: "Cuauhtémoc",
+        province: "CDMX",
+        country_code: "mx",
+        phone: "5512345678",
+      },
+      shipping_methods: [{ id: "sm_1" }],
+      billing_address: null,
+    } as unknown as HttpTypes.StoreCart)
+
+  describe("missingBillingFields", () => {
+    it("returns nothing for a complete draft", () => {
+      expect(missingBillingFields(BILLING_DRAFT)).toEqual([])
+    })
+
+    it.each([
+      ["null", null],
+      ["undefined", undefined],
+    ])("reports every required field for %s", (_label, draft) => {
+      expect(missingBillingFields(draft)).toEqual([
+        "first_name",
+        "last_name",
+        "address_1",
+        "postal_code",
+        "city",
+        "province",
+        "country_code",
+      ])
+    })
+
+    /**
+     * ORDER is asserted, not just membership. The message reads as a list the
+     * customer scans against the form, so it has to run in the same direction
+     * the form does — and `Set`/`Object.keys` orderings are exactly how that
+     * quietly stops being true.
+     */
+    it("reports the missing fields in catalogue order", () => {
+      expect(
+        missingBillingFields({
+          ...BILLING_DRAFT,
+          country_code: "",
+          first_name: "",
+          city: "",
+        })
+      ).toEqual(["first_name", "city", "country_code"])
+    })
+
+    it("treats whitespace as absent, consistently with every other field", () => {
+      expect(missingBillingFields({ ...BILLING_DRAFT, city: "   " })).toEqual([
+        "city",
+      ])
+    })
+
+    /**
+     * The A5 asymmetry, restated at field level: nothing is ever SHIPPED to the
+     * billing address, so the two fields that exist for fulfilment reasons are
+     * not required and must never appear in the list the customer is asked to
+     * complete.
+     */
+    it("never reports the phone or the colonia", () => {
+      expect(
+        missingBillingFields({ ...BILLING_DRAFT, phone: "", address_2: "" })
+      ).toEqual([])
+    })
+  })
+
+  describe("buildBillingIncompleteMessage", () => {
+    it("returns the bare catalogue message when nothing is named", () => {
+      expect(buildBillingIncompleteMessage([])).toBe(
+        MISSING_REQUIREMENT_MESSAGES.billing_address_incomplete
+      )
+    })
+
+    it("names one field", () => {
+      expect(buildBillingIncompleteMessage(["postal_code"])).toBe(
+        "Completa tu dirección de facturación. Falta: código postal."
+      )
+    })
+
+    it("joins two fields with y", () => {
+      expect(buildBillingIncompleteMessage(["city", "province"])).toBe(
+        "Completa tu dirección de facturación. Falta: ciudad y estado."
+      )
+    })
+
+    it("joins three or more with commas and a final y", () => {
+      expect(
+        buildBillingIncompleteMessage(["first_name", "city", "country_code"])
+      ).toBe(
+        "Completa tu dirección de facturación. Falta: nombre, ciudad y país."
+      )
+    })
+
+    /**
+     * The labels are what the customer reads, so they are asserted one by one
+     * rather than through the map they come from. Asserting
+     * `BILLING_FIELD_LABELS[f]` against itself would pass for any wording,
+     * including a field NAME leaking through — `country_code`, `address_1` —
+     * which is precisely the failure this whole amendment exists to prevent.
+     */
+    it.each([
+      ["first_name", "nombre"],
+      ["last_name", "apellido"],
+      ["address_1", "calle y número"],
+      ["postal_code", "código postal"],
+      ["city", "ciudad"],
+      ["province", "estado"],
+      ["country_code", "país"],
+    ] as const)("labels %s as %s", (field, label) => {
+      expect(buildBillingIncompleteMessage([field])).toBe(
+        `Completa tu dirección de facturación. Falta: ${label}.`
+      )
+    })
+  })
+
+  describe("the code the predicate emits", () => {
+    it("reports billing_address when the customer has typed nothing", () => {
+      const readiness = toReadinessInput(readyCart(), client())
+
+      expect(codes(readiness)).toEqual(["billing_address"])
+      expect(messageFor(readiness, "billing_address")).toBe(
+        "Falta tu dirección de facturación."
+      )
+    })
+
+    it("reports billing_address_incomplete once one field is typed", () => {
+      const readiness = toReadinessInput(
+        readyCart(),
+        client({ billingDraft: { first_name: "Ana" } })
+      )
+
+      expect(codes(readiness)).toEqual(["billing_address_incomplete"])
+    })
+
+    it("names exactly the fields that are missing", () => {
+      const readiness = toReadinessInput(
+        readyCart(),
+        client({
+          billingDraft: { ...BILLING_DRAFT, postal_code: "", city: "" },
+        })
+      )
+
+      expect(messageFor(readiness, "billing_address_incomplete")).toBe(
+        "Completa tu dirección de facturación. Falta: código postal y ciudad."
+      )
+    })
+
+    /**
+     * Reactivity, at the level the runner can reach: the list shrinks as the
+     * customer types, and the code flips back to nothing once the draft is
+     * whole. The `.tsx` re-render is manual QA (2c.30); the RULE is here.
+     */
+    it("shrinks as the customer fills the form and then clears", () => {
+      const draft = { ...BILLING_DRAFT, postal_code: "", city: "" }
+
+      expect(
+        messageFor(
+          toReadinessInput(readyCart(), client({ billingDraft: draft })),
+          "billing_address_incomplete"
+        )
+      ).toContain("código postal y ciudad")
+
+      expect(
+        messageFor(
+          toReadinessInput(
+            readyCart(),
+            client({ billingDraft: { ...draft, postal_code: "06500" } })
+          ),
+          "billing_address_incomplete"
+        )
+      ).toBe("Completa tu dirección de facturación. Falta: ciudad.")
+
+      expect(
+        codes(
+          toReadinessInput(
+            readyCart(),
+            client({ billingDraft: BILLING_DRAFT })
+          )
+        )
+      ).toEqual([])
+    })
+
+    /**
+     * `sameAsBilling` short-circuits BEFORE the field list is computed. Pinned
+     * because the obvious refactor — always compute the list, then decide — is
+     * how a customer who checked the box gets told their billing city is
+     * missing.
+     */
+    it("says nothing about billing fields under sameAsBilling", () => {
+      const readiness = toReadinessInput(
+        readyCart(),
+        client({ sameAsBilling: true, billingDraft: {} })
+      )
+
+      expect(readiness.billingMissingFields).toEqual([])
+      expect(codes(readiness)).toEqual([])
+    })
+
+    /**
+     * The two billing codes are mutually exclusive and share one slot. Asserted
+     * against a cart missing several things so the POSITION is what is being
+     * checked, not merely the presence.
+     */
+    it("occupies the same slot in the ordered list as billing_address", () => {
+      const withNothingTyped = codes(
+        toReadinessInput(
+          {
+            ...readyCart(),
+            shipping_methods: [],
+          } as unknown as HttpTypes.StoreCart,
+          client()
+        )
+      )
+      const withSomethingTyped = codes(
+        toReadinessInput(
+          {
+            ...readyCart(),
+            shipping_methods: [],
+          } as unknown as HttpTypes.StoreCart,
+          client({ billingDraft: { first_name: "Ana" } })
+        )
+      )
+
+      expect(withNothingTyped).toEqual(["billing_address", "shipping_method"])
+      expect(withSomethingTyped).toEqual([
+        "billing_address_incomplete",
+        "shipping_method",
+      ])
+    })
+
+    /**
+     * The adapter derives BOTH billing facts from one function, so a caller
+     * cannot hand the predicate a `hasBillingAddress: true` alongside a
+     * non-empty field list. Asserted on the adapter rather than trusted.
+     */
+    it("never reports missing fields alongside a satisfied billing claim", () => {
+      for (const billingDraft of [null, {}, BILLING_DRAFT]) {
+        for (const sameAsBilling of [true, false]) {
+          const readiness = toReadinessInput(
+            readyCart(),
+            client({ sameAsBilling, billingDraft })
+          )
+
+          expect(
+            readiness.hasBillingAddress &&
+              readiness.billingMissingFields!.length > 0
+          ).toBe(false)
+        }
+      }
+    })
+  })
+})
+
 describe("strictness floor", () => {
   const notReadyToday = (cart: HttpTypes.StoreCart | null): boolean =>
     !cart ||
@@ -933,14 +1581,27 @@ describe("strictness floor", () => {
     ["a null cart", null],
     ["no shipping address", cart({ shipping_address: null })],
     ["an undefined shipping address", cart({ shipping_address: undefined })],
-    ["no billing address", cart({ billing_address: null })],
     /**
-     * The row that kills `hasBillingAddress: cart?.billing_address !== null`.
-     * An unfetched `billing_address` relation is the normal shape of a cart
-     * read that did not ask for it, so this is the reachable case, not the
-     * exotic one.
+     * ## Amendment A5 — the ONE row where the floor moved, deliberately
+     *
+     * Today's `notReady` blocks any cart with no `billing_address`. The new
+     * predicate blocks it only while the CUSTOMER has not said what to write —
+     * because the only writer of that column now runs behind this gate, so the
+     * old rule was not a floor, it was a deadlock (see the `hasBillingAddress
+     * is a client fact (A5)` block above).
+     *
+     * The two rows below therefore keep asserting the floor for the case that
+     * is still genuinely unsafe: no billing row AND no billing claim from the
+     * customer. The relaxed case has its own coverage, above, where it is
+     * argued rather than smuggled through this table.
+     *
+     * Both shapes of absence stay, for the reason the docstring above gives.
      */
-    ["an undefined billing address", cart({ billing_address: undefined })],
+    ["no billing address and no billing claim", cart({ billing_address: null })],
+    [
+      "an undefined billing address and no billing claim",
+      cart({ billing_address: undefined }),
+    ],
     ["no email", cart({ email: null })],
     ["a blank email", cart({ email: "" })],
     /**
@@ -962,13 +1623,10 @@ describe("strictness floor", () => {
 
       expect(
         canPlaceOrder(
-          toReadinessInput(blockedCart, {
-            selectedShippingOptionId: "so_std",
-            selectionSignature: null,
-            currentQuoteSignature: null,
-            selectedPaymentProviderId: MANUAL,
-            paymentDetailsComplete: true,
-          })
+          toReadinessInput(
+            blockedCart,
+            client({ paymentDetailsComplete: true })
+          )
         )
       ).toBe(false)
     }
@@ -999,13 +1657,12 @@ describe("strictness floor", () => {
 
     expect(
       canPlaceOrder(
-        toReadinessInput(laxCart, {
-          selectedShippingOptionId: "so_std",
-          selectionSignature: null,
-          currentQuoteSignature: null,
-          selectedPaymentProviderId: MANUAL,
-          paymentDetailsComplete: true,
-        })
+        // `sameAsBilling` on purpose: each row must be blocked by the condition
+        // in its own label, not incidentally by billing.
+        toReadinessInput(
+          laxCart,
+          client({ sameAsBilling: true, paymentDetailsComplete: true })
+        )
       )
     ).toBe(false)
   })
@@ -1013,15 +1670,7 @@ describe("strictness floor", () => {
   it("lets a genuinely complete cart through", () => {
     expect(notReadyToday(cart())).toBe(false)
     expect(
-      canPlaceOrder(
-        toReadinessInput(cart(), {
-          selectedShippingOptionId: "so_std",
-          selectionSignature: null,
-          currentQuoteSignature: null,
-          selectedPaymentProviderId: MANUAL,
-          paymentDetailsComplete: false,
-        })
-      )
+      canPlaceOrder(toReadinessInput(cart(), client({ sameAsBilling: true })))
     ).toBe(true)
   })
 })
@@ -1231,13 +1880,7 @@ describe("paidByGiftCard", () => {
         items: [{ id: "li_1" }],
         ...overrides,
       } as unknown as HttpTypes.StoreCart,
-      {
-        selectedShippingOptionId: "so_std",
-        selectionSignature: null,
-        currentQuoteSignature: null,
-        selectedPaymentProviderId: null,
-        paymentDetailsComplete: false,
-      }
+      client({ selectedPaymentProviderId: null })
     )
 
     expect(derived.paidByGiftCard).toBe(expected)

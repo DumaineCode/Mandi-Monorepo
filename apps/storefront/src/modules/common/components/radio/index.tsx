@@ -4,7 +4,17 @@ const Radio = ({ checked, 'data-testid': dataTestId }: { checked: boolean, 'data
       <button
         type="button"
         role="radio"
-        aria-checked="true"
+        /**
+         * The state, not the literal `"true"` this shipped with (task 2c.35).
+         *
+         * A hard-coded `aria-checked="true"` tells a screen-reader user that
+         * every option in the group is selected, which is worse than telling
+         * them nothing. `payment-container` stopped using this component
+         * altogether — its option is already a `role="radio"` and nesting one
+         * inside another is its own defect — but `address-select` still renders
+         * it, so fixing only the caller would have left the bug live.
+         */
+        aria-checked={checked}
         data-state={checked ? "checked" : "unchecked"}
         className="group relative flex h-5 w-5 items-center justify-center outline-none"
         data-testid={dataTestId || 'radio-button'}

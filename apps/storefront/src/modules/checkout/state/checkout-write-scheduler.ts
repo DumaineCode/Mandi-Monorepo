@@ -168,11 +168,47 @@ export type CheckoutWriteScheduler = {
    * guarantee without becoming a second writer.
    */
   persistNow: () => Promise<WriteOutcome>
+  /**
+   * Runs a cart write that is NOT the draft autosave, on the SAME FIFO chain.
+   *
+   * Exists for `syncCheckoutAddresses` at the CTA (PR2c, task 2c.7). That call
+   * writes `shipping_address` — the entity the whole `em.create`
+   * PII-destruction finding is about — at a moment when an autosave armed by
+   * the customer's last blur is very likely still pending, because 400 ms is
+   * roughly the gap between tabbing out of the final field and clicking the
+   * button. Letting the two overlap is B1 all over again, at the one moment in
+   * the checkout the customer cannot casually retry.
+   *
+   * `persistNow` could not be reused: its payload is derived from the unsaved
+   * draft diff, and the CTA writes both addresses in full. So the WRITE is the
+   * caller's, and the SERIALISATION, the sequence and the dispatch are this
+   * scheduler's — which keeps the ordering guarantee in the one place that can
+   * actually hold it.
+   *
+   * Cancels any armed autosave before running: a debounce that fires while the
+   * order is being placed would put a second writer on the same row for no
+   * benefit, since this write persists the same draft anyway.
+   *
+   * Bounded by `CHECKOUT_WRITE_TIMEOUT_MS`, like `persistNow`. See
+   * `performExclusiveWrite` for why this writer needs the bound more than the
+   * autosave does.
+   */
+  runExclusive: (write: ExclusiveWrite) => Promise<WriteOutcome>
   /** Arms a trailing-edge debounce. A previous arming is replaced, latest wins. */
   scheduleAutosave: (delayMs: number) => void
   cancelAutosave: () => void
   isBusy: () => boolean
 }
+
+/**
+ * A foreign cart write, handed the sequence this scheduler allocated for it.
+ *
+ * Returns the same discriminated shape as {@link PersistDraft} so both writers
+ * reach `performWrite`'s outcome handling by the same route.
+ */
+export type ExclusiveWrite = (
+  sequence: number
+) => Promise<{ ok: true; cart: HttpTypes.StoreCart } | { ok: false }>
 
 export function createCheckoutWriteScheduler(
   deps: CheckoutWriteSchedulerDeps
@@ -274,8 +310,91 @@ export function createCheckoutWriteScheduler(
     return run
   }
 
+  /**
+   * The foreign-write counterpart of `performWrite`.
+   *
+   * Deliberately shares its bookkeeping rather than reimplementing it: the same
+   * `CART_WRITE_STARTED` / `CART_WRITE_FAILED` / `CART_UPDATED` sequence, and
+   * the same `lastWrite` assignment. That last one is what the total-change
+   * guard's retry path depends on — after an abort the customer blurs a field
+   * again, and the autosave must diff against the cart THIS write produced or
+   * it re-sends fields the CTA already persisted, patching against an address
+   * row it no longer has the freshest view of.
+   */
+  const performExclusiveWrite = async (
+    write: ExclusiveWrite
+  ): Promise<WriteOutcome> => {
+    const sequence = deps.nextSequence()
+    deps.dispatch({ type: "CART_WRITE_STARTED", sequence })
+
+    let result: Awaited<ReturnType<ExclusiveWrite>> | typeof TIMED_OUT
+
+    try {
+      /**
+       * Raced against the SAME deadline as the autosave, and this is the writer
+       * that needs it more.
+       *
+       * `syncCheckoutAddresses` bounds only its fresh READ
+       * (`CART_READ_TIMEOUT_MS`); the `sdk.store.cart.update` behind it is
+       * deliberately unbounded because the typed SDK method takes no request
+       * init. So the CTA's write is the one call in the checkout with no bound
+       * of its own — on the one request per checkout the customer cannot
+       * casually retry.
+       *
+       * Without this, a hung PATCH is not a slow save: `place()`'s `finally`
+       * never runs, so its re-entrancy flag stays set and every later click
+       * returns `busy` silently; `placingOrder` stays true and the button spins
+       * forever; `tail` never resolves so every later autosave queues behind it
+       * and the requote path deadlocks. And the card has already been
+       * tokenized, so the single-use token is burned with nothing to spend it
+       * on.
+       */
+      result = await withDeadline(write(sequence), CHECKOUT_WRITE_TIMEOUT_MS)
+    } catch {
+      // A rejection must not poison the chain: the customer has to be able to
+      // fix whatever went wrong and click the button again.
+      deps.dispatch({ type: "CART_WRITE_FAILED", sequence })
+      return { status: "failed" }
+    }
+
+    /**
+     * A write we gave up waiting for is reported EXACTLY like one that failed,
+     * for the same reason `performWrite` does it: the flow awaiting this needs
+     * a RESOLVED outcome to reach `settleFailed`, which is what releases the
+     * lock, clears `placingOrder` and tells the customer why.
+     */
+    if (result === TIMED_OUT || !result.ok) {
+      deps.dispatch({ type: "CART_WRITE_FAILED", sequence })
+      return { status: "failed" }
+    }
+
+    lastWrite = { cart: result.cart, sequence }
+    deps.dispatch({ type: "CART_UPDATED", cart: result.cart, sequence })
+
+    return { status: "written", cart: result.cart }
+  }
+
   return {
     persistNow,
+
+    runExclusive: (write: ExclusiveWrite) => {
+      if (autosaveTimer !== null) {
+        clearTimeout(autosaveTimer)
+        autosaveTimer = null
+      }
+
+      inFlight += 1
+
+      const run = tail
+        .then(() => performExclusiveWrite(write))
+        .finally(() => {
+          inFlight -= 1
+        })
+
+      tail = run.catch(() => undefined)
+
+      return run
+    },
 
     scheduleAutosave: (delayMs: number) => {
       if (autosaveTimer !== null) {

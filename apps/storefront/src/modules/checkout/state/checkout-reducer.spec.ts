@@ -7,6 +7,7 @@ import {
   checkoutReducer,
   initFromServer,
   selectCarrierRatesUnavailable,
+  selectPlaceOrderView,
   selectPostalCodeIsUsable,
   selectQuoteIsBlockedByFailure,
   selectQuoteRelevantAddress,
@@ -601,6 +602,46 @@ describe("initFromServer", () => {
   it("seeds the draft from the persisted address", () => {
     expect(baseState().draft.first_name).toBe("Ana")
     expect(baseState().draft.postal_code).toBe("06700")
+  })
+
+  /**
+   * The failed-payment return (judgment-day finding 7).
+   *
+   * A customer arriving from a declined 3DS challenge or an abandoned Mercado
+   * Pago checkout has to be told SOMETHING, or the only reading of the screen
+   * is "my click didn't register" and their retry costs a second authorization
+   * hold. `checkout/page.tsx` decides WHETHER via `selectCheckoutEntryError`;
+   * this is the seat the answer lands in, and it is the same `state.error` the
+   * place-order flow writes — one channel, one `ErrorMessage`, cleared by the
+   * same `PLACE_ORDER_STARTED`.
+   */
+  it("seeds an entry error so a failed payment return says something", () => {
+    const state = initFromServer({
+      cart: cartWith({}),
+      customer: null,
+      shippingOptions: [],
+      error: "Tu pago no se completó.",
+    })
+
+    expect(state.error).toBe("Tu pago no se completó.")
+  })
+
+  it("carries no error on an ordinary entry", () => {
+    expect(baseState().error).toBeNull()
+  })
+
+  /** The retry clears it — a stale decline must not sit over a fresh attempt. */
+  it("clears the entry error when the next attempt starts", () => {
+    const entered = initFromServer({
+      cart: cartWith({}),
+      customer: null,
+      shippingOptions: [],
+      error: "Tu pago no se completó.",
+    })
+
+    expect(
+      checkoutReducer(entered, { type: "PLACE_ORDER_STARTED" }).error
+    ).toBeNull()
   })
 
   it("seeds the selection from the cart and does not mark it stale", () => {
@@ -2016,6 +2057,97 @@ describe("a selection made before any signature existed", () => {
     const state = baseState()
     expect(state.selectedShippingOptionId).toBeNull()
     expect(state.selectionSignature).toBeNull()
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * `selectReadinessInput` sources billing from the CLIENT — Amendment A5
+ * ---------------------------------------------------------------------------
+ *
+ * The adapter's own argument lives in `checkout-readiness.spec.ts`. This block
+ * covers the WIRING, which is the half that deadlocked: `hasBillingAddress`
+ * used to be read off `state.cart.billing_address`, whose only writer runs at
+ * CTA time behind the gate it feeds.
+ *
+ * Both directions are asserted, because a wiring that hard-codes either answer
+ * would satisfy one of them and nothing else.
+ */
+describe("selectReadinessInput — billing is a client fact (A5)", () => {
+  const noBillingRow = () =>
+    baseState({
+      shipping_methods: [{ shipping_option_id: "so_std" }],
+      billing_address: null,
+    })
+
+  const selectedProvider = {
+    type: "SELECT_PAYMENT_PROVIDER" as const,
+    providerId: "pp_mercadopago_mercadopago",
+  }
+
+  it("lets a cart with no billing row through while the box is checked", () => {
+    const state = run(noBillingRow(), selectShipping("so_std"), selectedProvider)
+
+    // `initFromServer` defaults `sameAsBilling` to true for a cart with no
+    // billing row, which is precisely the cohort that used to deadlock.
+    expect(state.sameAsBilling).toBe(true)
+    expect(state.cart?.billing_address).toBeNull()
+    expect(selectReadinessInput(state).hasBillingAddress).toBe(true)
+    expect(getMissingOrderRequirements(selectReadinessInput(state))).toEqual([])
+  })
+
+  it("blocks once the customer unchecks the box and has typed nothing", () => {
+    const state = run(
+      noBillingRow(),
+      selectShipping("so_std"),
+      selectedProvider,
+      { type: "TOGGLE_SAME_AS_BILLING" },
+      // W7 mirrors the shipping draft into the billing draft, so clear it the
+      // way a customer emptying the prefilled form would.
+      ...(
+        [
+          "first_name",
+          "last_name",
+          "address_1",
+          "postal_code",
+          "city",
+          "province",
+          "country_code",
+        ] as const
+      ).map((field) => ({
+        type: "BILLING_FIELD_CHANGE" as const,
+        field,
+        value: "",
+      }))
+    )
+
+    expect(state.sameAsBilling).toBe(false)
+    expect(selectReadinessInput(state).hasBillingAddress).toBe(false)
+    expect(
+      getMissingOrderRequirements(selectReadinessInput(state)).map((r) => r.code)
+    ).toEqual(["billing_address"])
+  })
+
+  /**
+   * And the customer can get out of it WITHOUT a round trip — which is the
+   * entire difference between a gate and a deadlock.
+   */
+  it("unblocks as soon as the separate billing form is complete", () => {
+    const state = run(
+      noBillingRow(),
+      selectShipping("so_std"),
+      selectedProvider,
+      { type: "TOGGLE_SAME_AS_BILLING" },
+      {
+        type: "BILLING_FIELD_CHANGE",
+        field: "postal_code",
+        value: "06500",
+      }
+    )
+
+    expect(state.cart?.billing_address).toBeNull()
+    expect(selectReadinessInput(state).hasBillingAddress).toBe(true)
+    expect(getMissingOrderRequirements(selectReadinessInput(state))).toEqual([])
   })
 })
 
@@ -3631,5 +3763,285 @@ describe("the stale-selection seam, from selection to re-pick (2b.6)", () => {
 
     expect(repicked.selectedShippingOptionId).toBe("so_std")
     expect(selectShippingIsProvisional(repicked)).toBe(false)
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * PLACE_ORDER_STARTED / PLACE_ORDER_SETTLED (PR2c, tasks 2c.7 / 2c.11)
+ * ---------------------------------------------------------------------------
+ *
+ * The CTA's own busy state. `placeOrderFlow` runs a browser tokenisation, a
+ * cart write and a payment-session creation before anything navigates, which is
+ * seconds of wall time on a slow connection with no visible change on the page.
+ *
+ * Task 2c.11 requires every tail to RE-ENABLE the button on any failure. That
+ * is one transition, so it is expressed as one action rather than as a flag the
+ * three tails each remember to reset — which is how a checkout ends up with a
+ * button that spins forever after a declined card.
+ */
+describe("placing the order", () => {
+  it("marks the checkout busy and clears any previous error", () => {
+    const state = checkoutReducer(
+      { ...baseState(), error: "El costo de envío cambió." },
+      { type: "PLACE_ORDER_STARTED" }
+    )
+
+    expect(state.placingOrder).toBe(true)
+    // A stale error beside a spinner reads as if the new attempt already
+    // failed.
+    expect(state.error).toBeNull()
+  })
+
+  it("re-enables the CTA and surfaces the reason when the attempt fails", () => {
+    const busy = checkoutReducer(baseState(), { type: "PLACE_ORDER_STARTED" })
+
+    const settled = checkoutReducer(busy, {
+      type: "PLACE_ORDER_SETTLED",
+      error: "No pudimos completar tu pedido. Inténtalo de nuevo.",
+    })
+
+    expect(settled.placingOrder).toBe(false)
+    expect(settled.error).toBe(
+      "No pudimos completar tu pedido. Inténtalo de nuevo."
+    )
+  })
+
+  /**
+   * The success path settles WITHOUT an error, because the browser is about to
+   * navigate and a flash of an error banner on the way out is worse than
+   * nothing. The busy flag still drops so a back-button return finds a usable
+   * button rather than a dead one.
+   */
+  it("settles cleanly when there is nothing to report", () => {
+    const busy = checkoutReducer(baseState(), { type: "PLACE_ORDER_STARTED" })
+
+    const settled = checkoutReducer(busy, {
+      type: "PLACE_ORDER_SETTLED",
+      error: null,
+    })
+
+    expect(settled.placingOrder).toBe(false)
+    expect(settled.error).toBeNull()
+  })
+
+  it("starts idle", () => {
+    expect(baseState().placingOrder).toBe(false)
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * selectPlaceOrderView (PR2c slice 2, tasks 2c.15–2c.17)
+ * ---------------------------------------------------------------------------
+ *
+ * Everything the final CTA renders, decided in one place.
+ *
+ * `place-order-bar` renders TWICE — `inline` on desktop, `sticky` on mobile —
+ * and `missing-items-list` renders the same catalogue a third time. Three
+ * components deriving "is the button disabled" and "what is the total"
+ * independently is three chances for the bar to disagree with the summary, or
+ * for the sticky button to be enabled while the inline one is not. They are
+ * `.tsx` files, so nothing could contradict any of the three.
+ *
+ * These assertions are about the OUTPUT, never about how it is computed. They
+ * do not re-call `getMissingOrderRequirements` and compare — `X === X` passes
+ * for every `X`, which is the vacuous-coverage mistake this change has already
+ * shipped once (slice 1, remediation R3).
+ */
+describe("selectPlaceOrderView", () => {
+  /** A cart that is ready in every respect the catalogue checks. */
+  const ready = () =>
+    run(
+      baseState({ shipping_methods: [{ shipping_option_id: "so_std" }] }),
+      selectShipping("so_std"),
+      {
+        type: "SELECT_PAYMENT_PROVIDER",
+        providerId: "pp_mercadopago_mercadopago",
+      }
+    )
+
+  it("reports nothing missing and an enabled CTA on a ready cart", () => {
+    const view = selectPlaceOrderView(ready())
+
+    expect(view.missing).toEqual([])
+    expect(view.firstMissing).toBeNull()
+    expect(view.disabled).toBe(false)
+  })
+
+  it("blocks the CTA and names every unmet requirement", () => {
+    const view = selectPlaceOrderView(baseState({ email: null }))
+
+    expect(view.disabled).toBe(true)
+    expect(view.missing.map((item) => item.code)).toEqual([
+      "email",
+      "shipping_method",
+      "payment_method",
+    ])
+  })
+
+  /**
+   * The sticky bar shows ONE line (D9): the full list renders in page flow
+   * above it, and repeating all of it inside a fixed bar is not viable on a
+   * small viewport. It must be the FIRST entry — the catalogue is ordered by
+   * page position, so the first entry is the next thing the customer can act
+   * on. Showing the last one sends them past everything they still have to do.
+   */
+  it("surfaces the first missing requirement, not an arbitrary one", () => {
+    const view = selectPlaceOrderView(baseState({ email: null }))
+
+    expect(view.firstMissing?.message).toBe("Falta tu correo electrónico.")
+    expect(view.firstMissing?.code).toBe("email")
+    expect(view.missing[0].code).toBe("email")
+  })
+
+  /**
+   * The re-entrancy lock lives in `place-order-flow.ts` and is synchronous;
+   * this is the AFFORDANCE. Without it a customer on a slow connection sees a
+   * fully enabled button for the two to three seconds a tokenisation takes, and
+   * a second click is stopped only by a closure flag they cannot see.
+   */
+  it("disables the CTA while an attempt is already running", () => {
+    const busy = checkoutReducer(ready(), { type: "PLACE_ORDER_STARTED" })
+    const view = selectPlaceOrderView(busy)
+
+    expect(view.missing).toEqual([])
+    expect(view.placing).toBe(true)
+    expect(view.disabled).toBe(true)
+  })
+
+  it("gives the CTA back once the attempt settles", () => {
+    const settled = run(
+      ready(),
+      { type: "PLACE_ORDER_STARTED" },
+      { type: "PLACE_ORDER_SETTLED", error: "Tu tarjeta fue rechazada." }
+    )
+    const view = selectPlaceOrderView(settled)
+
+    expect(view.placing).toBe(false)
+    expect(view.disabled).toBe(false)
+    expect(view.error).toBe("Tu tarjeta fue rechazada.")
+  })
+
+  /**
+   * The bar's total is `cart.total` — the SAME field `CartTotals` renders for
+   * the summary (`cart-totals/index.tsx`, `data-testid="cart-total"`). Any
+   * other field, `subtotal` and `item_subtotal` most plausibly, produces a bar
+   * that disagrees with the summary the moment shipping or a promotion moves,
+   * which is the one thing the spec forbids outright.
+   */
+  it("takes the total from the same field the summary renders", () => {
+    const view = selectPlaceOrderView(
+      baseState({ total: 129900, item_subtotal: 99900, currency_code: "usd" })
+    )
+
+    expect(view.total).toBe(129900)
+    // Read off the cart, never assumed: the store is MXN today and a hard-coded
+    // "mxn" would render a peso sign over a figure in another currency.
+    expect(view.currencyCode).toBe("usd")
+  })
+
+  it("survives a cart that has not resolved yet", () => {
+    const view = selectPlaceOrderView({ ...baseState(), cart: null })
+
+    expect(view.total).toBeNull()
+    expect(view.disabled).toBe(true)
+    expect(view.missing.map((item) => item.code)).toEqual(["cart_empty"])
+    /**
+     * A CURRENCY, not `""`. `convertToLocale` falls back to a bare number on an
+     * empty code, so the fallback is the difference between "$1,299.00" and an
+     * unlabelled "1299" beside a purchase button.
+     */
+    expect(view.currencyCode).toBe("mxn")
+  })
+
+  /**
+   * D4: the bar de-emphasises its total while the shipping selection is stale,
+   * for the same reason the summary does. Defined as the presence of
+   * `shipping_method_stale` in the very list the bar is already rendering, so a
+   * bar that shows a final-looking total beside "vuelve a elegir el método de
+   * envío" is not expressible.
+   */
+  it("marks the total provisional exactly while the selection is stale", () => {
+    const settled = selectPlaceOrderView(ready())
+    expect(settled.provisional).toBe(false)
+
+    const moved = checkoutReducer(ready(), {
+      type: "FIELD_BLUR",
+      field: "postal_code",
+      value: "44160",
+    })
+    const view = selectPlaceOrderView(moved)
+
+    expect(view.provisional).toBe(true)
+    expect(view.missing.map((item) => item.code)).toContain(
+      "shipping_method_stale"
+    )
+  })
+
+  /**
+   * The empty cart short-circuits the catalogue, so it also short-circuits the
+   * bar: one line, and it is the only one (spec *Cart Mutations During Checkout
+   * Re-Derive Price and Readiness*).
+   */
+  it("reports only the empty-cart line when the last item is removed", () => {
+    const emptied = checkoutReducer(ready(), {
+      type: "CART_UPDATED",
+      cart: cartWith({ items: [] }),
+      sequence: 1,
+    })
+    const view = selectPlaceOrderView(emptied)
+
+    expect(view.missing.map((item) => item.code)).toEqual(["cart_empty"])
+    expect(view.firstMissing?.message).toBe("Tu carrito está vacío.")
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * SET_PAYMENT_DETAILS_COMPLETE (PR2c slice 2, task 2c.1)
+ * ---------------------------------------------------------------------------
+ *
+ * `OpenpayCardContainer` re-runs its validation effect on EVERY card keystroke
+ * and reports the result unconditionally. Sixteen digits of a card number is
+ * sixteen dispatches, and fifteen of them carry the value the state already
+ * holds.
+ */
+describe("SET_PAYMENT_DETAILS_COMPLETE", () => {
+  it("records the transition", () => {
+    const complete = checkoutReducer(baseState(), {
+      type: "SET_PAYMENT_DETAILS_COMPLETE",
+      complete: true,
+    })
+
+    expect(complete.paymentDetailsComplete).toBe(true)
+
+    const cleared = checkoutReducer(complete, {
+      type: "SET_PAYMENT_DETAILS_COMPLETE",
+      complete: false,
+    })
+
+    expect(cleared.paymentDetailsComplete).toBe(false)
+  })
+
+  /**
+   * Identity, not equality, and it is the whole point of the assertion.
+   *
+   * A new object for an unchanged value re-renders every consumer of
+   * `CheckoutStateContext` — `ContactAddressSection`, `ShippingSection`, both
+   * `PlaceOrderBar` variants — once per character typed into a card field, on
+   * the page where the customer is least willing to see jank. The reducer is
+   * the only place that can decline: the effect cannot know what the state
+   * already holds without subscribing to it, which is the same re-render.
+   */
+  it("returns the SAME state when the value has not moved", () => {
+    const before = baseState()
+
+    expect(
+      checkoutReducer(before, {
+        type: "SET_PAYMENT_DETAILS_COMPLETE",
+        complete: false,
+      })
+    ).toBe(before)
   })
 })

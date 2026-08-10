@@ -22,8 +22,9 @@ import CountrySelect from "../country-select"
  * `persistCheckoutDraft` NEVER writes `billing_address` (D3). It is a partial
  * writer against a nested entity, and the whole reason PR1a exists is that
  * running two of those against one cart is how the shipping address got
- * shredded. Billing is written once, whole, at the CTA — so until PR2c lands,
- * this draft lives in client state only.
+ * shredded. Billing is written once, whole, at the CTA, by
+ * `syncCheckoutAddresses` (PR2c, task 2c.12) — which carries the billing row id
+ * for exactly the same reason the autosave carries the shipping one.
  *
  * ## Labels
  *
@@ -102,6 +103,7 @@ const BillingAddress = () => {
         autoComplete="address-level2"
         value={billingDraft.city}
         onChange={handleChange}
+        required
         data-testid="billing-city-input"
       />
       <CountrySelect
@@ -113,12 +115,21 @@ const BillingAddress = () => {
         required
         data-testid="billing-country-select"
       />
+      {/*
+       * `required`, and it was missing. Amendment A6's own motivation is that
+       * "`city` **and** `province` are required here and were not marked
+       * `required` on the billing form" (`checkout-readiness.ts`), and only
+       * `city` got it. `province` is in `REQUIRED_ADDRESS_FIELDS`, so
+       * `missingBillingFields` blocks the CTA on it — a customer could satisfy
+       * every field the UI asked for and still be refused.
+       */}
       <Input
         label="Estado / Provincia"
         name="billing_address.province"
         autoComplete="address-level1"
         value={billingDraft.province}
         onChange={handleChange}
+        required
         data-testid="billing-province-input"
       />
       <Input

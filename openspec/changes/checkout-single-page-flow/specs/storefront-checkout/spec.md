@@ -928,7 +928,10 @@ Per settled decision 5, below the desktop breakpoint the checkout MUST render a 
 
 - GIVEN the customer scrolls to the bottom of the checkout on mobile
 - WHEN the page is fully scrolled
-- THEN the legal text and the in-flow CTA are visible above the sticky bar, not underneath it
+- THEN the legal text is visible above the sticky bar, not underneath it, and the itemized missing-requirements list is visible in the page flow
+- AND the in-flow CTA does NOT also render on mobile — the sticky bar is the only order-placement button, per the single-CTA requirement (S2)
+
+> **Amended (PR2c slice 2, task 2c.39).** The original scenario required both the in-flow CTA and the sticky bar visible together on mobile, which contradicts `design.md` D9 (in-flow CTA is `hidden` below `small`, i.e. desktop-only) and the single-order-placement-button requirement below. Resolved in favor of exactly one button: the sticky bar owns mobile, the in-flow CTA owns desktop, and they never coexist.
 
 #### Scenario: The bar total matches the summary total
 

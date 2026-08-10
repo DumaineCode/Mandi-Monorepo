@@ -2,8 +2,6 @@ import { Radio as RadioGroupOption } from "@headlessui/react"
 import { Text, clx } from "@modules/common/components/ui"
 import React, { useContext, useEffect, useState } from "react"
 
-import Radio from "@modules/common/components/radio"
-
 import { isManual, type PaymentInfo } from "@lib/constants"
 import SkeletonCardDetails from "@modules/skeletons/components/skeleton-card-details"
 import PaymentTest from "../payment-test"
@@ -35,7 +33,9 @@ const PaymentContainer: React.FC<PaymentContainerProps> = ({
       value={paymentProviderId}
       disabled={disabled}
       className={clx(
-        "flex flex-col gap-y-2 text-small-regular cursor-pointer py-4 border rounded-rounded px-8 mb-2 hover:shadow-borders-interactive-with-active",
+        // `group` so the decorative indicator below can react to this row's
+        // own `data-checked`, which Headless UI sets.
+        "group flex flex-col gap-y-2 text-small-regular cursor-pointer py-4 border rounded-rounded px-8 mb-2 hover:shadow-borders-interactive-with-active",
         {
           "border-ui-border-interactive":
             selectedPaymentOptionId === paymentProviderId,
@@ -44,7 +44,26 @@ const PaymentContainer: React.FC<PaymentContainerProps> = ({
     >
       <div className="flex items-center justify-between gap-x-3">
         <div className="flex items-center gap-x-4">
-          <Radio checked={selectedPaymentOptionId === paymentProviderId} />
+          {/*
+           * Decorative, and it has to be (task 2c.35).
+           *
+           * This slot used to hold the shared `common/components/radio` — a
+           * `<button role="radio" aria-checked="true">`. Two defects in one
+           * element: it nests an interactive control inside a radio option, and
+           * it hard-codes EVERY row as checked, so a screen-reader user was told
+           * all payment methods were selected at once. That becomes
+           * customer-visible the moment this list is the only way to pay.
+           *
+           * The `RadioGroupOption` wrapping it already carries `role="radio"`
+           * and the real `aria-checked`, so the indicator only has to be a
+           * picture. Same pattern, and same reasoning, as `shipping-section`.
+           */}
+          <span
+            aria-hidden="true"
+            className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border border-line bg-white group-data-[checked]:border-coral"
+          >
+            <span className="h-2 w-2 rounded-full bg-transparent group-data-[checked]:bg-coral" />
+          </span>
           <div className="flex flex-col">
             <Text className="text-base-regular">
               {paymentInfoMap[paymentProviderId]?.title || paymentProviderId}
@@ -173,11 +192,11 @@ export const OpenpayCardContainer = ({
     const holderValid = holderName.trim().length > 0
 
     if (digits.length >= MIN_PAN_DIGITS && !numberValid) {
-      setError("Invalid card number")
+      setError("Número de tarjeta inválido")
     } else if (expiry.length >= EXPIRY_INPUT_LENGTH && !expiryValid) {
-      setError("Invalid expiration date")
+      setError("Fecha de vencimiento inválida")
     } else if (cvv2.length >= MIN_CVV_LENGTH && !cvvValid) {
-      setError("Invalid security code")
+      setError("Código de seguridad inválido")
     } else {
       setError(null)
     }
@@ -220,20 +239,56 @@ export const OpenpayCardContainer = ({
             className="txt-medium text-ui-fg-subtle my-4"
             data-testid="openpay-unavailable-message"
           >
-            Card payments are temporarily unavailable. Please choose another
-            payment method.
+            Los pagos con tarjeta no están disponibles en este momento. Elige
+            otro método de pago.
           </Text>
         ) : ready ? (
-          <div className="my-4 flex flex-col gap-y-2 transition-all duration-150 ease-in-out">
+          <div
+            className="my-4 flex flex-col gap-y-2 transition-all duration-150 ease-in-out"
+            /**
+             * The card form is a text-entry region nested inside a
+             * `RadioGroup`, and Headless UI's group handler does not look at
+             * `event.target`.
+             *
+             * `@headlessui/react@2.2.9` attaches `onKeyDown` to the RadioGroup
+             * ROOT (`payment-section/index.tsx` renders it; these inputs are
+             * children of a `Radio` inside it) and switches on `event.key`
+             * alone. `ArrowLeft`/`ArrowUp` and `ArrowRight`/`ArrowDown` call
+             * `preventDefault()`, `stopPropagation()`, move focus to the
+             * neighbouring row and fire `change(value)`. `Space` does the same
+             * to the currently focused option. React dispatches from its root
+             * container during the native bubble phase, so that
+             * `preventDefault()` lands before the browser's default action.
+             *
+             * Two customer-visible consequences, both at the moment of
+             * purchase. Pressing the left arrow to correct a digit in the PAN
+             * does not move the caret — it selects Mercado Pago instead, which
+             * unmounts this form and discards everything typed into it. And
+             * the space bar does nothing in "Nombre en la tarjeta", so
+             * `JUAN PÉREZ` becomes `JUANPÉREZ` — which still passes
+             * `holderName.trim().length > 0` and is tokenized and sent to the
+             * issuer as the cardholder name.
+             *
+             * Stopping the SYNTHETIC event here keeps it from reaching the
+             * group's handler while leaving the inputs' own default behaviour
+             * intact. Radio navigation still works everywhere else in the
+             * group, because nothing outside this div is a text field.
+             *
+             * NOT reachable by this repo's runner — `environment: "node"`, no
+             * jsdom, no `@testing-library`. Verified by manual QA; see task
+             * 2c.36 in `tasks.md` for the exact steps.
+             */
+            onKeyDown={(event) => event.stopPropagation()}
+          >
             <Text className="txt-medium-plus text-ui-fg-base mb-1">
-              Enter your card details:
+              Ingresa los datos de tu tarjeta:
             </Text>
             <input
               type="text"
               inputMode="numeric"
               autoComplete="cc-number"
-              placeholder="Card number"
-              aria-label="Card number"
+              placeholder="Número de tarjeta"
+              aria-label="Número de tarjeta"
               className={cardInputClasses}
               value={cardNumber}
               onChange={(e) => setCardNumber(formatCardNumber(e.target.value))}
@@ -243,8 +298,8 @@ export const OpenpayCardContainer = ({
             <input
               type="text"
               autoComplete="cc-name"
-              placeholder="Name on card"
-              aria-label="Name on card"
+              placeholder="Nombre en la tarjeta"
+              aria-label="Nombre en la tarjeta"
               className={cardInputClasses}
               value={holderName}
               onChange={(e) => setHolderName(e.target.value)}
@@ -255,8 +310,8 @@ export const OpenpayCardContainer = ({
                 type="text"
                 inputMode="numeric"
                 autoComplete="cc-exp"
-                placeholder="MM/YY"
-                aria-label="Expiration date (MM/YY)"
+                placeholder="MM/AA"
+                aria-label="Fecha de vencimiento (MM/AA)"
                 className={cardInputClasses}
                 value={expiry}
                 onChange={(e) => setExpiry(formatExpiry(e.target.value))}
@@ -268,7 +323,7 @@ export const OpenpayCardContainer = ({
                 inputMode="numeric"
                 autoComplete="cc-csc"
                 placeholder="CVV"
-                aria-label="Security code"
+                aria-label="Código de seguridad"
                 className={cardInputClasses}
                 value={cvv2}
                 onChange={(e) => setCvv2(e.target.value.replace(/\D/g, ""))}

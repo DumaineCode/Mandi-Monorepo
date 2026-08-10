@@ -3,6 +3,7 @@ import { retrieveCustomer } from "@lib/data/customer"
 import { listCartShippingMethods } from "@lib/data/fulfillment"
 import { listCartPaymentMethods } from "@lib/data/payment"
 import { getProviderConfig } from "@lib/data/provider-config"
+import { selectCheckoutEntryError } from "@lib/util/place-order"
 import ItemsPreviewTemplate from "@modules/cart/templates/preview"
 import PaymentWrapper from "@modules/checkout/components/payment-wrapper"
 import { CheckoutProvider } from "@modules/checkout/state/checkout-context"
@@ -15,7 +16,11 @@ export const metadata: Metadata = {
   title: "Checkout",
 }
 
-export default async function Checkout() {
+export default async function Checkout({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>
+}) {
   const cart = await retrieveCart()
 
   if (!cart) {
@@ -49,8 +54,53 @@ export default async function Checkout() {
     listCartPaymentMethods(cart.region?.id ?? ""),
   ])
 
+  /**
+   * The `?error=payment_failed` both payment-return routes have always set, and
+   * which nothing has ever read.
+   *
+   * A customer whose 3DS challenge declined, or who abandoned Mercado Pago,
+   * landed here on a pristine checkout with nothing to explain it — so the only
+   * available reading was "my click didn't register", and the retry cost them a
+   * SECOND authorization hold. The decision is
+   * `selectCheckoutEntryError`, in a module a spec can contradict; this is
+   * wiring. It seeds the same `state.error` the place-order flow writes, so
+   * there is one channel for "why you have not been charged" and
+   * `PLACE_ORDER_STARTED` clears it on the next attempt.
+   *
+   * Surfacing this parameter was recorded as a NON-GOAL (`proposal.md` §4,
+   * `design.md` §13, `tasks.md`). Deliberately overridden in this slice, which
+   * is the one that starts taking money — see `apply-progress.md` PART 13.
+   */
+  const entryError = selectCheckoutEntryError(await searchParams)
+
   return (
-    <div className="grid grid-cols-1 small:grid-cols-[1fr_416px] content-container gap-x-40 py-12">
+    <div
+      className={[
+        "grid grid-cols-1 small:grid-cols-[1fr_416px] content-container gap-x-40 py-12",
+        /**
+         * Scroll clearance for the sticky mobile CTA bar, on the PAGE GRID.
+         *
+         * It used to sit on the form column alone
+         * (`checkout-form/index.tsx`), which reserved nothing for anything
+         * below it. On mobile this grid is `grid-cols-1` with no `gap-y`, so
+         * `CheckoutSummary` renders AFTER the form column's padding — putting
+         * the discount field and the totals under the bar with only the page's
+         * own `py-12` between them. The customer could not reach
+         * `DiscountCode` at all.
+         *
+         * Measured bar height on a notched iPhone with the cart resolved:
+         * `pt-3` 12 + total row 36 + `h-12` button 48 + the always-rendered
+         * `MissingItemsList` wrapper 8–26 + `pb` 12 + safe area ≈ 150–168 px.
+         * The old reservation was `6rem` ≈ 96 px + safe area, i.e. short even
+         * for the column it did cover. `10rem` clears the two-line case.
+         *
+         * `env(safe-area-inset-bottom)` is added on top because the bar adds it
+         * to its OWN padding, so the reservation has to as well or the
+         * clearance shrinks by the height of the home indicator.
+         */
+        "pb-[calc(10rem+env(safe-area-inset-bottom))] small:pb-12",
+      ].join(" ")}
+    >
       {/*
        * The provider owns every piece of client state the three sections share.
        * The RSC render supplies the INITIAL cart only; after mount `state.cart`
@@ -66,6 +116,7 @@ export default async function Checkout() {
           cart,
           customer,
           shippingOptions: shippingOptions ?? [],
+          error: entryError,
         }}
       >
         {/* No `cart` prop: under C1 the wrapper mounts from provider config and

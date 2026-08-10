@@ -85,7 +85,23 @@ export default function CheckoutLayout({
         cream already comes from <body>, and repainting it would punch an opaque
         watermark-free stripe across the bottom of the page.
       */}
-      <div className="w-full border-t border-line py-6">
+      {/*
+        The bottom padding is the LAST piece of the sticky-bar clearance, and it
+        has to be here rather than on the checkout page.
+
+        `checkout/page.tsx` reserves for the bar inside its own grid, which
+        makes the summary and the discount field reachable. This footer is a
+        SIBLING of `{children}` and therefore ends up below that reservation, at
+        the very end of the document — so at maximum scroll the payment badges
+        sat under the bar regardless of what the page reserved. Trust signals
+        beside the purchase button are the one thing on this footer that has a
+        job.
+
+        Mobile only. The other route in this group
+        (`payment/mercadopago/status`) renders no sticky bar and pays for this
+        with dead whitespace it is short enough never to scroll to.
+      */}
+      <div className="w-full border-t border-line py-6 pb-[calc(10rem+env(safe-area-inset-bottom))] small:pb-6">
         <div className="content-container flex flex-col items-center gap-5">
           <PaymentBadges
             labelClassName="text-ink-muted"

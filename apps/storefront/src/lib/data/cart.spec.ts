@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs"
+import { fileURLToPath } from "node:url"
+
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 /**
@@ -25,16 +28,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
  * called with, never against a stub's return value. That is the difference
  * between testing the write and testing the test.
  */
-const { fetchMock, updateMock, getCartIdMock } = vi.hoisted(() => ({
-  fetchMock: vi.fn(),
-  updateMock: vi.fn(),
-  getCartIdMock: vi.fn(),
-}))
+const { fetchMock, updateMock, completeMock, getCartIdMock } = vi.hoisted(
+  () => ({
+    fetchMock: vi.fn(),
+    updateMock: vi.fn(),
+    completeMock: vi.fn(),
+    getCartIdMock: vi.fn(),
+  })
+)
 
 vi.mock("@lib/config", () => ({
   sdk: {
     client: { fetch: fetchMock },
-    store: { cart: { update: updateMock, create: vi.fn() } },
+    store: {
+      cart: { update: updateMock, create: vi.fn(), complete: completeMock },
+    },
   },
 }))
 
@@ -57,7 +65,11 @@ vi.mock("@lib/util/medusa-error", () => ({ default: vi.fn() }))
 // loaded by a node-environment data-layer test.
 vi.mock("@lib/constants", () => ({ isOpenpay: () => false }))
 
-import { persistCheckoutDraft } from "./cart"
+import {
+  persistCheckoutDraft,
+  placeOrder,
+  syncCheckoutAddresses,
+} from "./cart"
 
 const CART_ID = "cart_01JQZ8V3K7NB2XW9RTPY4C6HDM"
 const ADDRESS_ID = "caaddr_01JQZ8V3K7NB2XW9RTPY4C6HDM"
@@ -92,6 +104,7 @@ const sentShippingAddress = () =>
 beforeEach(() => {
   fetchMock.mockReset()
   updateMock.mockReset()
+  completeMock.mockReset()
   getCartIdMock.mockReset()
   getCartIdMock.mockResolvedValue(CART_ID)
   updateMock.mockResolvedValue({
@@ -403,5 +416,378 @@ describe("persistCheckoutDraft", () => {
 
       expect(console.error).toHaveBeenCalled()
     })
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * `syncCheckoutAddresses` — the CTA-time write (task 2c.12)
+ * ---------------------------------------------------------------------------
+ *
+ * Replaces `setAddresses`, which took a `FormData` from a submit button that no
+ * longer exists (PR2a deleted `addresses/index.tsx`, its only caller) and sent
+ * BOTH addresses with NO ids.
+ *
+ * That id-less write is the same `EntityAssigner` -> `em.create` path PR1a
+ * closed for the autosave, and `persistCheckoutDraft`'s own docstring cites
+ * this function BY NAME as the reason a client-held address id could never be
+ * trusted: every submit minted new rows, so any id the client had captured was
+ * already stale. Closing the autosave half while leaving this one open would
+ * have meant the CTA re-opened the hole the autosave had just been hardened
+ * against — on the one request per checkout that the customer cannot retry
+ * without consequences.
+ *
+ * The tests below assert against the ARGUMENTS `sdk.store.cart.update` was
+ * called with, not against a stub's return value, for the reason stated at the
+ * top of this file.
+ */
+describe("syncCheckoutAddresses", () => {
+  const BILLING_ID = "caaddr_01JQZ8V3K7NB2XW9RTPY4C6HBB"
+
+  const SHIPPING = {
+    first_name: "Ana",
+    last_name: "Ruiz",
+    company: "",
+    address_1: "Av. Insurgentes Sur 1602",
+    address_2: "Crédito Constructor",
+    postal_code: "03940",
+    city: "Ciudad de México",
+    province: "CDMX",
+    country_code: "mx",
+    phone: "5512345678",
+  }
+
+  const BILLING = {
+    ...SHIPPING,
+    address_1: "Av. Constitución 300",
+    address_2: "Centro",
+    postal_code: "64000",
+    city: "Monterrey",
+    province: "Nuevo León",
+  }
+
+  /** A cart that owns BOTH address rows. */
+  const cartWithBothAddresses = () => ({
+    cart: {
+      id: CART_ID,
+      shipping_address_id: ADDRESS_ID,
+      shipping_address: { id: ADDRESS_ID },
+      billing_address_id: BILLING_ID,
+      billing_address: { id: BILLING_ID },
+    },
+  })
+
+  const sentPayload = () =>
+    updateMock.mock.calls[0][1] as {
+      shipping_address?: Record<string, unknown>
+      billing_address?: Record<string, unknown>
+      email?: string
+    }
+
+  it("sends BOTH addresses carrying their own row ids", async () => {
+    fetchMock.mockResolvedValue(cartWithBothAddresses())
+
+    const result = await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: "ana@example.com",
+    })
+
+    expect(result.ok).toBe(true)
+
+    const payload = sentPayload()
+    expect(payload.shipping_address?.id).toBe(ADDRESS_ID)
+    expect(payload.billing_address?.id).toBe(BILLING_ID)
+    expect(payload.shipping_address?.city).toBe("Ciudad de México")
+    expect(payload.billing_address?.city).toBe("Monterrey")
+    expect(payload.email).toBe("ana@example.com")
+  })
+
+  /**
+   * The `absent` path. A cart that has never had a billing row has no id to
+   * send, `em.create` is correct, and there is nothing to churn. The key must
+   * be OMITTED — a falsy id yields `pk === undefined` at `EntityAssigner.js:81`
+   * and buys nothing.
+   */
+  it("omits the billing id on a cart that has no billing row", async () => {
+    fetchMock.mockResolvedValue({
+      cart: {
+        id: CART_ID,
+        shipping_address_id: ADDRESS_ID,
+        shipping_address: { id: ADDRESS_ID },
+        billing_address_id: null,
+        billing_address: null,
+      },
+    })
+
+    await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    const payload = sentPayload()
+    expect(payload.shipping_address?.id).toBe(ADDRESS_ID)
+    expect("id" in (payload.billing_address ?? {})).toBe(false)
+  })
+
+  /**
+   * THE ABORT GUARANTEE, inherited from `persistCheckoutDraft`.
+   *
+   * A read that did not positively establish an answer must produce ZERO calls
+   * to `sdk.store.cart.update`. The assertion is on the write NOT happening: a
+   * returned `{ ok: false }` beside a write that already went out is the worst
+   * of both worlds, and only this assertion can tell the difference.
+   */
+  it("performs NO write when the fresh read rejects", async () => {
+    fetchMock.mockRejectedValue(new Error("ECONNREFUSED"))
+
+    const result = await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    expect(result.ok).toBe(false)
+    expect(updateMock).not.toHaveBeenCalled()
+  })
+
+  it("performs NO write when a row exists but its id did not arrive", async () => {
+    // The dangerous shape: the FK says a row is there and the projection did
+    // not deliver its key. Writing id-less would churn that row.
+    fetchMock.mockResolvedValue({
+      cart: {
+        id: CART_ID,
+        shipping_address_id: ADDRESS_ID,
+        shipping_address: { first_name: "Ana" },
+        billing_address_id: null,
+        billing_address: null,
+      },
+    })
+
+    const result = await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    expect(result.ok).toBe(false)
+    expect(updateMock).not.toHaveBeenCalled()
+  })
+
+  it("performs NO write when the BILLING id cannot be established", async () => {
+    fetchMock.mockResolvedValue({
+      cart: {
+        id: CART_ID,
+        shipping_address_id: ADDRESS_ID,
+        shipping_address: { id: ADDRESS_ID },
+        billing_address_id: BILLING_ID,
+        billing_address: { first_name: "Ana" },
+      },
+    })
+
+    const result = await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    expect(result.ok).toBe(false)
+    expect(updateMock).not.toHaveBeenCalled()
+  })
+
+  it("performs NO write when there is no cart at all", async () => {
+    getCartIdMock.mockResolvedValue(undefined)
+
+    const result = await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    expect(result.ok).toBe(false)
+    expect(updateMock).not.toHaveBeenCalled()
+  })
+
+  /**
+   * `cart.ts` is `"use server"`, so every string this function returns is
+   * shipped to the browser. The backend's own response body echoes cart ids and
+   * address content; `persistCheckoutDraft` already withholds it and returns a
+   * generic string instead, and this function must not undo that decision on a
+   * different route.
+   */
+  it("never returns the backend's own error text to the browser", async () => {
+    fetchMock.mockResolvedValue(cartWithBothAddresses())
+    updateMock.mockRejectedValue(
+      new Error(`Cart ${CART_ID} address ${ADDRESS_ID} is invalid`)
+    )
+
+    const result = await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.error).not.toContain(CART_ID)
+      expect(result.error).not.toContain(ADDRESS_ID)
+    }
+  })
+
+  /**
+   * The returned cart is what the total-change guard (2c.8) compares against
+   * `totalAtRender`, so it has to be the cart the write produced and not the
+   * one the pre-flight read returned. Handing back the stale read would make
+   * the guard compare a number to itself and never fire.
+   */
+  it("returns the cart the WRITE produced, not the one the read returned", async () => {
+    fetchMock.mockResolvedValue(cartWithBothAddresses())
+    updateMock.mockResolvedValue({
+      cart: { id: CART_ID, total: 1450, shipping_address: { id: ADDRESS_ID } },
+    })
+
+    const result = await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.cart.total).toBe(1450)
+    }
+  })
+
+  it("omits email entirely when the caller supplies null", async () => {
+    fetchMock.mockResolvedValue(cartWithBothAddresses())
+
+    await syncCheckoutAddresses({
+      shipping: SHIPPING,
+      billing: BILLING,
+      email: null,
+    })
+
+    expect("email" in sentPayload()).toBe(false)
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * Copy register: Mexican `tú`, never voseo
+ * ---------------------------------------------------------------------------
+ *
+ * ## Why the guard is pointed at the SOURCE FILE and not at a constant
+ *
+ * `placeOrder`'s default decline copy shipped as *"…Podés intentar de nuevo o
+ * con otra tarjeta."* `Podés` is Rioplatense voseo; this store is Mexican and
+ * the register is `tú`. It is the single most common failure string in the
+ * whole checkout, and `place-order-flow.ts`'s `messageFrom` passes backend
+ * messages through VERBATIM to the customer.
+ *
+ * It got through because the two existing voseo guards each cover a different
+ * catalogue — `PLACE_ORDER_MESSAGES` and the readiness `MESSAGES` — and this
+ * string belongs to neither. It is an inline literal in a `"use server"`
+ * module, and a `"use server"` module may not export a constant object, so
+ * there is nothing to point an `Object.values()` guard at.
+ *
+ * So the guard reads the file. Every Spanish string literal `cart.ts` can
+ * return to the browser is swept, including the two module-private generic
+ * errors, and a literal added tomorrow is covered on the day it is written
+ * rather than on the day someone remembers to register it.
+ */
+describe("customer-facing copy in cart.ts", () => {
+  /**
+   * Wider than the two existing guards, which between them missed `Podés`.
+   * Every form here is a Rioplatense second-person imperative or present.
+   */
+  const VOSEO =
+    /(Podés|Tenés|Querés|Hacé|Andá|Elegí|Completá|Volvé|Ingresá|Seleccioná|Revisá|Confirmá|Verificá|Probá|Intentá|Recargá|Escribí|Mandá|Poné|Buscá|Guardá|Esperá)/
+
+  const source = readFileSync(
+    fileURLToPath(new URL("./cart.ts", import.meta.url)),
+    "utf8"
+  )
+
+  /**
+   * Double-quoted literals only, which is every string in this file — the repo
+   * has no single-quote or template-literal Spanish copy in the data layer, and
+   * the sweep below asserts it found a representative sample rather than
+   * trusting the regex silently matched nothing.
+   */
+  const literals = (source.match(/"[^"\n]*"/g) ?? []).map((raw) =>
+    raw.slice(1, -1)
+  )
+
+  /** A literal is customer copy if it reads as Spanish prose. */
+  const spanishCopy = literals.filter((value) =>
+    /(?:^|\s)(tu|tus|no|de|la|el|los|las|un|una|pudimos|inténtalo)(?:\s|$)/i.test(
+      value
+    )
+  )
+
+  it("finds the strings it claims to be guarding", () => {
+    // If the extraction ever stops matching, this guard silently passes over an
+    // empty list — the exact failure mode that let `Podés` ship.
+    expect(spanishCopy.length).toBeGreaterThanOrEqual(3)
+    expect(spanishCopy).toContain("No pudimos guardar tus datos. Inténtalo de nuevo.")
+  })
+
+  it("uses Mexican tú in every customer-facing string, never voseo", () => {
+    for (const value of spanishCopy) {
+      expect(value).not.toMatch(VOSEO)
+    }
+  })
+
+  /**
+   * The guard is only worth anything if it can fail. The first version of the
+   * readiness guard used `Complet[áa]`, which matched the CORRECT Mexican form
+   * and would have flagged good copy while a real voseo string was
+   * indistinguishable from a false positive.
+   */
+  it("has a voseo guard that recognises actual voseo", () => {
+    expect(
+      "Podés intentar de nuevo o con otra tarjeta."
+    ).toMatch(VOSEO)
+    expect("Tenés que elegir un método").toMatch(VOSEO)
+    expect("Querés reintentar").toMatch(VOSEO)
+    expect(
+      "Puedes intentar de nuevo o con otra tarjeta."
+    ).not.toMatch(VOSEO)
+    expect("No pudimos guardar tus datos. Inténtalo de nuevo.").not.toMatch(
+      VOSEO
+    )
+  })
+})
+
+/**
+ * The behavioural half of the same fix.
+ *
+ * Medusa returns `type: "cart"` with HTTP 200 when completion FAILED — a
+ * declined card, most often. `placeOrder` throws so the CTA surfaces the
+ * reason, and `placeOrderFlow`'s `messageFrom` passes an `Error.message`
+ * through verbatim. So this literal is not internal: it is read by more
+ * customers than any other string in the checkout.
+ */
+describe("placeOrder's decline copy", () => {
+  const DECLINE =
+    "No pudimos completar tu pago. Tu tarjeta fue rechazada o el pago no se autorizó. Puedes intentar de nuevo o con otra tarjeta."
+
+  it("throws the Mexican tú decline when the backend gives no reason", async () => {
+    completeMock.mockResolvedValue({ type: "cart", cart: { id: CART_ID } })
+
+    await expect(placeOrder()).rejects.toThrow(DECLINE)
+  })
+
+  it("prefers the backend's own reason when there is one", async () => {
+    completeMock.mockResolvedValue({
+      type: "cart",
+      cart: { id: CART_ID },
+      error: { message: "Tu tarjeta no tiene fondos suficientes." },
+    })
+
+    await expect(placeOrder()).rejects.toThrow(
+      "Tu tarjeta no tiene fondos suficientes."
+    )
   })
 })

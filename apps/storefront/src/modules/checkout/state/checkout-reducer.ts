@@ -5,7 +5,9 @@ import {
 import {
   getMissingOrderRequirements,
   toReadinessInput,
+  type MissingRequirement,
   type OrderReadinessInput,
+  type ReadinessClientInput,
 } from "@lib/util/checkout-readiness"
 import {
   buildQuoteSignature,
@@ -155,6 +157,21 @@ export type CheckoutState = {
   /** @see `modules/checkout/components/payment-section` — PR2c. */
   paymentDetailsComplete: boolean
 
+  /**
+   * Whether `placeOrderFlow` is mid-attempt.
+   *
+   * A UI affordance, not the re-entrancy guard. The flow keeps its own
+   * synchronous flag, because this one is read through the provider's
+   * `stateRef`, which is assigned in an effect and therefore lags by one
+   * commit — two clicks inside the same commit would both see `false`. Ordering
+   * a second charge is not an acceptable outcome of a double click, so the
+   * authoritative guard lives where it can be synchronous.
+   *
+   * @see `modules/checkout/state/place-order-flow.ts`
+   * @see `modules/checkout/components/place-order-bar` — PR2c slice 2.
+   */
+  placingOrder: boolean
+
   error: string | null
 }
 
@@ -162,6 +179,18 @@ export type CheckoutInit = {
   cart: HttpTypes.StoreCart | null
   customer: HttpTypes.StoreCustomer | null
   shippingOptions: HttpTypes.StoreCartShippingOption[] | null
+  /**
+   * An error the checkout is ENTERED with, rather than one it produced.
+   *
+   * The only producer is `selectCheckoutEntryError`, which reads
+   * `?error=payment_failed` — the parameter both payment-return routes have
+   * always set and nothing has ever read. It lands in the same `state.error`
+   * the place-order flow writes, and is therefore rendered by the same
+   * `ErrorMessage` beside the CTA and cleared by the same
+   * `PLACE_ORDER_STARTED`. One channel for "why you have not been charged",
+   * not two.
+   */
+  error?: string | null
 }
 
 export type CheckoutAction =
@@ -219,6 +248,17 @@ export type CheckoutAction =
     }
   | { type: "SELECT_PAYMENT_PROVIDER"; providerId: string }
   | { type: "SET_PAYMENT_DETAILS_COMPLETE"; complete: boolean }
+  | { type: "PLACE_ORDER_STARTED" }
+  | {
+      type: "PLACE_ORDER_SETTLED"
+      /**
+       * Required, not optional. Every tail has to say explicitly whether it is
+       * reporting a failure or standing down cleanly — `undefined` meaning "no
+       * error" is how a tail that forgot to pass anything ends up looking like
+       * a success.
+       */
+      error: string | null
+    }
   | { type: "SET_ERROR"; error: string | null }
 
 const draftFromAddress = (
@@ -449,8 +489,14 @@ export function initFromServer(init: CheckoutInit): CheckoutState {
 
     selectedPaymentProviderId: null,
     paymentDetailsComplete: false,
+    placingOrder: false,
 
-    error: null,
+    /**
+     * Normally `null`. Non-null only when the customer arrived from a failed
+     * 3DS challenge or an abandoned Mercado Pago checkout — see
+     * `CheckoutInit.error` and `selectCheckoutEntryError`.
+     */
+    error: init.error ?? null,
   }
 }
 
@@ -819,8 +865,36 @@ export function checkoutReducer(
     case "SELECT_PAYMENT_PROVIDER":
       return { ...state, selectedPaymentProviderId: action.providerId }
 
+    /**
+     * Declines an unchanged value, and the identity check is load-bearing.
+     *
+     * `OpenpayCardContainer`'s validation effect re-runs on every card
+     * keystroke and reports its verdict unconditionally, so sixteen digits of a
+     * PAN is sixteen dispatches of which fifteen say nothing new. A fresh state
+     * object for each of them re-renders every consumer of
+     * `CheckoutStateContext` — both address sections, Envío, and both CTA
+     * variants — once per character, on the page least able to afford it.
+     *
+     * The effect cannot filter this itself without subscribing to the state it
+     * would be filtering against, which is the same re-render. The reducer is
+     * the only party that already knows.
+     */
     case "SET_PAYMENT_DETAILS_COMPLETE":
-      return { ...state, paymentDetailsComplete: action.complete }
+      return state.paymentDetailsComplete === action.complete
+        ? state
+        : { ...state, paymentDetailsComplete: action.complete }
+
+    /**
+     * Clearing the error here is the point, not a side effect. A message left
+     * over from the previous attempt sitting beside a spinner reads as if the
+     * new attempt has already failed — and the most common reason for a second
+     * attempt is the total-change guard, which is not a failure at all.
+     */
+    case "PLACE_ORDER_STARTED":
+      return { ...state, placingOrder: true, error: null }
+
+    case "PLACE_ORDER_SETTLED":
+      return { ...state, placingOrder: false, error: action.error }
 
     case "SET_ERROR":
       return { ...state, error: action.error }
@@ -1217,9 +1291,130 @@ export function selectWriteBaseCart(
  * @see `modules/checkout/templates/checkout-summary/index.tsx` — the consumer.
  */
 export function selectShippingIsProvisional(state: CheckoutState): boolean {
-  return getMissingOrderRequirements(selectReadinessInput(state)).some(
-    (requirement) => requirement.code === "shipping_method_stale"
-  )
+  return selectPlaceOrderView(state).provisional
+}
+
+/**
+ * Everything the final CTA renders — one derivation, three consumers.
+ *
+ * @see `modules/checkout/components/place-order-bar` — both variants.
+ * @see `modules/checkout/components/missing-items-list` — the itemized list.
+ */
+export type PlaceOrderView = {
+  /** Every unmet requirement, in catalogue order (R8 / S9). */
+  missing: MissingRequirement[]
+  /**
+   * The sticky bar's single line (D9). `null` when nothing is missing.
+   *
+   * The REQUIREMENT and not just its message, because the bar renders it
+   * through `MissingItemsList` — which needs the `code` for its React key and
+   * owns the `role="status"` / `aria-live="polite"` contract that must not be
+   * re-typed anywhere else.
+   *
+   * This field used to be `firstMissingMessage: string | null` and had no
+   * consumer at all: the sticky bar re-derived the identical rule inline as
+   * `view.missing.slice(0, 1)`. Three tests and a mutant guarded the dead copy
+   * while the live one was in a `.tsx` no spec can load, so changing it to
+   * `.slice(-1)` — showing every mobile customer the LAST thing they had to
+   * fix instead of the next one — left the whole suite green.
+   */
+  firstMissing: MissingRequirement | null
+  /** The `disabled` attribute for BOTH CTA variants. */
+  disabled: boolean
+  /** An attempt is in flight — the button's loading affordance. */
+  placing: boolean
+  /** The inline message under the CTA. */
+  error: string | null
+  /** `cart.total`, the field `CartTotals` renders. `null` before the cart resolves. */
+  total: number | null
+  currencyCode: string
+  /** D4: the total is de-emphasised rather than presented as final. */
+  provisional: boolean
+}
+
+/**
+ * The single source for the CTA's rendered state (tasks 2c.15–2c.17).
+ *
+ * ## Why this is a selector and not three components each working it out
+ *
+ * `PlaceOrderBar` renders twice — `inline` on desktop, `sticky` on mobile (D9)
+ * — and `MissingItemsList` renders the same catalogue a third time. All three
+ * are `.tsx` files, which this repo's node-only runner cannot load, so any rule
+ * left inside them is a rule nothing can contradict. Three independent
+ * derivations of "is the button disabled" and "what is the total" is three
+ * chances for the mobile bar to be enabled while the desktop one is not, or for
+ * the bar's total to disagree with the summary's.
+ *
+ * ## Every field is a definition, not a second opinion
+ *
+ * - `disabled` is the emptiness of `missing` OR an attempt already running. It
+ *   is never a re-reading of the conditions `getMissingOrderRequirements`
+ *   already checked; that copy is exactly how a button and its explanation
+ *   drift apart.
+ * - `provisional` is the PRESENCE of `shipping_method_stale` in the very list
+ *   the bar is rendering, which is why {@link selectShippingIsProvisional}
+ *   delegates here rather than deriving it a second time.
+ * - `total` is `cart.total` — the same field `CartTotals` renders — because the
+ *   spec requires the bar and the summary to be incapable of disagreeing.
+ *
+ * `placing` is the AFFORDANCE. The authoritative re-entrancy lock is a
+ * synchronous closure flag inside `place-order-flow.ts`, because this value
+ * reaches the button through a ref that lags by one commit.
+ */
+export function selectPlaceOrderView(state: CheckoutState): PlaceOrderView {
+  const missing = getMissingOrderRequirements(selectReadinessInput(state))
+
+  return {
+    missing,
+    firstMissing: missing[0] ?? null,
+    disabled: missing.length > 0 || state.placingOrder,
+    placing: state.placingOrder,
+    error: state.error,
+    total: state.cart?.total ?? null,
+    /**
+     * `"mxn"` and not `""`: `convertToLocale` falls back to a BARE NUMBER when
+     * the currency code is empty, so a cart fetched without `currency_code`
+     * would put an unlabelled figure next to a purchase button.
+     */
+    currencyCode: state.cart?.currency_code ?? "mxn",
+    provisional: missing.some(
+      (requirement) => requirement.code === "shipping_method_stale"
+    ),
+  }
+}
+
+/**
+ * The CLIENT half of the readiness input — everything the customer holds on
+ * screen, with no cart in it.
+ *
+ * Named and exported so the cart half can be varied while this one cannot
+ * drift. `place-order-flow.ts` re-runs the catalogue against the cart the
+ * address write actually RETURNED (step 3.5), and it has to ask the identical
+ * client questions step 0 asked, or the two gates would disagree about the same
+ * checkout for reasons that have nothing to do with the cart. A second copy of
+ * this object literal is precisely the defect class this change is about.
+ *
+ * @see {@link selectReadinessInput} — the same fields against `state.cart`.
+ * @see `modules/checkout/state/place-order-flow.ts` — the same fields against
+ * the post-write cart.
+ */
+export function selectReadinessClientInput(
+  state: CheckoutState
+): ReadinessClientInput {
+  return {
+    selectedShippingOptionId: state.selectedShippingOptionId,
+    selectionSignature: state.selectionSignature,
+    currentQuoteSignature: state.quoteSignature,
+    selectedPaymentProviderId: state.selectedPaymentProviderId,
+    paymentDetailsComplete: state.paymentDetailsComplete,
+    /**
+     * Amendment A5. Billing readiness is answered from the CHECKBOX and the
+     * DRAFT, never from `state.cart.billing_address` — the column's only writer
+     * runs at CTA time, behind the gate this feeds. See `toReadinessInput`.
+     */
+    sameAsBilling: state.sameAsBilling,
+    billingDraft: state.billingDraft,
+  }
 }
 
 /**
@@ -1228,6 +1423,17 @@ export function selectShippingIsProvisional(state: CheckoutState): boolean {
  * Built from the CART and not from the draft, deliberately: the cart is what
  * gets ordered, so a field the customer has typed but the autosave has not yet
  * persisted is genuinely not ready. The 400 ms debounce keeps the lag short.
+ *
+ * ## What that reasoning does NOT cover, and who closes it
+ *
+ * It is sound for ADDING data and inverted for REMOVING it. A customer who
+ * empties a field the cart still holds is reported ready by this input, and the
+ * CTA's own step 2 then persists the emptying — so the order is placed against
+ * an address that no longer satisfies the catalogue. This selector is not the
+ * place to fix that: at RENDER time the draft genuinely is unsaved, and gating
+ * the button on it would block a customer mid-keystroke. The rule is re-run
+ * against the WRITTEN cart in `place-order-flow.ts` step 3.5, which is the
+ * first moment the two can be compared honestly.
  *
  * `canPlaceOrder` is NOT re-derived anywhere in this module — it is defined as
  * the emptiness of `getMissingOrderRequirements`, and a second copy is how the
@@ -1238,11 +1444,5 @@ export function selectShippingIsProvisional(state: CheckoutState): boolean {
 export function selectReadinessInput(
   state: CheckoutState
 ): OrderReadinessInput {
-  return toReadinessInput(state.cart, {
-    selectedShippingOptionId: state.selectedShippingOptionId,
-    selectionSignature: state.selectionSignature,
-    currentQuoteSignature: state.quoteSignature,
-    selectedPaymentProviderId: state.selectedPaymentProviderId,
-    paymentDetailsComplete: state.paymentDetailsComplete,
-  })
+  return toReadinessInput(state.cart, selectReadinessClientInput(state))
 }

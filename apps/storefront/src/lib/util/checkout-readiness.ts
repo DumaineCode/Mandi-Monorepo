@@ -40,6 +40,37 @@ export const isOpenpayProviderId = (providerId?: string | null): boolean =>
   providerId.startsWith(OPENPAY_PROVIDER_ID_PREFIX)
 
 /**
+ * The other two provider prefixes, here for the same reason Openpay's is
+ * (task 2c.7): `place-order.ts` has to dispatch on the selected provider to
+ * pick a payment tail, and it cannot import `lib/constants.tsx` without
+ * dragging React into a module whose purity is what makes it testable.
+ *
+ * `lib/constants.tsx` delegates to both, so each prefix still has exactly one
+ * definition. Two copies is how the tail that runs and the label that renders
+ * would come to disagree about which provider the customer picked.
+ */
+export const MERCADOPAGO_PROVIDER_ID_PREFIX = "pp_mercadopago_"
+
+export const isMercadopagoProviderId = (
+  providerId?: string | null
+): boolean =>
+  typeof providerId === "string" &&
+  providerId.startsWith(MERCADOPAGO_PROVIDER_ID_PREFIX)
+
+/**
+ * Medusa's built-in `manual` provider registers as `pp_system_default`.
+ *
+ * Matched by prefix rather than by equality to stay consistent with the other
+ * two — Medusa composes provider ids as `pp_{provider}_{id}` and the system
+ * default is the one that happens to have no suffix today.
+ */
+export const MANUAL_PROVIDER_ID_PREFIX = "pp_system_default"
+
+export const isManualProviderId = (providerId?: string | null): boolean =>
+  typeof providerId === "string" &&
+  providerId.startsWith(MANUAL_PROVIDER_ID_PREFIX)
+
+/**
  * Whether Openpay is actually purchasable on this cart, per the provider list
  * the backend returned for the cart's region (`listCartPaymentMethods`).
  *
@@ -71,6 +102,43 @@ export const isOpenpayOffered = (
   paymentMethods.some((method) => isOpenpayProviderId(method?.id))
 
 /**
+ * Whether Openpay's device-fingerprinting collector may run
+ * (`design.md` §12b, PR2c).
+ *
+ * ## The trigger moved, and this is the rule it moved to
+ *
+ * `openpay-data.v1.min.js` is not the tokenization SDK; it is an antifraud
+ * collector that profiles the browser on load. Under PR1b it started for every
+ * visitor who opened `/checkout` in a region where Openpay was purchasable —
+ * including everyone who went on to pay with Mercado Pago, and everyone who
+ * abandoned. The user's settled decision is narrower: only customers who
+ * actually choose to pay by card through Openpay may be profiled.
+ *
+ * So collection now requires BOTH facts, and the conjunction is the point.
+ * {@link isOpenpayOffered} answers "is Openpay purchasable on this cart" and is
+ * kept because a provider id is CLIENT state — a stale restore or a devtools
+ * edit could select Openpay in a region that does not offer it, and collection
+ * must still refuse. The selection answers "did this customer ask for it".
+ * Dropping either one silently widens who gets fingerprinted, which is the kind
+ * of change that passes review unnoticed.
+ *
+ * Extracted rather than inlined for the same reason `isOpenpayOffered` was: its
+ * call site is a `.tsx`, this project's runner is node-only, and a rule left in
+ * a component is a rule nothing can contradict. This one decides whether a
+ * third party profiles a customer's device.
+ *
+ * What this does NOT change is C1: the wrapper still does not depend on a
+ * payment session existing, which is what makes R5 possible. The trigger moved
+ * from "checkout mount" to "method selected", both of which happen before the
+ * CTA. The card fields show their pending skeleton while the scripts load.
+ */
+export const shouldCollectOpenpayDeviceData = (
+  paymentMethods: readonly { id?: string | null }[] | null | undefined,
+  selectedProviderId: string | null | undefined
+): boolean =>
+  isOpenpayOffered(paymentMethods) && isOpenpayProviderId(selectedProviderId)
+
+/**
  * The catalogue. Nine codes, ordered top-to-bottom by page position so the
  * itemized list matches the order the customer will read (R8 / S9).
  *
@@ -85,6 +153,7 @@ export type MissingRequirementCode =
   | "shipping_address"
   | "colonia"
   | "billing_address"
+  | "billing_address_incomplete"
   | "shipping_method"
   | "shipping_method_stale"
   | "payment_method"
@@ -107,13 +176,23 @@ export type MissingRequirement = {
  * it, because a voseo string reads as perfectly good Spanish in review and only
  * the customer notices it is the wrong country's.
  */
-const MESSAGES: Record<MissingRequirementCode, string> = {
+export const MISSING_REQUIREMENT_MESSAGES: Record<
+  MissingRequirementCode,
+  string
+> = {
   cart_empty: "Tu carrito está vacío.",
   email: "Falta tu correo electrónico.",
   phone: "Falta tu teléfono.",
   shipping_address: "Completa tu dirección de envío.",
   colonia: "Elige tu colonia.",
   billing_address: "Falta tu dirección de facturación.",
+  /**
+   * The BASE of a composed message, and the only entry in this catalogue that
+   * is not the whole string the customer reads. `buildBillingIncompleteMessage`
+   * appends the field list; called with no fields it returns exactly this, so
+   * the catalogue is still the single source of the wording.
+   */
+  billing_address_incomplete: "Completa tu dirección de facturación.",
   shipping_method: "Elige un método de envío.",
   shipping_method_stale:
     "Vuelve a elegir el método de envío: cambiaste el código postal.",
@@ -140,6 +219,32 @@ const REQUIRED_ADDRESS_FIELDS = [
   "country_code",
 ] as const
 
+/** A field the billing address must carry. @see {@link missingBillingFields} */
+export type BillingRequiredField = (typeof REQUIRED_ADDRESS_FIELDS)[number]
+
+/**
+ * What each billing field is CALLED to the customer (Amendment A6, task 2c.33).
+ *
+ * Lower-case because they are spliced into a sentence, not used as headings,
+ * and worded to match the labels on the billing form rather than the API field
+ * names — a customer told `country_code` is missing has been handed our schema
+ * instead of an instruction.
+ *
+ * `address_1` is `calle y número` and not `dirección`, because the form already
+ * uses `Dirección` for that input while the section heading is also
+ * "Dirección de facturación"; repeating it would name the section rather than
+ * the field.
+ */
+export const BILLING_FIELD_LABELS: Record<BillingRequiredField, string> = {
+  first_name: "nombre",
+  last_name: "apellido",
+  address_1: "calle y número",
+  postal_code: "código postal",
+  city: "ciudad",
+  province: "estado",
+  country_code: "país",
+}
+
 export type ReadinessAddressSnapshot = {
   first_name?: string | null
   last_name?: string | null
@@ -163,7 +268,26 @@ export type OrderReadinessInput = {
   itemCount: number
   email?: string | null
   shippingAddress?: ReadinessAddressSnapshot | null
+  /**
+   * Whether the customer has told us what to write into `billing_address`.
+   *
+   * A CLIENT fact, not a cart fact, and the distinction is the whole point.
+   * See {@link toReadinessInput} for the deadlock that made it one.
+   */
   hasBillingAddress: boolean
+  /**
+   * WHICH billing fields are absent, in catalogue order (Amendment A6).
+   *
+   * Only read when {@link hasBillingAddress} is `false`, and only to choose
+   * between the two mutually exclusive billing codes and compose the message.
+   * Optional so every existing caller and fixture keeps meaning what it meant:
+   * absent behaves as "we were not told", which reports the undifferentiated
+   * `billing_address` — the pre-A6 behaviour.
+   *
+   * It cannot contradict {@link hasBillingAddress}, because
+   * {@link toReadinessInput} derives BOTH from {@link missingBillingFields}.
+   */
+  billingMissingFields?: readonly BillingRequiredField[]
   /** Whether `cart.shipping_methods` carries a row. Server-side fact. */
   hasShippingMethod: boolean
   /**
@@ -197,6 +321,98 @@ const isAbsent = (value: string | null | undefined): boolean =>
   typeof value !== "string" || value.trim().length === 0
 
 /**
+ * Whether the customer has typed a usable SEPARATE billing address.
+ *
+ * Same field set as {@link REQUIRED_ADDRESS_FIELDS}, and the two exclusions are
+ * deliberate rather than inherited. `phone` and `address_2` are required on the
+ * SHIPPING address for fulfilment reasons — Skydropx rejects a quote with no
+ * `area_level3` and its origin/destination pre-flight needs a phone. Nothing is
+ * ever shipped to the billing address, and `buildOpenpaySessionData` already
+ * emits `phone_number: undefined` without complaint. Requiring them here would
+ * block a checkout over a field no downstream system asks for.
+ *
+ * Completeness rather than mere presence, because an all-empty billing form is
+ * exactly what the customer is looking at the moment they uncheck the "same as
+ * billing" box. Waving that through hands Openpay an empty `customer` object,
+ * which it refuses with API error 1001 — and the customer reads that as a
+ * decline on a card that is perfectly good.
+ */
+export function billingDraftIsComplete(
+  draft: ReadinessAddressSnapshot | null | undefined
+): boolean {
+  return missingBillingFields(draft).length === 0
+}
+
+/**
+ * WHICH billing fields are still absent, in catalogue order (Amendment A6,
+ * task 2c.33).
+ *
+ * ## Why this exists and `billingDraftIsComplete` alone did not
+ *
+ * A5 made billing readiness a client fact and closed the deadlock, but it left
+ * the customer who unchecks "misma dirección de facturación" and mistypes one
+ * field reading `Falta tu dirección de facturación.` beside a nine-input form
+ * and a CTA that will not move. Shipping does better than that — it splits
+ * `phone` and `colonia` out of the generic address message precisely so the
+ * customer is told which single control to fix — and billing had no equivalent.
+ *
+ * Two of those inputs made it worse than merely vague: `city` and `province`
+ * are required here and were not marked `required` on the billing form, and
+ * there is no `<form>` left to run native validation anyway. A customer could
+ * satisfy every field the UI asked for and still be refused.
+ *
+ * ## One rule, two shapes
+ *
+ * `billingDraftIsComplete` is DEFINED as the emptiness of this list, the same
+ * way `canPlaceOrder` is defined as the emptiness of
+ * {@link getMissingOrderRequirements}. A second derivation is how the boolean
+ * that blocks the CTA and the list that explains it come to disagree.
+ *
+ * Order is significant: the message reads as a list the customer scans against
+ * the form, so it runs in the same direction the form does.
+ */
+export function missingBillingFields(
+  draft: ReadinessAddressSnapshot | null | undefined
+): BillingRequiredField[] {
+  return REQUIRED_ADDRESS_FIELDS.filter((field) => isAbsent(draft?.[field]))
+}
+
+/**
+ * Joins field labels the way Spanish reads them: `a`, `a y b`, `a, b y c`.
+ *
+ * No `y` → `e` rule before an i-/hi- sound, deliberately. The label set is
+ * fixed and closed ({@link BILLING_FIELD_LABELS}) and not one of its seven
+ * entries begins with one, so the rule would be a branch no input can reach —
+ * i.e. a branch no test can prove and no reviewer can check. Adding a label
+ * that needs it is a change to this function, and the labels live next to it.
+ */
+const joinLabels = (labels: readonly string[]): string =>
+  labels.length <= 1
+    ? labels.join("")
+    : `${labels.slice(0, -1).join(", ")} y ${labels[labels.length - 1]}`
+
+/**
+ * The `billing_address_incomplete` message, naming the fields.
+ *
+ * With no fields it returns the bare catalogue entry, which is what keeps
+ * {@link MISSING_REQUIREMENT_MESSAGES} the single source of the wording: this
+ * function only ever APPENDS.
+ */
+export function buildBillingIncompleteMessage(
+  fields: readonly BillingRequiredField[]
+): string {
+  const base = MISSING_REQUIREMENT_MESSAGES.billing_address_incomplete
+
+  if (fields.length === 0) {
+    return base
+  }
+
+  return `${base} Falta: ${joinLabels(
+    fields.map((field) => BILLING_FIELD_LABELS[field])
+  )}.`
+}
+
+/**
  * Returns the ordered list of everything preventing order placement.
  *
  * Side-effect free and deterministic, including list order: the same input
@@ -207,6 +423,16 @@ export function getMissingOrderRequirements(
   input: OrderReadinessInput
 ): MissingRequirement[] {
   const codes: MissingRequirementCode[] = []
+
+  /**
+   * Messages that are COMPOSED rather than looked up, keyed by their code.
+   *
+   * Exactly one entry is possible today (`billing_address_incomplete`, A6). It
+   * is a map rather than a local so the return statement stays one expression
+   * and the catalogue lookup remains the default for every other code — a
+   * composed message is an exception, and it should have to say so.
+   */
+  const composed = new Map<MissingRequirementCode, string>()
 
   /**
    * `cart_empty` short-circuits everything else. Listing "falta tu teléfono" to
@@ -292,7 +518,37 @@ export function getMissingOrderRequirements(
   }
 
   if (!input.hasBillingAddress) {
-    codes.push("billing_address")
+    /**
+     * ## Two codes, one slot (Amendment A6, task 2c.33)
+     *
+     * NOTHING typed is a different problem from a TYPO, and telling both
+     * customers the same sentence serves neither. An untouched form gets
+     * `billing_address` — naming all seven fields at someone who has not
+     * started is a wall rather than help. A form with something in it gets
+     * `billing_address_incomplete`, which names what is left.
+     *
+     * Mutually exclusive and in the same position, exactly like
+     * `shipping_method` / `shipping_method_stale`, so the ordered list the
+     * customer scans keeps one line for billing either way.
+     *
+     * An ABSENT field list falls to `billing_address`. That is the pre-A6
+     * behaviour and it is the right default: a caller that did not say which
+     * fields are missing has not established that any particular one is.
+     */
+    const missingFields = input.billingMissingFields ?? []
+
+    if (
+      missingFields.length > 0 &&
+      missingFields.length < REQUIRED_ADDRESS_FIELDS.length
+    ) {
+      codes.push("billing_address_incomplete")
+      composed.set(
+        "billing_address_incomplete",
+        buildBillingIncompleteMessage(missingFields)
+      )
+    } else {
+      codes.push("billing_address")
+    }
   }
 
   if (!input.hasShippingMethod) {
@@ -409,12 +665,15 @@ export function getMissingOrderRequirements(
     }
   }
 
-  return codes.map(toRequirement)
+  return codes.map((code) => ({
+    code,
+    message: composed.get(code) ?? MISSING_REQUIREMENT_MESSAGES[code],
+  }))
 }
 
 const toRequirement = (code: MissingRequirementCode): MissingRequirement => ({
   code,
-  message: MESSAGES[code],
+  message: MISSING_REQUIREMENT_MESSAGES[code],
 })
 
 /**
@@ -431,6 +690,25 @@ export function canPlaceOrder(input: OrderReadinessInput): boolean {
 }
 
 /**
+ * The client-side half of {@link toReadinessInput}'s input.
+ *
+ * Named rather than inlined so the two halves are visibly two halves: what the
+ * SERVER has recorded on the cart, and what the CUSTOMER currently holds on
+ * screen. Every field here is reducer state.
+ */
+export type ReadinessClientInput = {
+  selectedShippingOptionId: string | null
+  selectionSignature: string | null
+  currentQuoteSignature: string | null
+  selectedPaymentProviderId: string | null
+  paymentDetailsComplete: boolean
+  /** The "misma dirección de facturación" checkbox. */
+  sameAsBilling: boolean
+  /** The separate billing form, as typed. Only read when `sameAsBilling` is false. */
+  billingDraft: ReadinessAddressSnapshot | null
+}
+
+/**
  * The one adapter from a Medusa cart to the readiness input.
  *
  * Kept in this file, per `design.md` D2, so the mapping is spec'd next to the
@@ -443,19 +721,52 @@ export function canPlaceOrder(input: OrderReadinessInput): boolean {
  */
 export function toReadinessInput(
   cart: HttpTypes.StoreCart | null | undefined,
-  client: {
-    selectedShippingOptionId: string | null
-    selectionSignature: string | null
-    currentQuoteSignature: string | null
-    selectedPaymentProviderId: string | null
-    paymentDetailsComplete: boolean
-  }
+  client: ReadinessClientInput
 ): OrderReadinessInput {
   return {
     itemCount: cart?.items?.length ?? 0,
     email: cart?.email,
     shippingAddress: cart?.shipping_address ?? null,
-    hasBillingAddress: Boolean(cart?.billing_address),
+    /**
+     * ## A CLIENT fact, and it has to be — Amendment A5
+     *
+     * This read `Boolean(cart?.billing_address)` and it DEADLOCKED the
+     * checkout. The only production writer of `cart.billing_address` left in
+     * the storefront is `syncCheckoutAddresses`, which runs at `design.md` D5
+     * step 2 — behind this gate. `persistCheckoutDraft` never writes billing by
+     * design (D3), and `setAddresses`, the historical writer, was deleted by
+     * PR2c. So a cart that had never had a billing address could never acquire
+     * one: `Falta tu dirección de facturación.`, forever. That is the same
+     * shape as the `?step=payment` deadlock this change exists to remove.
+     *
+     * The split is the one this file already makes twelve lines below for
+     * `hasShippingMethod` vs `hasSelectedShippingOption`, for the identical F1
+     * reason: the gate's question is not "has the backend been told" but "has
+     * the customer decided".
+     *
+     * `sameAsBilling` short-circuits WITHOUT re-checking the address, because
+     * the shipping address is already checked field by field by
+     * `shipping_address`, `colonia` and `phone`. A second copy of that rule
+     * here is the exact defect class this change is about.
+     *
+     * What is NOT weakened: the billing ROW still has to exist on the cart
+     * before Openpay is asked for a charge. D5 makes step 2 before step 4
+     * mandatory for precisely that reason, and `place-order-flow.spec.ts`
+     * asserts the ordering (mutations M11/M16). The row must exist before the
+     * charge; it no longer has to exist before the customer may try.
+     */
+    hasBillingAddress:
+      client.sameAsBilling || billingDraftIsComplete(client.billingDraft),
+    /**
+     * Amendment A6. Derived from the SAME function `hasBillingAddress` is, so
+     * the two cannot contradict each other, and short-circuited under
+     * `sameAsBilling` for the reason above: a customer who checked the box has
+     * no billing form on screen, and naming fields on a form they cannot see
+     * is worse than saying nothing.
+     */
+    billingMissingFields: client.sameAsBilling
+      ? []
+      : missingBillingFields(client.billingDraft),
     /**
      * `?? 0` and not `!== 0`. The predicate this replaces used
      * `shipping_methods?.length === 0`, which is FALSE for an absent field, so a

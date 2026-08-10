@@ -1,4 +1,8 @@
-import { isOpenpayProviderId } from "@lib/util/checkout-readiness"
+import {
+  isManualProviderId,
+  isMercadopagoProviderId,
+  isOpenpayProviderId,
+} from "@lib/util/checkout-readiness"
 import { CreditCard } from "@medusajs/icons"
 import {
   CardBrandLogos,
@@ -21,6 +25,15 @@ export type PaymentInfo = {
 }
 
 /* Map of payment provider_id to their title and icon. Add in any payment providers you want to use. */
+/**
+ * The `pp_stripe_*` and `pp_medusa-*` entries below are KEPT deliberately
+ * (task 2c.14 / RC-4). `design.md` §0 authorises removing them "once it has no
+ * callers", and that condition is unmet: `modules/order/components/
+ * payment-details/index.tsx:31,40,43` still reads this map and `isStripeLike`
+ * for a placed order's payment row, which is outside this change's scope. The
+ * checkout no longer references either. Follow-up: drop both once the order
+ * module stops reading them.
+ */
 export const paymentInfoMap: Record<string, PaymentInfo> = {
   pp_stripe_stripe: {
     title: "Credit card",
@@ -57,11 +70,28 @@ export const paymentInfoMap: Record<string, PaymentInfo> = {
   pp_mercadopago_mercadopago: {
     title: "Mercado Pago",
     icon: <MercadoPagoLogo />,
+    /**
+     * The off-site warning, and it is not decoration.
+     *
+     * This tail does not call `placeOrder`: it navigates the browser to
+     * `init_point`, a hosted Checkout Pro page on another origin. Openpay's row
+     * shows its card fields inline, so that customer can see what they are
+     * getting; this row had a title, a logo and nothing else, so pressing a
+     * button labelled *Realizar pedido* silently sent the customer to a
+     * different site — the single most alarming thing a checkout can do to
+     * someone about to pay.
+     */
+    caption: "Continúas en el sitio de Mercado Pago para completar tu pago",
   },
   // Add more payment providers here
 }
 
 // This only checks if it is native stripe or medusa payments for card payments, it ignores the other stripe-based providers
+/**
+ * KEPT (task 2c.14 / RC-4). One live caller remains, outside checkout:
+ * `modules/order/components/payment-details/index.tsx:43`. Zero callers in
+ * `modules/checkout` after PR2c. Follow-up: delete with the map entries above.
+ */
 export const isStripeLike = (providerId?: string) => {
   return (
     providerId?.startsWith("pp_stripe_") || providerId?.startsWith("pp_medusa-")
@@ -72,7 +102,7 @@ export const isPaypal = (providerId?: string) => {
   return providerId?.startsWith("pp_paypal")
 }
 export const isManual = (providerId?: string) => {
-  return providerId?.startsWith("pp_system_default")
+  return isManualProviderId(providerId)
 }
 
 /**
@@ -91,7 +121,7 @@ export const isOpenpay = (providerId?: string) => {
 }
 
 export const isMercadopago = (providerId?: string) => {
-  return providerId?.startsWith("pp_mercadopago_")
+  return isMercadopagoProviderId(providerId)
 }
 
 // Add currencies that don't need to be divided by 100

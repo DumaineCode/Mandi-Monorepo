@@ -686,3 +686,351 @@ describe("the no-op guard (F2)", () => {
     expect(h.sent[0].email).toBe("nuevo@example.com")
   })
 })
+
+/**
+ * ---------------------------------------------------------------------------
+ * `runExclusive` — the CTA write joins the same chain (PR2c, task 2c.7)
+ * ---------------------------------------------------------------------------
+ *
+ * PR2b left this as an explicit handoff: *"PR2c's `syncCheckoutAddresses` DOES
+ * write the address and MUST go through the scheduler."*
+ *
+ * The reason is B1 restated at the CTA. `syncCheckoutAddresses` writes
+ * `shipping_address`, which is the entity the whole `em.create` PII-destruction
+ * finding is about, and it runs at a moment when an autosave debounce armed by
+ * the customer's last blur is very likely still pending — 400 ms is roughly the
+ * gap between tabbing out of the final field and clicking the button. Two
+ * concurrent partial writers against one nested entity is the exact shape PR1a
+ * closed and PR2a reopened.
+ *
+ * `persistNow` cannot be reused for it: the payload is different (both
+ * addresses, in full) and it is not derived from the unsaved-draft diff. So the
+ * scheduler gains one method whose only job is to put a FOREIGN write on the
+ * same FIFO chain, under the same sequence counter.
+ */
+describe("runExclusive (PR2c)", () => {
+  it("cancels a pending autosave so it cannot fire mid-order", async () => {
+    const h = harness()
+    h.dispatchToState({
+      type: "FIELD_BLUR",
+      field: "address_1",
+      value: "Otra calle 9",
+    })
+
+    h.scheduler.scheduleAutosave(AUTOSAVE_DEBOUNCE_MS)
+
+    // The CTA is clicked 100ms after the last blur — well inside the debounce.
+    await vi.advanceTimersByTimeAsync(100)
+
+    const run = h.scheduler.runExclusive(async () => ({
+      ok: true as const,
+      cart: cartWith({}, { total: 1500 }),
+    }))
+
+    await vi.advanceTimersByTimeAsync(1000)
+    await run
+
+    // The autosave must never have gone out. If it had, its response would race
+    // the CTA write against the same cart_address row.
+    expect(h.sent).toHaveLength(0)
+  })
+
+  it("waits for an in-flight autosave instead of racing it", async () => {
+    const h = harness()
+    h.dispatchToState({
+      type: "FIELD_BLUR",
+      field: "address_1",
+      value: "Otra calle 9",
+    })
+
+    h.scheduler.scheduleAutosave(AUTOSAVE_DEBOUNCE_MS)
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DEBOUNCE_MS)
+
+    // The autosave is now OPEN and unresolved.
+    expect(h.openWrites).toBe(1)
+
+    let exclusiveStarted = false
+    const run = h.scheduler.runExclusive(async () => {
+      exclusiveStarted = true
+      return { ok: true as const, cart: cartWith({}, { total: 1500 }) }
+    })
+
+    await vi.advanceTimersByTimeAsync(0)
+
+    // THE ASSERTION. The CTA write has not begun while the autosave is open.
+    expect(exclusiveStarted).toBe(false)
+
+    await h.settleNext(cartWith({}, { total: 1000 }))
+    await run
+
+    expect(exclusiveStarted).toBe(true)
+  })
+
+  it("draws its sequence from the same counter as the autosave", async () => {
+    const h = harness()
+    h.dispatchToState({
+      type: "FIELD_BLUR",
+      field: "address_1",
+      value: "Otra calle 9",
+    })
+
+    h.scheduler.scheduleAutosave(AUTOSAVE_DEBOUNCE_MS)
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DEBOUNCE_MS)
+    await h.settleNext(cartWith({}, { total: 1000 }))
+
+    let seen: number | null = null
+    await h.scheduler.runExclusive(async (sequence) => {
+      seen = sequence
+      return { ok: true as const, cart: cartWith({}, { total: 1500 }) }
+    })
+
+    // A shared counter is what lets the reducer drop a response that a newer
+    // write has already superseded. A private counter would let the two writers
+    // issue the same number and the ordering guarantee would silently stop
+    // meaning anything.
+    expect(seen).toBe(2)
+  })
+
+  it("dispatches CART_UPDATED with the cart the write returned", async () => {
+    const h = harness()
+
+    await h.scheduler.runExclusive(async () => ({
+      ok: true as const,
+      cart: cartWith({}, { total: 1500 }),
+    }))
+
+    const updated = h.actions.filter((action) => action.type === "CART_UPDATED")
+    expect(updated).toHaveLength(1)
+    expect(h.readState().cart?.total).toBe(1500)
+  })
+
+  it("reports a failed write without poisoning the chain", async () => {
+    const h = harness()
+
+    const outcome = await h.scheduler.runExclusive(async () => ({
+      ok: false as const,
+    }))
+
+    expect(outcome.status).toBe("failed")
+    expect(
+      h.actions.some((action) => action.type === "CART_WRITE_FAILED")
+    ).toBe(true)
+
+    // The customer must be able to fix whatever went wrong and click again.
+    const retry = await h.scheduler.runExclusive(async () => ({
+      ok: true as const,
+      cart: cartWith({}, { total: 1500 }),
+    }))
+
+    expect(retry.status).toBe("written")
+  })
+
+  it("survives a write that REJECTS rather than returning a failure", async () => {
+    const h = harness()
+
+    const outcome = await h.scheduler.runExclusive(async () => {
+      throw new Error("boom")
+    })
+
+    expect(outcome.status).toBe("failed")
+
+    const retry = await h.scheduler.runExclusive(async () => ({
+      ok: true as const,
+      cart: cartWith({}, { total: 1500 }),
+    }))
+
+    expect(retry.status).toBe("written")
+  })
+
+  /**
+   * -------------------------------------------------------------------------
+   * A CTA write that never settles
+   * -------------------------------------------------------------------------
+   *
+   * `performWrite` races its await against `CHECKOUT_WRITE_TIMEOUT_MS`;
+   * `performExclusiveWrite` did a bare `await write(sequence)`. This module's
+   * own docstring states the rule that breaks: *"a single write that never
+   * settles is not a slow save, it is a permanently stalled checkout."*
+   *
+   * The exclusive write is the MORE exposed of the two. `syncCheckoutAddresses`
+   * bounds only its fresh READ (`CART_READ_TIMEOUT_MS`, 5 s); the
+   * `sdk.store.cart.update` behind it is deliberately unbounded, because the
+   * typed SDK method takes no request init.
+   *
+   * The customer: on flaky LTE, taps *Realizar pedido*, the PATCH socket hangs.
+   * `place()`'s `finally` never runs, so `running` stays `true` and every later
+   * click returns `busy` SILENTLY with no message. `placingOrder` stays `true`
+   * and the button spins forever. `tail` never resolves, so every subsequent
+   * autosave queues forever and the requote effect deadlocks. The card was
+   * already tokenized, so the single-use token is burned with no way to spend
+   * it.
+   */
+  describe("a CTA write that never settles", () => {
+    /** Stated as a literal for the same reason the `persistNow` block does. */
+    const BUDGET_MS = 15_000
+
+    /** A write that is issued and then never answers. */
+    const hang = () => new Promise<never>(() => {})
+
+    it("gives up rather than hanging forever", async () => {
+      const h = harness()
+
+      let settled: unknown = "pending"
+      void h.scheduler.runExclusive(hang).then((outcome) => {
+        settled = outcome
+      })
+
+      await vi.advanceTimersByTimeAsync(0)
+      expect(settled).toBe("pending")
+
+      await vi.advanceTimersByTimeAsync(BUDGET_MS)
+
+      expect(settled).toEqual({ status: "failed" })
+    })
+
+    it("tells the customer, through the same status line every other failure uses", async () => {
+      const h = harness()
+
+      void h.scheduler.runExclusive(hang)
+      await vi.advanceTimersByTimeAsync(BUDGET_MS)
+
+      expect(h.actions.map((a) => a.type)).toEqual([
+        "CART_WRITE_STARTED",
+        "CART_WRITE_FAILED",
+      ])
+    })
+
+    /**
+     * The one the customer feels. A resolved failure is what lets
+     * `placeOrderFlow` reach `settleFailed` — which releases its re-entrancy
+     * flag, clears `placingOrder` and shows the reason. Without it the button
+     * spins forever on a card that has already been tokenized.
+     */
+    it("resolves to a failure the place-order flow can act on", async () => {
+      const h = harness()
+
+      let outcome: unknown = "pending"
+      void h.scheduler.runExclusive(hang).then((o) => {
+        outcome = o
+      })
+      await vi.advanceTimersByTimeAsync(BUDGET_MS)
+
+      // Not a rejection: `placeOrderFlow` awaits this and branches on
+      // `status`, and a throw would skip the settle.
+      expect(outcome).toEqual({ status: "failed" })
+    })
+
+    it("releases the chain, so a later write is not stranded behind it", async () => {
+      const h = harness()
+
+      void h.scheduler.runExclusive(hang)
+      await vi.advanceTimersByTimeAsync(BUDGET_MS)
+
+      // The customer fixes something and clicks again. This must reach the
+      // server.
+      const retry = await h.scheduler.runExclusive(async () => ({
+        ok: true as const,
+        cart: cartWith({}, { total: 1500 }),
+      }))
+
+      expect(retry.status).toBe("written")
+    })
+
+    it("does not strand a queued autosave behind it either", async () => {
+      const h = harness()
+      h.dispatchToState({
+        type: "FIELD_BLUR",
+        field: "address_1",
+        value: "Otra calle 9",
+      })
+
+      void h.scheduler.runExclusive(hang)
+      void h.scheduler.persistNow()
+
+      await vi.advanceTimersByTimeAsync(BUDGET_MS)
+
+      expect(h.sent).toHaveLength(1)
+    })
+
+    it("stops reporting itself busy", async () => {
+      const h = harness()
+
+      void h.scheduler.runExclusive(hang)
+      expect(h.scheduler.isBusy()).toBe(true)
+
+      await vi.advanceTimersByTimeAsync(BUDGET_MS)
+
+      expect(h.scheduler.isBusy()).toBe(false)
+    })
+
+    it("does not fire for a write that answers within the budget", async () => {
+      const h = harness()
+
+      let resolveWrite:
+        | ((value: { ok: true; cart: HttpTypes.StoreCart }) => void)
+        | undefined
+
+      let settled: unknown = "pending"
+      void h.scheduler
+        .runExclusive(
+          () =>
+            new Promise<{ ok: true; cart: HttpTypes.StoreCart }>((resolve) => {
+              resolveWrite = resolve
+            })
+        )
+        .then((o) => {
+          settled = o
+        })
+
+      await vi.advanceTimersByTimeAsync(BUDGET_MS - 1)
+      resolveWrite?.({ ok: true, cart: cartWith({}, { total: 1500 }) })
+      await vi.advanceTimersByTimeAsync(0)
+
+      expect(settled).toMatchObject({ status: "written" })
+      expect(h.actions.map((a) => a.type)).toEqual([
+        "CART_WRITE_STARTED",
+        "CART_UPDATED",
+      ])
+    })
+
+    /**
+     * Both writers share one deadline on purpose. Two numbers here would be two
+     * answers to "how long is too long for a cart write", and the CTA — the one
+     * request per checkout the customer cannot casually retry — would be the
+     * one left holding the looser of them.
+     */
+    it("uses the same budget as the autosave", () => {
+      expect(CHECKOUT_WRITE_TIMEOUT_MS).toBeGreaterThan(5_000)
+      expect(BUDGET_MS).toBeGreaterThanOrEqual(CHECKOUT_WRITE_TIMEOUT_MS)
+    })
+  })
+
+  /**
+   * The total-change guard sends the customer back to confirm once more, and
+   * their next blur re-arms the autosave. That autosave must diff against the
+   * cart the CTA write produced — not the one before it — or it re-sends fields
+   * the CTA already persisted and, worse, patches against a stale address row.
+   */
+  it("leaves its cart as the base the next autosave diffs against", async () => {
+    const h = harness({ applyDispatches: false })
+
+    await h.scheduler.runExclusive(async () => ({
+      ok: true as const,
+      cart: cartWith({ address_1: "Calle nueva 1" }, { total: 1500 }),
+    }))
+
+    h.dispatchToState({
+      type: "FIELD_BLUR",
+      field: "address_1",
+      value: "Calle nueva 1",
+    })
+
+    h.scheduler.scheduleAutosave(AUTOSAVE_DEBOUNCE_MS)
+    await vi.advanceTimersByTimeAsync(AUTOSAVE_DEBOUNCE_MS)
+
+    // Nothing is unsaved relative to the CTA's cart, so no request goes out.
+    // Per F2 every one of those is a live Skydropx quote, so this is not merely
+    // tidy.
+    expect(h.sent).toHaveLength(0)
+  })
+})

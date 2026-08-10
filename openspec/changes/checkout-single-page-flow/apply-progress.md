@@ -1966,3 +1966,1012 @@ Also owed before merge: a `pnpm build` against a live backend, and a maintainer 
 
 Nothing committed. The parent owns git. The working tree is **staged** (`git add -A apps/storefront`)
 so the diff is reviewable with `git diff --cached`; the two deletions were staged via `git rm`.
+
+---
+
+# PART 10 — PR2c **SLICE 1**. The data + flow core.
+
+Branch `feat/checkout-place-order-flow`, **branched off `main` at `a344eb9`**. Two work-unit commits,
+both on the branch: `a780f0f` and `3624f05`. **This is the first apply batch in this change that was
+actually committed** — every earlier PART left the tree staged for a parent to commit.
+
+Scope: tasks **2c.7–2c.12 only**. `payment-section`, `payment-button`, `missing-items-list`,
+`place-order-bar`, `legal-notice` and the `payment`/`review` deletions are **slice 2** and were not
+touched, so the existing four-step components still render and behave exactly as they did on `main`.
+
+## ⚠️ The delivery plan's base was stale. Corrected, not silently followed.
+
+`tasks.md` line 104 puts PR2c on `feat/checkout-envio` in a feature-branch chain. That table is now
+wrong: **PR1a, PR1b, PR2a and PR2b are all MERGED to `main`** (merge `390da52` plus later commits) and
+`git branch -a` shows **zero** `checkout*` branches. The chain has already collapsed and the protection
+it existed to give — only the tracker merges to `main`, so `main` never holds a half-migrated checkout
+— was spent when those merges landed.
+
+Slice 1 therefore branches off `main`. Recorded here as an explicit correction to the delivery plan.
+
+## Baseline before any edit
+
+| Gate | `main` @ `a344eb9` |
+|---|---|
+| `pnpm --filter @dtc/storefront test` | **657 tests / 11 files green** |
+| `npx tsc --noEmit` | 0 errors |
+| `next lint` | 10 pre-existing errors |
+
+Note the engram ledger recorded 574 tests at the end of PR2b; `main` is at 657 because later commits
+(`442fff9`, `d8c3237`) added the colonia work. 657 is the real baseline.
+
+## TDD Cycle Evidence
+
+Strict TDD, RED → GREEN → TRIANGULATE → REFACTOR. Every RED was a **virgin** RED — the symbol did not
+exist, so the failure was `is not a function` or an unresolved module, not a wrong assertion.
+
+| Task | Test file | Layer | Safety net | RED | GREEN | TRIANGULATE | REFACTOR |
+|---|---|---|---|---|---|---|---|
+| 2c.12 payload | `lib/util/cart-address-payload.spec.ts` | Unit | ✅ 36/36 | ✅ 11 failing, `is not a function` | ✅ 47 | ✅ +10 (cross-address, absent fields) | ✅ docstring corrected to match the mutants |
+| 2c.12 writer | `lib/data/cart.spec.ts` | Unit (SDK-mocked) | ✅ 23/23 | ✅ 9 failing, `is not a function` | ✅ 32 | ✅ abort paths × 4 | ➖ none needed |
+| 2c.9/2c.10 rules | `lib/util/place-order.spec.ts` | Unit | N/A (new) | ✅ module unresolved | ✅ 36 | ✅ 8-case `init_point` table, 3-case 3DS table | ➖ none needed |
+| 2c.7 scheduler | `state/checkout-write-scheduler.spec.ts` | Unit (fake timers) | ✅ 23/23 | ✅ 7 failing, `is not a function` | ✅ 30 | ✅ in-flight, reject, base-cart | ➖ none needed |
+| 2c.11 affordance | `state/checkout-reducer.spec.ts` | Unit | ✅ 214/214 | ✅ 4 failing | ✅ 218 | ✅ error / no-error / initial | ➖ none needed |
+| 2c.7–2c.11 flow | `state/place-order-flow.spec.ts` | Unit (DI) | N/A (new) | ✅ module unresolved | ✅ 38 | ✅ +2 from mutation | ✅ gateway → per-call input |
+
+**Suite: 657 → 774 tests, 11 → 13 spec files.** S10 holds (count up, never down).
+
+`npx tsc --noEmit` = **0**, which is the gate PR2b established (zero, not "no new errors").
+`next lint` = **10**, identical to `main`; all 10 are pre-existing, 4 of them in `cart.ts`'s
+commented-out gift-card stubs which this slice did not touch.
+`pnpm build` = **`✓ Compiled successfully in 19.3s`** — the import-resolution stage, which is the real
+dangling-import gate.
+
+## Mutation testing — 16 injected, 15 killed, 1 equivalent (documented)
+
+| # | Mutant | Result |
+|---|---|---|
+| M1 | billing resolver reads the SHIPPING relation | killed (8) |
+| M2 | billing payload reuses the shipping address object | killed (3) |
+| M3 | resolved id applied BEFORE the field spread | **survived — EQUIVALENT** |
+| M4 | falsy id sent as `null` instead of omitted | killed (1) |
+| M5 | billing FK read from the shipping scalar | killed (1) |
+| M6 | `deviceSessionId` guard removed | killed (1) |
+| M7 | total guard fires only when the total went UP | killed (2) |
+| M8 | re-entrancy guard removed | killed (2) |
+| M9 | card-incomplete guard removed | killed (1) |
+| M10 | step 0 readiness re-check removed | killed (3) |
+| M11 | MP tail falls through to `placeOrder` | killed (3) |
+| M12 | MP navigates without checking `init_point` | killed (4) |
+| M13 | unsupported provider falls through | killed (1) |
+| M14 | **address write hoisted ABOVE the pre-flight** | killed (4) |
+| M15 | 3DS follows `redirect_url` ignoring `status` | killed (1) |
+| M16 | session payload built from the PRE-sync cart | **survived first pass → killed** |
+
+**M14 is the one that matters.** "Step 1 before step 2 is deliberate: a card that fails tokenization
+must not have caused a single backend write" is a statement about ORDERING, and ordering is exactly
+what someone breaks in six months while "saving a round trip". Four tests fail when it is broken.
+
+**M16 — the informative survivor.** Building the payment-session payload from `state.cart` instead of
+from the cart step 2 returned passed a green 38-test suite, because every cart in the file already
+carried the billing address it was supposed to gain. D5 says step 2 before step 4 is MANDATORY
+*precisely* because the Openpay payload reads `cart.billing_address`, and Openpay rejects a charge with
+API error 1001 when `customer` is empty. A test where the pre-write and post-write billing differ kills
+it. **Fourth time in this change a confident docstring turned out to be asserted nowhere.**
+
+**M3 is equivalent, and saying so is the honest answer.** `pickPatchedFields` already drops `id`, so
+both orderings emit byte-identical payloads. The guard is the FIELD SET, not the spread order. The
+docstring claimed the ordering protected against a loosened filter; it was corrected to say what is
+true, and the spec now pins `PERSISTABLE_ADDRESS_FIELDS` not containing `id` directly.
+
+## What landed
+
+**`lib/util/cart-address-payload.ts`** — `buildCheckoutAddressesPayload` (both addresses, both ids),
+`resolveBillingAddressId`, and `resolveShippingAddressId` generalised onto a shared
+`resolveCartAddressId` core. The 36 pre-existing shipping tests pass unchanged, which is the approval
+proof the generalisation preserved behaviour.
+
+**`lib/data/cart.ts`** — `setAddresses` **DELETED**, `syncCheckoutAddresses` in its place. Both ids
+resolved server-side from ONE fresh read on Medusa's own default projection
+(`id,shipping_address_id,shipping_address.id,billing_address_id,billing_address.id`; `billing_address_id`
+is at `query-config.js:115`, verified in `node_modules`). Aborts without writing when either id is
+unresolved. Backend error text never crosses back to the browser. The S7 tripwire now covers both rows.
+
+**`lib/util/place-order.ts`** (new, pure) — `resolvePaymentTail`, `selectMercadoPagoInitPoint`,
+`selectOpenpayRedirectUrl`, `hasTotalChanged`, `buildOpenpaySessionData`, `PLACE_ORDER_MESSAGES`.
+
+**`state/place-order-flow.ts`** (new, DI orchestrator) — D5 steps 0–5.
+
+**`state/checkout-write-scheduler.ts`** — `runExclusive`, closing PR2b's handoff note.
+
+**`state/checkout-reducer.ts`** — `placingOrder` + `PLACE_ORDER_STARTED` / `PLACE_ORDER_SETTLED`.
+
+**`state/checkout-context.tsx`** — wiring only, no rules: `syncAddresses` through `runExclusive`, and
+`placeOrderFlow(openpay)` exposed on the actions context.
+
+**`lib/util/checkout-readiness.ts`** — `isMercadopagoProviderId`, `isManualProviderId`;
+`lib/constants.tsx` delegates to both. RC-4 respected: `isStripeLike` and the `pp_stripe_*` entries are
+untouched.
+
+## Deviations from the task text — recorded, not absorbed
+
+1. **`placeOrderFlow` is not in `checkout-context.tsx`.** D5 says it is. That file is a `.tsx` the
+   node-only runner cannot load, and this change has already shipped three rules that way, each
+   defended by a docstring and asserted nowhere. Same precedent as `checkout-write-scheduler.ts`.
+   Behaviour is D5's; only the file differs.
+2. **The Openpay gateway is a per-call argument.** `CheckoutProvider` is mounted OUTSIDE
+   `PaymentWrapper` (`checkout/page.tsx:64-83`). A provider reading `OpenpayContext` gets the DEFAULT
+   value — `deviceSessionId: null` — and every Openpay charge fails. Slice 2's CTA is inside the
+   wrapper and must pass the live value.
+3. **The flow does not dispatch `CART_UPDATED`.** `runExclusive` already does, with the right
+   sequence. D5 step 3 lists it inline because it predates the scheduler.
+4. **`state.totalAtRender` was not added.** It would be a second copy of `state.cart.total`, which is
+   what `CheckoutSummary` renders. This change treats a second copy of a rule as the defect.
+5. **2c.12's "update callers" found none.** `setAddresses` had ZERO production callers after PR2a
+   deleted `addresses/index.tsx` — dead code still carrying the id-less write PR1a's finding is about.
+6. **Unsupported provider returns `blocked`, not `failed`.** Nothing was attempted, which is the same
+   category as step 0 refusing an incomplete cart, and the distinction tells a caller whether the cart
+   was touched.
+
+## ⚠️ BLOCKER FOUND AND NOT FIXED — the billing-address deadlock (owner: slice 2)
+
+`getMissingOrderRequirements` emits `billing_address` whenever `cart.billing_address` is falsy
+(`checkout-readiness.ts:325`). After the single-page migration the **only** production writer of
+`billing_address` in the whole storefront is `syncCheckoutAddresses` — which runs on the CTA click,
+behind the very check blocking it. `persistCheckoutDraft` never writes billing by design (D3), and
+`setAddresses`, which used to write it at the address step, was deleted by this slice.
+
+**A cart that has never had a billing address can therefore never place an order.** The CTA would
+report `Falta tu dirección de facturación.` forever. That is structurally the same deadlock as the
+`?step=payment` one PR2c exists to remove — moved to a different place, not eliminated.
+
+Evidence: a repo-wide grep for `billing_address:` returns exactly one production writer
+(`cart-address-payload.ts:228`, reached only from `syncCheckoutAddresses`).
+
+Not fixed here because the fix belongs in `toReadinessInput`, whose `hasBillingAddress` is a CART fact
+and probably wants to be a CLIENT one — exactly the `hasShippingMethod` vs `hasSelectedShippingOption`
+split that file already makes, for the identical F1 reason. That is a strictness-floor change, which
+`tasks.md` calls a product decision rather than a refactor, and it is outside 2c.7–2c.12.
+
+**Pinned by a tripwire test** — `place-order-flow.spec.ts` → "TRIPWIRE: billing-address deadlock
+(open, for slice 2)". It is EXPECTED to fail the moment slice 2 addresses it. That failure is the
+handoff working, not a regression.
+
+## Other findings worth carrying
+
+- **`placeOrder`'s own decline copy is voseo.** `cart.ts:857` — *"Podés intentar de nuevo o con otra
+  tarjeta."* Pre-existing, out of slice scope, and the voseo guard does not reach it because it only
+  covers the readiness catalogue. It is customer-facing and it is Rioplatense. Worth a one-line fix in
+  slice 2.
+- **`MedusaRadio` a11y defect** recorded by PR2b for PR2c is still open — `aria-checked` hard-coded to
+  `true` in `common/components/radio`, still used by `payment-container`. Slice 2 owns it.
+
+## Line budget — slice 1 measured
+
+**3 641 insertions / 95 deletions = 3 736 changed lines** against a `review_budget_lines` of 400.
+
+Production **1 049** (+1 013 / −95 … `constants` 10, `cart.ts` 259, `cart-address-payload.ts` 178,
+`checkout-readiness.ts` 31, `place-order.ts` 287, `billing_address` 5, `checkout-context.tsx` 107,
+`checkout-reducer.ts` 39, `checkout-write-scheduler.ts` 90, `place-order-flow.ts` 424).
+Specs **2 641** (`cart.spec` 255, `cart-address-payload.spec` 436, `place-order.spec` 423,
+`checkout-reducer.spec` 64, `checkout-write-scheduler.spec` 185, `place-order-flow.spec` 943).
+
+**72 % of the diff is specs.** That is the direct consequence of the harness being node-only: the only
+way to verify a payment ordering rule in this repo is to extract it and drive it with injected
+dependencies, and that is what caught M14 and M16. Stating the number plainly rather than shaving it,
+as every earlier PART in this file has done. **`size:exception` required. This is a delivery decision
+for the maintainer, not one taken here.**
+
+## Manual QA owed for slice 1 (nothing here is provable by the runner)
+
+- [ ] Openpay happy path end to end against a live backend; confirm `deviceSessionId` is populated on a
+      cold, throttled load before the CTA, and that a rejected card re-enables the button and mints a
+      NEW token on retry.
+- [ ] Mercado Pago: exactly ONE preference created at the CTA (S8), `init_point` redirect works, and
+      `placeOrder` is never called.
+- [ ] Force a shipping re-price between render and CTA click; confirm the abort and
+      `El costo de envío cambió. Revisa el total y confirma de nuevo.` rather than a silent charge.
+- [ ] Confirm no double order on a double click over a throttled connection.
+- [ ] `pnpm build` against a live backend (owed since PR1b).
+
+## Handoff state slice 2 needs
+
+1. `placeOrderFlow(openpay)` is on the actions context via `useCheckoutActions()`. The CTA **must** be
+   inside `PaymentWrapper` and pass `useContext(OpenpayContext)` at click time.
+2. `state.placingOrder` drives the button's loading state; `state.error` carries the inline message.
+3. `selectReadinessInput(state)` → `getMissingOrderRequirements(...)` is the itemized list for 2c.15.
+4. **2c.20 still binds**: deleting `review/index.tsx` MUST land in the same commit as 2c.16/2c.18, or
+   the branch has a window with no way to place an order. Slice 1 left `payment/index.tsx` and
+   `review/index.tsx` fully intact and working for exactly this reason.
+5. The billing-address deadlock above must be resolved or the CTA cannot enable on a fresh cart.
+
+---
+
+# PART 11 — PR2c SLICE 1 REMEDIATION. Judgment-day findings.
+
+**Appended, not overwriting.** PARTs 1–10 are the record as it stood; this part records what two
+independent blind adversarial reviews found in PART 10's output and what was done about it. Both
+returned **NOT SAFE TO MERGE** and converged on the same eight findings.
+
+Branch `feat/checkout-place-order-flow`, ten remediation commits on top of `7196b44`.
+
+## What both reviewers praised, and what was therefore NOT touched
+
+D5 ordering is correct and provably enforced. Openpay token single-use discipline holds. The
+two-address row-id resolution is the strongest part of the diff. The pure-module extraction boundary
+was drawn honestly (11 of 12 injected mutants died). **This was remediation, not a rewrite.** No
+structure was changed that either reviewer endorsed.
+
+## Gates
+
+| Gate | PART 10 | After remediation |
+|---|---|---|
+| `pnpm --filter @dtc/storefront test` | 774 / 13 files | **846 / 13 files** (+72) |
+| `npx tsc --noEmit` | 0 | **0** |
+| `pnpm build` | ✓ Compiled | **✓ Compiled successfully in 7.3s** |
+| `next lint` | 10 pre-existing errors | **10** — no net-new (measured both ways) |
+
+Diff vs PART 10: **2 009 insertions / 214 deletions across 15 files.** Production ≈ 330 lines;
+the rest is specs, which is the same 70/30 split PART 10 recorded and for the same reason.
+
+## Strict TDD — every fix landed RED first
+
+Nine RED cycles, each watched failing before the fix. Recorded per finding below with the failure
+count and the reason it failed. No fix was accepted without a test that could have caught it — which
+is the whole point, because **finding 3 exists precisely because a test looked like coverage and was
+vacuous.**
+
+---
+
+## R1 — CRITICAL. The `billing_address` deadlock. **CLOSED.**
+
+`checkout-readiness.ts` · `checkout-reducer.ts` · commit `6e2b95c`
+
+Step 0 blocked when `!cart.billing_address`. The only production writer of that column left in the
+storefront is `syncCheckoutAddresses`, at D5 step 2 — behind the gate. Reviewer B proved it
+executably: a cart complete in every other respect yields exactly
+`[{"code":"billing_address","message":"Falta tu dirección de facturación."}]` forever.
+
+PART 10 deferred this to slice 2. **That deferral was wrong and both reviewers said so on the same
+ground:** the gate and the writer are BOTH in slice 1, slice 2 contributes nothing to the cycle, and
+deferring meant merging a second half-finished migration to `main` on the strength of a progress
+note — the same bet that produced the bug.
+
+**Fix.** `hasBillingAddress` becomes a CLIENT fact:
+
+```ts
+hasBillingAddress: client.sameAsBilling || billingDraftIsComplete(client.billingDraft)
+```
+
+the same CART-fact / CLIENT-fact split `toReadinessInput` already makes for `hasShippingMethod` vs
+`hasSelectedShippingOption`, twelve lines below, for the identical F1 reason.
+
+Two judgement calls, both recorded rather than absorbed:
+
+1. **`sameAsBilling` short-circuits without re-checking the address.** Safe because the shipping
+   address is already checked field by field by `shipping_address`, `colonia` and `phone`. A second
+   copy of that rule here is the defect class this change is about. Pinned by a test.
+2. **Completeness, not presence.** `billingDraftIsComplete` requires the same
+   `REQUIRED_ADDRESS_FIELDS` as shipping, deliberately EXCLUDING `phone` and `address_2`: both are
+   required on shipping for fulfilment reasons (Skydropx `area_level3`, the origin/destination
+   pre-flight) and nothing is ever shipped to the billing address. This closes the MINOR about an
+   all-empty billing row producing Openpay API error 1001.
+
+**The strictness floor moved by exactly one row, recorded as Amendment A5** in
+`checkout-readiness.spec.ts` rather than smuggled through the `BLOCKED_TODAY` table. The two billing
+rows now read "no billing address **and no billing claim**" and still assert the floor for the case
+that is genuinely unsafe. What is NOT weakened: D5 still makes step 2 before step 4 mandatory, so the
+row exists on the cart before the Openpay payload is built — asserted by the M11/M16 test. The row
+must exist before the CHARGE; it no longer has to exist before the customer may TRY.
+
+The tripwire test now asserts the fixed behaviour end to end, including that the CTA's own write is
+what creates the missing row.
+
+**Fully closed.**
+
+## R2 — CRITICAL. `runExclusive` had no write deadline. **CLOSED.**
+
+`checkout-write-scheduler.ts` · commit `e59ba2f` · RED: 6 failures
+
+`performWrite` raced its await against `CHECKOUT_WRITE_TIMEOUT_MS`; `performExclusiveWrite` — added
+by PART 10 for the CTA — did a bare `await write(sequence)`, breaking the rule the module's own
+docstring states.
+
+The exclusive write is the MORE exposed one: `syncCheckoutAddresses` bounds only its fresh read
+(5 s); the `sdk.store.cart.update` behind it is deliberately unbounded.
+
+A "never settles" block mirrors the existing `persistNow` one, plus the two consequences unique to
+this writer: an autosave queued behind it must still go out, and the outcome must RESOLVE rather than
+reject, because that is what lets `placeOrderFlow` reach `settleFailed` and give the button back.
+
+**Fully closed.**
+
+## R3 — MAJOR. The surviving mutant. **CLOSED, and re-confirmed.**
+
+`place-order-flow.spec.ts` · commit `a8d0809`
+
+The separate-billing test asserted `expect(input.billing).not.toBe(input.shipping)` — reference
+identity. The flow spreads BOTH operands, so they are always distinct objects; and `initFromServer`
+mirrors the shipping draft into `billingDraft`, so the contents matched too. Deleting the branch
+(`const billingSource = state.draft`) left all 774 tests green. **The only survivor of twelve.**
+
+Fixed by giving the fixture a billing draft that shares NOT ONE field with the shipping one, and
+asserting on VALUES. The INVERSE mutant (always reading `state.billingDraft`) got its own test.
+
+**Re-injected on the final tree and confirmed dead:**
+
+```
+$ perl -pi -e 's/state.sameAsBilling \? state.draft : state.billingDraft/state.draft/'
+$ pnpm --filter @dtc/storefront test
+  FAIL  place-order-flow.spec.ts > step 2 > sends the separate billing draft when the customer unchecked the box
+  Tests  1 failed | 844 passed (845)
+```
+
+**Fully closed.**
+
+## R4 — MAJOR. Voseo in the most-shown error string. **CLOSED.**
+
+`lib/data/cart.ts` · commit `e7cad84` · RED: 2 failures
+
+*"Podés intentar de nuevo o con otra tarjeta."* → *"Puedes…"*. It is the default decline copy, and
+`messageFrom` passes backend messages to the customer VERBATIM.
+
+**Why it got through, and the guard-gap fix.** Both existing voseo guards enumerate IMPERATIVES only
+(`Elegí|Completá|Volvé|…`), and each covers a different catalogue. `Podés` is a voseo PRESENT, and
+the string belongs to neither catalogue.
+
+- Both guards widened to `Podés|Tenés|Querés|Hacé|Andá|…`, each with a can-actually-fail case pinning
+  the exact form that escaped.
+- A THIRD guard added in `cart.spec.ts` that reads the SOURCE FILE and sweeps every Spanish string
+  literal `cart.ts` can return, including the module-private `SYNC_ADDRESSES_GENERIC_ERROR` and
+  `PERSIST_DRAFT_GENERIC_ERROR`. It reads the file rather than a catalogue because `cart.ts` is
+  `"use server"` and such a module may not export a constant object — there is nothing for an
+  `Object.values()` guard to point at. It also asserts it FOUND strings, so it cannot silently pass
+  over an empty list, which is the exact failure mode that let this ship.
+- `placeOrder`'s throw is now covered behaviourally, both branches.
+
+**Fully closed.**
+
+## R5 — MAJOR. The autosave fires during tokenization. **CLOSED — by the other of the two fixes.**
+
+`place-order-flow.ts` · `checkout-context.tsx` · commit `cd929e2` · RED: 3 failures
+
+`runExclusive` cancels the armed autosave but is not reached until step 2, on the far side of a
+1–3 s tokenize. So the ordinary sequence "tab out of the last field, click 200 ms later" lets the
+debounce fire mid-tokenize, F2 re-prices shipping, and step 3 aborts over a change the flow itself
+caused.
+
+**The flow now calls `deps.cancelAutosave()` first — before the snapshot, before step 0.**
+
+**Deliberately NOT the re-snapshot.** The finding offered either "cancel the autosave" or "re-read
+`deps.readState().cart?.total` immediately before step 2". The second also stops the spurious abort,
+and it does so **by charging the customer a figure that moved after they clicked** — which is exactly
+the harm step 3 exists to prevent. A test pins that the guard still fires for a total that moved for
+any other reason, so a later "fix" cannot quietly take that route.
+
+The requested spec — dispatch `CART_UPDATED` from inside the tokenize stub, assert no abort — was
+therefore NOT written in that form: under the correct fix that dispatch cannot happen from the
+autosave, and if it happens from anything else the abort is CORRECT. What is asserted instead is the
+ordering (`cancelAutosave` strictly before `tokenize`, for every provider, including when step 0
+refuses), which combined with the scheduler's existing "cancels a pending autosave outright" test
+covers the chain. The `.tsx` wiring itself remains unprovable by this runner, as all wiring in this
+change is.
+
+**Fully closed on the described scenario; the wiring line is manual-QA owed.**
+
+## R6 — MAJOR. Stale Mercado Pago `init_point`. **CLOSED.**
+
+`place-order.ts` · `place-order-flow.ts` · commit `b5ddfe7` · RED: 1 failure
+
+`selectMercadoPagoInitPoint(collection, synced.cart)` — `synced.cart` is read BEFORE any session
+existed. D5 names the fallback as the cart read AFTER initiation. Not dead code: Medusa's default
+store projection carries `*payment_collection.payment_sessions` and `syncCheckoutAddresses` uses that
+projection, so on a retry that cart holds the PREVIOUS attempt's `init_point`, minted for the
+PREVIOUS total — and `placeOrder` is never called for MP, the webhook is the source of truth.
+
+Same defect class as **M16**, which PART 10 caught and fixed on the Openpay side. Caught on one side,
+shipped on the other.
+
+**The fallback is removed from the SIGNATURE**, not merely from the call site: a dangerous argument
+left in place is an invitation to pass the wrong cart back in, and this change treats a rule with two
+homes as the defect. Refusing is cheap because of R5 — the next click mints a fresh preference. The
+spec that blessed the fallback is replaced by an arity assertion plus a flow-level test driving the
+exact retry shape.
+
+**Fully closed.**
+
+## R7 — MAJOR. 3DS detection read through a cacheable path. **CLOSED, and hardened.**
+
+`place-order-flow.ts` · `checkout-context.tsx` · commits `6e16d3d`, `627cca0` · RED: 1 failure
+
+Right rule, wrong function. `retrieveCart` is `force-cache` on a `carts` tag;
+`initiatePaymentSession` calls `revalidateTag("carts")`, which in App Router also re-runs
+`checkout/page.tsx` and REPOPULATES the entry with a pre-authorization cart.
+
+Rather than a one-word swap in the `.tsx`, the dependency now takes `retrieveCartFresh`'s
+**discriminated** `FreshCartRead` directly. That keeps "the cart says no challenge" and "the read did
+not settle the question" as different branches, and — more importantly — puts the mapping inside the
+module a spec can load instead of in an untestable `.tsx` adapter.
+
+**A mutation follow-up was needed.** A mutant dropping the `read.ok` check survived, because the only
+failure fixture was `{ ok: false, error }` — no `cart` key, so the selector answered `null` anyway.
+Equivalent by accident. The failure fixture now carries a cart with a live `requires_more` session,
+and the mutant dies. Same argument `resolveShippingAddressId` makes: a read that did not settle the
+question is not absence AND it is not data.
+
+**Fully closed.**
+
+## R8 — MAJOR. `placingOrder` latched with no escape. **CLOSED.**
+
+`place-order-flow.ts` · `place-order.ts` · `checkout-context.tsx` · commit `0b6dd20` · RED: 12 failures
+
+The docstring's contract — *"`placingOrder` … is the affordance; this is the lock"* — was inverted on
+the redirect paths: `finally` released `running` while `placingOrder` stayed true.
+
+- The lock now survives a `redirected` outcome **and nothing else**. A decline, an aborted address
+  write and a moved total all still release, each with its own test.
+- A throw escaping `run` releases too. Nothing in `run` is supposed to throw, but a lock that depends
+  on that staying true is one refactor away from a checkout nobody can use.
+- Consequence (c) is now asserted directly: **exactly one Mercado Pago preference across a double
+  click** (S8).
+- `release()` is the escape, called from a `pageshow` listener. WHETHER to release is
+  `shouldReleasePlaceOrderLock` — a pure rule in `lib/util`, because `persisted` arrives off a DOM
+  event and only a literal `true` may unlock a checkout mid-navigation. Seven cases, including the
+  truthy-non-boolean.
+- Two docstrings corrected: the redirect comment named the wrong flag, and `stateRef`'s claim that
+  "every reader is a debounced timer at least 400 ms out" stopped being true the moment
+  `placeOrderFlow` started reading it synchronously from a click handler.
+
+**Fully closed in code. The bfcache escape itself is manual-QA owed** (2c.34) — a `pageshow` listener
+is not reachable by a node-only runner.
+
+---
+
+## MINORs — five fixed, one carried
+
+Commit `2941dd0`, except where noted.
+
+| MINOR | Disposition |
+|---|---|
+| `buildSessionData` fails open on `""` token | **FIXED.** The flow settles failed on an empty token; the branch now THROWS rather than falling through to `return undefined`. Initiating Openpay with no `token_id` is what 2c.9 forbids, and it was reachable through a side door no spec covered. |
+| `asUsableUrl` checks non-emptiness, not URL-ness | **FIXED**, wider than requested: `^https://`. `"undefined"`, `"/checkout/abc"`, `"//host/x"`, `"javascript:alert(1)"` and `"http://…"` are all non-empty and all different ways for a raw `location.href` on a payment path to go wrong. Negative tables added for BOTH callers. |
+| Two strings for "pick a payment method" | **FIXED.** `PLACE_ORDER_MESSAGES.providerUnsupported` delegates to `MISSING_REQUIREMENT_MESSAGES.payment_method`, pinned by IDENTITY so a copied literal cannot pass. |
+| `checkout-context.tsx` `stateRef` docstring is false | **FIXED** (in `0b6dd20`). Corrected, and the narrower reason it is still safe is stated: the lag is one COMMIT, and a click is dispatched after the commit that rendered the button it landed on. |
+| `getBaseURL()` silently defaults to localhost | **FIXED.** `NEXT_PUBLIC_BASE_URL` joins `check-env-variables.js`, the build-time gate `next.config.js` already runs and which the Dockerfile already documents as the "forgotten Dokploy variable" guard. `NEXT_PUBLIC_*` is INLINED at build time, so this is the last place it is cheap. |
+| Billing field-level validation | **CARRIED** → `tasks.md` **2c.33**, blocking slice 2, with `file:line`. R1 blocks the all-empty draft (closing the 1001 path) but cannot say WHICH field is wrong; the dedicated code needs the billing form slice 2 renders. |
+
+## Mutation — 13 injected on the remediated lines, 13 killed
+
+M-A cancelAutosave dropped (3) · M-B always release (3) · M-C no deadline (6) · M-D billing always
+true (13) · M-E ignore `read.ok` (**SURVIVED first pass**, killed after hardening, 1) · M-F loose
+`persisted` (2) · M-G url non-empty (10) · M-H no empty-token guard (2) · M-I `every`→`some` (7) ·
+M-J reducer hardcodes `sameAsBilling` (2) · M-K reducer drops `billingDraft` (2) · M-L
+`providerUnsupported` re-copied (1) · reviewer B's `billingSource = state.draft` (1), plus its
+inverse (1).
+
+**M-E is the honest one.** It survived because the fixture happened to make it equivalent, exactly
+like M16 and exactly like the finding-3 mutant. Third time in this change a test's apparent coverage
+came from the fixture rather than the assertion. Recorded, not smoothed over.
+
+## Disagreement recorded
+
+**Finding 5, second half — rejected with reason.** See R5. Cancelling the autosave and re-snapshotting
+the total are NOT interchangeable: the second trades a spurious abort for a silent charge at a figure
+the customer did not agree to. Only the first was implemented.
+
+Everything else in findings 1–8 was accepted as stated.
+
+## Manual QA owed — unchanged from PART 10, plus two
+
+- [ ] Everything in PART 10's list still stands.
+- [ ] **NEW (2c.34).** Mercado Pago → press **Back** → the CTA must be usable again with no reload.
+      This is the bfcache escape from the redirect lock, and it is the one path the node runner
+      cannot reach.
+- [ ] **NEW.** Confirm a hung CTA write surfaces the failure and re-enables the button after
+      `CHECKOUT_WRITE_TIMEOUT_MS` rather than spinning forever (R2, over a throttled connection).
+
+---
+
+# PART 12 — PR2c **SLICE 2**. Pago, the CTA, and the deletions.
+
+**Appended, not overwriting.** PARTs 1–11 stand as written. This part records slice 2: the UI that
+makes the checkout placeable again, and the removal of the two components whose `?step=` deadlock
+made it unplaceable.
+
+Branch `feat/checkout-pago-cta`, three commits on top of `f87178c` (slice 1's remediated HEAD), plus
+this record. Tasks **2c.1, 2c.2, 2c.3, 2c.5, 2c.14, 2c.15–2c.20, 2c.32, 2c.34, 2c.35** and the gates
+**2c.21–2c.24**. `2c.33` was already done at `f87178c` and was not touched.
+
+## The bug this closes, restated so the diff can be read against it
+
+`payment/index.tsx:67` opened its body on `searchParams.get("step") === "payment"`.
+`review/index.tsx:12` on `step === "review"`. PR2a and PR2b rewrote *Datos* and *Envío* as
+single-page sections that push no step at all, so the ONLY remaining writer of `?step=payment` was
+`payment/index.tsx:100` — inside the `Editar` button, which renders only when `paymentReady`, which
+needs an active payment session, which could only be created inside the body that parameter opens.
+Closed circle, merged to `main` in `390da52`. Customers filled everything in, got quotes, chose a
+shipping method, and never reached *Pago*.
+
+## Gates — every one measured, none reported from memory
+
+| Gate | Before (`f87178c`) | After |
+|---|---|---|
+| `pnpm --filter @dtc/storefront test` | 875 / 13 files | **895 / 13 files** (+20) |
+| `npx tsc --noEmit` | 0 | **0** |
+| `pnpm build` | ✓ | **✓ Compiled successfully in 11.6s** |
+| `next lint` errors | 10 | **9** (one left with the deleted `payment/`; zero net-new) |
+
+### The four static gates, verbatim
+
+**2c.22 (S5)** — `grep -rn "step=" apps/storefront/src` returns **13 lines, all of them prose**:
+seven docstring/comment references in `checkout-readiness.ts`, `checkout-form/index.tsx`,
+`contact-address-section`, `shipping-section` and the two payment return routes; four in `.spec.ts`
+docstrings; and `product-onboarding-cta/index.tsx:22`'s unrelated `onboarding_step=`. **Zero
+checkout-navigation readers or writers.**
+
+> **The gate as written is weaker than the gate as intended, and that is worth saying.**
+> `grep "step="` never matched a single real reader or writer in the first place: the readers were
+> `searchParams.get("step")` and the writers `createQueryString("step", …)`, neither of which
+> contains the string `step=`. It matched only the URL literals in the return routes, which PR1b had
+> already fixed. Running it on `f87178c` — with both deadlocked components fully intact — would have
+> returned the same "clean" answer. The gate that actually discriminates is
+> `grep -rn 'searchParams.get("step")\|createQueryString("step"\|getCheckoutStep\|checkout-step'`,
+> which returns **five lines, all prose**, and would have returned the readers on `f87178c`. Both
+> were run; both are recorded. The task text is not wrong about the target, only about the command.
+
+**2c.23 (S4)** — `contact-address-section`, `shipping-section` and `payment-section`: no
+`pointer-events-none`, no gating `opacity-50`, no `disabled` container in any of the three. The only
+`disabled` in the neighbourhood is `shipping-section:371`, on an individual option ROW the carrier
+could not price, which is a per-row affordance and not a section gate.
+
+**2c.24 (S2)** — `grep -rn "submit-address-button\|submit-delivery-option-button\|submit-payment-button"`
+→ **zero matches**. `Realizar pedido` appears in production code in exactly two places:
+`payment-button/index.tsx:15` (`PLACE_ORDER_LABEL`, the one label) and inside the legal notice's
+sentence, which quotes it.
+
+**2c.21 (S10)** — 895 tests, 13 spec files, green.
+
+## Strict TDD — three RED cycles, each watched failing first
+
+| # | Rule | RED | GREEN |
+|---|---|---|---|
+| 1 | `selectPlaceOrderView` — everything the CTA renders | 9 failed / 875 passed (`selectPlaceOrderView is not a function`) | 884 passed |
+| 2 | `SET_PAYMENT_DETAILS_COMPLETE` declines an unchanged value | 1 failed / 885 passed (new object for an unchanged value) | 886 passed |
+| 3 | `shouldCollectOpenpayDeviceData` — the §12b fingerprinting trigger | 9 failed / 886 passed | 895 passed |
+
+The extraction rule is the reason these exist at all. Slice 2 is almost entirely `.tsx`, which this
+repo's runner (`environment: "node"`, no jsdom, no `@testing-library`, Playwright an explicit
+non-goal) cannot load. So every decision went into a module a spec can reach and the components keep
+only rendering and wiring — which is what makes the table above possible rather than a formality.
+
+## Mutation testing — 11 injected, 11 killed
+
+Each mutant was applied to the shipped source, the full suite run, and the source restored.
+
+| Mutant | Rule | Result |
+|---|---|---|
+| M1 | `disabled` drops `\|\| state.placingOrder` | **killed** (1) |
+| M2 | `firstMissingMessage` takes the LAST entry | **killed** (1) |
+| M3 | `total` reads `item_subtotal` instead of `total` | **killed** (1) |
+| M4 | `provisional` hard-coded `false` | **killed** (7 — the whole `selectShippingIsProvisional` suite goes with it) |
+| M5 | currency fallback `""` instead of a currency | **killed** (1) |
+| M6 | currency hard-coded `"mxn"` | **killed** (1) |
+| M7 | `disabled` ignores `missing` entirely | **killed** (2) |
+| N1 | device collection drops the SELECTION condition (i.e. reverts to PR1b) | **killed** (2) |
+| N2 | device collection drops the REGIONAL condition | **killed** (3) |
+| N3 | `\|\|` instead of `&&` between the two | **killed** (5) |
+| N4 | `Boolean(selectedProviderId)` instead of the prefix predicate | **killed** (1) |
+
+M4 and M6 are the two worth naming. M4 proves `selectShippingIsProvisional` genuinely delegates
+rather than keeping a second derivation — the delegation is the point, and a mutant that survived it
+would mean the summary and the CTA could disagree again. M6 proves the currency is read off the cart
+rather than assumed: the store is MXN today, so a hard-coded `"mxn"` passes every fixture that does
+not deliberately use another currency, which is exactly the fixture-shaped false coverage this change
+has now been bitten by three times (M16, finding 3, M-E).
+
+## What landed
+
+| File | Action | What it does |
+|---|---|---|
+| `checkout-reducer.ts` | Modified | `selectPlaceOrderView` — one derivation of disabled / busy / error / total / provisional / missing. `selectShippingIsProvisional` now delegates to it. `SET_PAYMENT_DETAILS_COMPLETE` declines an unchanged value. |
+| `checkout-reducer.spec.ts` | Modified | +216. Nine specs for the view, two for the identity guard. |
+| `checkout-readiness.ts` | Modified | `shouldCollectOpenpayDeviceData` (§12b). |
+| `checkout-readiness.spec.ts` | Modified | +73. Nine specs for the trigger. |
+| `payment-section/index.tsx` | **Created** | *Pago*, single page. Radios, `SELECT_PAYMENT_PROVIDER`, zero network (R5). |
+| `payment-button/index.tsx` | Rewritten | `PlaceOrderButton`. One label. Reads `OpenpayContext` at click time. −216 / +90. |
+| `place-order-bar/index.tsx` | **Created** | `inline` and `sticky`, both from `selectPlaceOrderView`. |
+| `missing-items-list/index.tsx` | **Created** | The itemized `role="status"` list, outside the button. |
+| `legal-notice/index.tsx` | **Created** | The terms copy, verbatim, informational. |
+| `checkout-form/index.tsx` | Modified | Three sections, the notice, both CTA variants. |
+| `payment-container/index.tsx` | Modified | Decorative radio indicator (2c.35). |
+| `common/components/radio/index.tsx` | Modified | `aria-checked={checked}` (2c.35). |
+| `payment-wrapper/index.tsx` + `openpay-wrapper.tsx` | Modified | §12b: scripts wait for the customer's selection; context value memoized. |
+| `lib/constants.tsx` | Modified | 2c.14 — the two comments naming the remaining `isStripeLike` caller. |
+| `payment/index.tsx` | **Deleted** | −377. |
+| `review/index.tsx` | **Deleted** | −57. |
+
+## 2c.19 / 2c.20 — the same-commit constraint, confirmed
+
+`payment/index.tsx` and `review/index.tsx` were deleted in commit **`e57d29e`**, the SAME commit that
+adds `place-order-bar`, `legal-notice`, `payment-section`, `missing-items-list` and the rewritten
+`payment-button`. `git show --stat e57d29e` lists all of them. There is no commit on this branch at
+which the branch has no way to place an order — which was the specific failure the constraint exists
+to prevent, and the one this whole change exists to remove from `main`.
+
+## Line budget (2c.32) — `size:exception` applied
+
+Slice 2 vs `f87178c`: **17 files, +1 101 / −708**. Split: **production +812 / −708**, **spec +289 /
+−0**. The 708 deletions are two whole files (434 lines) plus the 216-line `payment-button` rewrite.
+
+PR2c as a whole (slice 1 + slice 2) vs `main`: **31 files, +7 129 / −892**.
+
+`size:exception` is applied with `design.md` §10's floor justification, unchanged and still correct:
+*"PR2c's floor is set by the CTA: `payment-section`, `payment-button` and `place-order-bar` are one
+flow, and the `review` deletion must land in the same commit as the CTA that replaces it or there is
+a window with no way to place an order."* Slice 2 IS that floor, and it still lands at 1 101 changed
+lines against a 600 budget. §10's estimate of ~1 000 for the whole of PR2c was low by a factor of
+seven once specs are counted — the same 70/30 spec-to-production split PARTs 10 and 11 recorded, and
+for the same reason: a node-only harness buys coverage with spec lines.
+
+## Deviations and corrections — recorded, not absorbed
+
+### 1. `design.md` D7's component tree puts the sticky CTA where Openpay cannot work
+
+D7 renders `<PlaceOrderBar variant="sticky"/>` as a sibling of `CheckoutSummary`, OUTSIDE
+`PaymentWrapper`. `PaymentWrapper` is what supplies `OpenpayContext`, so a CTA there would read the
+DEFAULT context value — `deviceSessionId: null`, a `tokenize` that rejects — and **every Openpay
+charge started from a phone would fail while the desktop one worked.** This is precisely the trap
+slice 1's handoff item 2 warns about, written into the design's own diagram.
+
+Both variants therefore render inside `CheckoutForm`, inside the wrapper. The sticky variant is
+`position: fixed`, so its position in the document has no bearing on where it appears. Nothing else
+about D9 changed.
+
+### 2. D5's four provider labels conflict with S2, and S2 wins
+
+D5 has `isStripeLike / isOpenpay / isMercadopago / isManual` selecting the button's LABEL as well as
+its tail, with a disabled `Selecciona un método de pago` default branch — and the old Mercado Pago
+branch said `Pagar con Mercado Pago`. 2c.24/S2 requires **exactly one order-placement button labelled
+`Realizar pedido`**. Two labels for one button cannot both be true.
+
+One label. "No method chosen" is already reported in the customer's own itemized list as `Elige un
+método de pago.` — the same string `PLACE_ORDER_MESSAGES.providerUnsupported` was pinned to by
+identity in slice 1's remediation, specifically so one condition would stop having two vocabularies.
+The provider tail is still selected per provider; it is selected inside `place-order-flow.ts` by
+`resolvePaymentTail`, where it is spec'd.
+
+### 3. Nothing is pre-selected in *Pago*, which the old component did
+
+`payment/index.tsx:53-56` pre-selected Openpay when it was offered. Not carried over, for two
+reasons. It satisfies the CTA's `payment_method` requirement on the customer's behalf, which is the
+choice-by-default this change removes everywhere else; and under §12b it would start device
+fingerprinting for a customer who never chose Openpay, which is the exact scope expansion §12b exists
+to undo. Cost: one extra click. **This is a behaviour change and belongs in the PR description.**
+
+### 4. 2c.5's "dispatch on `state.selectedPaymentProviderId`" became "do not dispatch at all"
+
+The task's substance — stop reading `cart.payment_collection.payment_sessions[0].provider_id` — is
+met completely, and explore risk **#8 is resolved, not deferred**: the `payment_sessions[0]` vs
+`status === "pending"` asymmetry disappears because nothing in the checkout reads payment sessions
+any more. What replaced it is not a four-way switch on the selection but no switch: the selection
+feeds `getMissingOrderRequirements` (enabled/disabled) and `resolvePaymentTail` (which tail runs),
+both pure, both spec'd.
+
+### 5. `design.md` §12b had no task number, and was implemented anyway
+
+The Openpay fingerprinting trigger is a settled decision in `design.md` §12b and in the PR2c preamble
+of `tasks.md` — *"PR2c must move the trigger to selection"*, *"the payment section owns this
+trigger"* — but it appears under no numbered task, so it was absent from the slice-2 work list. It
+was implemented (commit `b56aa4f`) because the component that owns it is the one this slice creates,
+and leaving it would mean shipping the section that is supposed to carry the gate without the gate.
+**Recorded as a gap in `tasks.md`, not as scope creep.**
+
+The gate is on the SCRIPTS, not on the wrapper mount: gating the mount would swap the element type at
+that position and remount the entire checkout subtree on a payment-method click, throwing away every
+section's local state. The context now memoizes its value, because the wrapper re-renders with the
+selection and would otherwise push a new object at every consumer per keystroke.
+
+### 6. 2c.35 was fixed in both places, not just the one it names
+
+The task names `payment-container`'s radio. The defect lives in the shared
+`common/components/radio`, which hard-codes `aria-checked="true"` — telling a screen-reader user that
+every option in the group is selected — and it has a second live caller, `address-select`. Fixing
+only the named caller would have left the bug live for the other one. So: `payment-container` stops
+using the shared component entirely (it also nested a `<button role="radio">` inside a Headless UI
+radio option, which is its own defect, and `shipping-section` had already set the decorative-indicator
+precedent), and the shared component's `aria-checked` now reflects `checked`.
+
+### 7. One rule added that no task asked for: the reducer declines an unchanged card-completeness value
+
+`OpenpayCardContainer` re-runs its validation effect on every card keystroke and reports
+unconditionally, so a sixteen-digit PAN is sixteen dispatches of which fifteen say nothing new. A
+fresh state object for each re-renders every consumer of `CheckoutStateContext` — both address
+sections, *Envío*, and both CTA variants — once per character. The effect cannot filter this itself
+without subscribing to the state it would filter against. Spec'd on identity (`toBe`), because
+equality would pass for a new object.
+
+## Risks and things left open
+
+1. **`deviceSessionId` now arrives later than it did.** Under PR1b the Openpay SDK loaded at checkout
+   mount; it now loads on selection. The card fields show their existing skeleton until `ready`, so a
+   customer physically cannot type a card before the SDK lands, and the flow fails closed with
+   `PLACE_ORDER_MESSAGES.deviceSessionMissing` rather than charging without a fraud signal. **2c.25's
+   cold-throttled-load check is the one that verifies this, and it now matters more than it did.**
+2. **Two CTA buttons exist in the DOM at once**, one hidden per breakpoint (`hidden small:block` /
+   `small:hidden`). S2 is satisfied per viewport, and both render the same label from the same
+   constant and the same state from the same selector. Distinct testids
+   (`place-order-button-inline` / `place-order-button-sticky`) so QA can tell them apart.
+3. **The gift-card bypass is still unreachable and still carried**, unchanged from PR1b.
+4. **Follow-up (2c.14 / RC-4):** `isStripeLike` and the `pp_stripe_*` / `pp_medusa-*` `paymentInfoMap`
+   entries stay in `lib/constants.tsx`. Checkout has zero references to either after this slice; the
+   one live caller is `modules/order/components/payment-details/index.tsx:31,40,43`, outside scope.
+   Both are now commented in place naming that caller. **Open the follow-up issue with T.5.**
+
+## Manual QA the maintainer still owes — NOTHING in this slice is provable by the runner
+
+Everything below is `MANUAL` by the spec's own verification table, and `sdd-verify` must not claim
+otherwise. This slice is the UI layer; removing or renaming any of its testids breaks zero automated
+tests.
+
+- [ ] **2c.25 — Openpay.** CP → options → method → card → CTA → 3DS → confirmation. Then a rejected
+      card: inline error under the CTA, button re-enabled, `payment_sessions` still **empty**. Then
+      retry: confirm a **NEW** token is requested (single-use; reuse is forbidden). Do the first pass
+      on a **cold, throttled** load — see risk 1.
+- [ ] **2c.26 — Mercado Pago.** CTA → **exactly one** preference created (S8) → `init_point` redirect
+      → return through the failure route → cart and address data intact, **no `?step=` in the URL** →
+      retry mints a fresh preference. Confirm `placeOrder` is **never** called. **Then press Back out
+      of Mercado Pago and confirm the CTA is usable again with no reload** — that is 2c.34's bfcache
+      release, wired at `checkout-context.tsx:384-400`, and it is the only escape from the redirect
+      lock.
+- [ ] **2c.27 — Manual provider**, if enabled in the environment. **If it is not enabled, record that
+      explicitly.** Do not silently skip the gate.
+- [ ] **2c.28 — Mobile.** The sticky bar clears the last form field AND the legal text (the form
+      column reserves `pb-[calc(6rem+env(safe-area-inset-bottom))]`); it respects the iOS home
+      indicator; the bar total equals the `CheckoutSummary` total **with a promotion applied**; the
+      disabled state announces its reasons to a screen reader; the button is ≥ 44 px
+      (`Button size="large"` is `h-12`).
+- [ ] **2c.29 — Browsing creates NO session** (R5, the core claim). Load checkout, select a payment
+      method, change shipping method, apply a promotion. `cart.payment_collection?.payment_sessions`
+      stays **empty** throughout and **no Mercado Pago preference call is made**.
+- [ ] **2c.30 — CTA itemization** (R8 / S9). Empty cart → only `Tu carrito está vacío.` Fill fields
+      one at a time and confirm the list shrinks **in order** and the CTA enables **exactly** when the
+      list empties. Remove the last line item and confirm the CTA reports only the empty-cart message.
+- [ ] **2c.31 — Total-change guard** (2c.8). Force a shipping re-price between render and CTA click;
+      confirm the abort and `El costo de envío cambió. Revisa el total y confirma de nuevo.` rather
+      than a silent charge.
+- [ ] **NEW — §12b.** With Mercado Pago selected and never Openpay, confirm `openpay.v1.min.js` and
+      `openpay-data.v1.min.js` are **never requested** (network tab). Then select Openpay and confirm
+      both load and the card fields go from skeleton to inputs.
+- [ ] **NEW — 2c.35.** With a screen reader, confirm the payment radios announce exactly one selected
+      option rather than all of them.
+- [ ] Everything PARTs 10 and 11 still owe.
+
+## Remaining in PR2c
+
+Only the manual QA above (2c.25–2c.31) and the tracker tasks T.1–T.5. Every buildable task in PR2c is
+now `[x]`.
+
+---
+
+# PART 13 — PR2c **SLICE 2** REMEDIATION. Judgment-day findings.
+
+Two independent blind adversarial reviewers both returned **NOT SAFE TO MERGE**, each finding a
+*different* CRITICAL. This part records what was changed, what was refused, and what is still owed.
+
+Baseline before this pass: HEAD `f226ad1`, tree clean, **895 tests / 13 files**, `tsc --noEmit` 0.
+After: **919 tests / 15 files**, `tsc --noEmit` 0, `pnpm build` `✓ Compiled successfully`.
+
+## What both reviewers verified, and what was therefore NOT touched
+
+Recorded so the next reader does not re-litigate it, and so nothing below is mistaken for a rewrite:
+
+- The pure-module extraction is honest — 27 of 27 combined injected mutants died.
+- R5 holds: `initiatePaymentSession` has exactly one call site, reached only from the CTA.
+- The Openpay context-boundary correction (D7 deviation) is right.
+- `release()` / bfcache is correctly wired.
+- Double-submission is safe (the synchronous closure lock).
+- §12b fails closed.
+- The legal copy is byte-verbatim.
+
+**This was remediation, not a rewrite.** Nine commits, none squashed, on `feat/checkout-pago-cta`.
+
+## Strict TDD — every automated fix landed RED first
+
+| # | Fix | RED evidence | Mutants |
+|---|---|---|---|
+| 1 | Post-write readiness re-check | 3 failing in `place-order-flow.spec.ts` before the guard existed | 5 injected, 5 killed |
+| 3 | `firstMissing` consumed | 3 failing in `checkout-reducer.spec.ts` after retyping the assertions | 2 injected, 2 killed |
+| 6 | Openpay context fails closed | 5 failing in the new `openpay-wrapper.spec.ts` (`OPENPAY_CONTEXT_DEFAULT` did not exist) | 4 injected, 4 killed |
+| 7 | `selectCheckoutEntryError` | 5 failing — `is not a function` | 4 injected, 4 killed |
+| 8 | Mercado Pago off-site caption | 2 failing in the new `constants.spec.ts` | 4 injected, 4 killed |
+
+**19 mutants injected across the remediated lines, 19 killed.** One survived on first pass and is
+recorded rather than hidden: the *last-entry-instead-of-first* mutant on step 3.5 lived, because
+every case in the first draft had exactly one requirement missing. A case with two missing at once
+was added and it now dies. That is the same vacuity class that let finding 3 ship.
+
+---
+
+## F1 — CRITICAL. The gate read the CART; step 2 wrote the DRAFT. **CLOSED.**
+
+`toReadinessInput` sourced the address from `cart?.shipping_address`; `placeOrderFlow` sent
+`state.draft`; `handleChange` mutates the draft on every KEYSTROKE with no blur; and
+`place-order-flow.ts:275` calls `cancelAutosave()` as its **first** action, which guarantees the draft
+was never persisted before the gate ran. Not a race — deterministic.
+
+A customer who selected the phone field, deleted it, and pressed *Realizar pedido* passed step 0 on
+the cart's old phone, had `phone: ""` written by step 2, and was redirected to pay. Skydropx then
+refuses the label with `{"address_to":{"phone":["no puede estar en blanco"]}}` — the exact post-sale
+incident whose docstring occupies `checkout-readiness.ts:450-484`. Exposed: `first_name`,
+`last_name`, `address_1`, `phone`, `email`, `company`. The quote-relevant fields were already
+protected because clearing them moves `quoteSignature` and `shipping_method_stale` blocks step 0 —
+which is exactly why the hole read as closed.
+
+**Fix.** Step 3.5 in `place-order-flow.ts`: re-run `getMissingOrderRequirements` against
+`toReadinessInput(synced.cart, selectReadinessClientInput(state))`, after the total-change guard and
+before `initiatePaymentSession`. Same catalogue, same wording, same first-entry rule as step 0 — no
+new vocabulary. `selectReadinessClientInput` was extracted from `selectReadinessInput` so the two
+gates cannot ask different CLIENT questions about the same checkout; a second object literal would
+have been this change's own named defect class.
+
+The reducer's defence of the cart-based source (`checkout-reducer.ts:1357-1359`) is left standing and
+annotated: it is sound for ADDING data and inverted for REMOVING it, and the render-time selector is
+not the place to fix that — gating the button on the draft would block a customer mid-keystroke.
+
+Covered by six cases including ordering-vs-the-total-guard and the unchanged-address pass-through.
+
+## F2 — CRITICAL. The `RadioGroup` swallowed the card form's keys. **CLOSED. Manual QA owed (2c.37).**
+
+Verified against the installed `@headlessui/react@2.2.9` dist, not from memory: the RadioGroup root
+carries `onKeyDown`, and its body is `switch (r.key)` with **no `event.target` inspection**.
+`ArrowLeft/Up` and `ArrowRight/Down` call `preventDefault()`, `stopPropagation()`, move focus and fire
+`change(value)`; `Space` does the same to the focused option.
+
+Desktop: pressing **←** to correct a digit in the PAN selected *Mercado Pago*, unmounting the card
+form and discarding every digit typed. Every device including mobile: the space bar did nothing in
+*Name on card*, so `JUAN PÉREZ` became `JUANPÉREZ` — which still satisfies
+`holderName.trim().length > 0`, so the CTA enabled and the mangled `holder_name` was tokenized and
+sent to the issuer.
+
+**Fix.** `onKeyDown={(e) => e.stopPropagation()}` on the card-fields wrapper
+(`payment-container/index.tsx:246`). Inherited from `payment/index.tsx`, but this slice makes it the
+only way to pay by card in production, and 2c.35 reworked this exact element without noticing.
+
+**Not reachable by the node runner.** No coverage was faked. Blocking manual steps are in `tasks.md`
+2c.37 — including the negative case: radio navigation between methods must still work.
+
+## F3 — MAJOR. `firstMissingMessage` was dead; the live rule was an untested `.slice(0, 1)`. **CLOSED.**
+
+Both reviewers found this independently. Three tests and a mutant guarded a field no component read,
+while the identical rule lived in a `.tsx`. Changing the `.slice(0, 1)` to `.slice(-1)` — showing
+every mobile customer the LAST thing they had to fix instead of the next one — kept all 895 tests
+green.
+
+**Fix.** Retyped to `firstMissing: MissingRequirement | null` (the requirement, not the message, so
+`MissingItemsList` keeps its `code` key and its `aria-live` contract in one place) and rendered by
+the sticky bar. The `.slice(0, 1)` is gone. The last-instead-of-first mutant now dies.
+
+## F4 — MAJOR. The complete list rendered at no viewport where the sticky bar exists. **CLOSED. Manual QA owed (2c.38). Spec conflict recorded (2c.39).**
+
+`place-order-bar/index.tsx:45` was `hidden small:block` and `small` is `1024px`
+(`tailwind.config.js:83`), so the only place the full catalogue rendered was `display: none` on every
+phone. The bar's own docstring, spec line 918 and task 2c.17 all promised otherwise.
+
+**Fix.** `hidden small:block` moved onto the BUTTON alone, so the list renders at every width. Two
+`Realizar pedido` buttons on one screen would contradict S2, which is why the button did not move
+with it. `MissingItemsList` gained `announce`: with two instances on screen at mobile width, the
+in-flow complete list keeps the live region and the bar's echo is `aria-hidden`, so a screen-reader
+user is not read the same sentence twice.
+
+**Recorded, not resolved (RC-1).** Spec line 931 — "the legal text **and the in-flow CTA** are
+visible above the sticky bar" — is unsatisfiable alongside D9's desktop-only in-flow CTA and S2's
+one-button rule. Three documents, one contradiction. `tasks.md` 2c.39 puts the decision back where it
+belongs instead of letting the implementation pick.
+
+## F5 — MAJOR. The bar covered the summary, the discount field and the trust badges. **CLOSED. Manual QA owed (2c.40).**
+
+The reservation was `pb-[calc(6rem+env(safe-area-inset-bottom))]` on the **form column only**, while
+the page is `grid-cols-1` with no `gap-y` — so `CheckoutSummary` and the layout footer rendered below
+it and got nothing. Measured bar height on a notched iPhone with the cart resolved: `pt-3` 12 + total
+row 36 + `h-12` button 48 + the always-rendered `MissingItemsList` wrapper 8–26 + `pb` 12 + safe area
+≈ **150–168 px**, against ~130 px reserved on the wrong element. The customer could not reach
+`DiscountCode` at all.
+
+**Fix.** Reservation moved to the page grid (`checkout/page.tsx:53`) at `10rem` + safe area; the form
+column keeps an ordinary `pb-8`. The checkout layout's footer got matching mobile-only clearance —
+it is a SIBLING of `{children}`, so no page-level padding could ever have reached it, which is why
+the trust badges stayed covered. Cost: `payment/mercadopago/status` carries whitespace it is short
+enough never to scroll to; recorded rather than hidden.
+
+## F6 — MAJOR. A `provider-config` failure was an infinite skeleton. **CLOSED.**
+
+`getProviderConfig()` returns `{ openpay: null }` on any failure; `PaymentWrapper` then renders
+`<div>{children}</div>` with **no provider**; `PaymentSection` still renders the Openpay row because
+it reads `availablePaymentMethods` (a different source, which succeeded); so `OpenpayCardContainer`
+read the DEFAULT context — `ready: false`, **`unavailable: false`** — and rendered
+`<SkeletonCardDetails />` forever with no timeout. The `openpay-unavailable-message` written for
+exactly this case could not render, because the default failed **open** on the one field that selects
+it.
+
+**Fix.** `unavailable: true` in the default, named as `OPENPAY_CONTEXT_DEFAULT` so the node runner can
+hold it — outside the provider Openpay can never become ready, so the default must fail closed, on
+the same principle as `isOpenpayOffered` and `hasShippingMethod`.
+
+**Residual, recorded (2c.42):** the Openpay row remains selectable under that outage, so the section
+says "temporarily unavailable" while the CTA says `Completa los datos de tu tarjeta.` — two
+vocabularies for one condition. The customer-blocking half is closed; the wording half needs either
+row filtering or an unavailable-aware `card_details`.
+
+## F7 — MAJOR. A failed payment returned the customer to a silent checkout. **CLOSED — by overriding a recorded NON-GOAL.**
+
+Both return routes redirect to `?error=payment_failed`, which had **zero** readers under
+`(checkout)/`. A customer whose 3DS challenge declined landed on a pristine checkout with no error and
+no spinner; the only available reading is "my click didn't register", so the retry cost them a
+**second authorization hold** — on a Mexican debit card, real money frozen.
+
+**This was an explicit non-goal** (`proposal.md` §4, `design.md` §13, `tasks.md` Non-goals, and both
+routes' own docstrings). It is overridden deliberately, not overlooked: that non-goal was written
+while `?step=` deadlocked the page, so the customer could not have acted on the message. It is not
+defensible in the slice that starts taking money, where the inline decline path (`settleFailed` →
+`state.error`) is excellent and the one involving the customer's bank says nothing at all.
+
+**Fix.** `selectCheckoutEntryError` in `place-order.ts` — pure, so a spec can contradict it —
+selecting from a **closed set** and never echoing the parameter, because the query string is
+attacker-controlled and this is the moment the customer is typing a PAN. Seeded into the same
+`state.error` the flow writes, through `CheckoutInit.error`, so there is one channel for "why you
+have not been charged" and `PLACE_ORDER_STARTED` clears it. The wording states the ORDER outcome and
+deliberately does **not** claim nothing was charged — an Openpay hold may genuinely exist.
+
+`tasks.md` 2c.43 asks the maintainer to ratify the override by removing the non-goal, or to reject
+the fix. **Both must not stand.**
+
+## F8 — MAJOR. The card form was in English at the purchase moment. **CLOSED.**
+
+Both reviewers flagged it. `billing_address/index.tsx:29-36` already argues that "shipping a checkout
+that switches language halfway down the page is not a thing to preserve" — the principle had been
+applied to the easy file and not the highest-stakes one.
+
+Translated to Mexican **tú**: the five labels/placeholders, the three validation errors, the
+unavailable message, `CountrySelect`'s placeholder, and the shared `Button`'s loading label — which
+REPLACES the button's own text, so `Realizar pedido` read `Loading...` for the one to three seconds
+tokenize + address sync + session creation takes. `MM/YY` became `MM/AA`, which is what Mexican cards
+are printed with; `formatExpiry` is untouched and still splits on `/`.
+
+**Voseo guard extended.** `constants.spec.ts` now holds the offered providers' titles and captions to
+the same standard `place-order.spec.ts` and `checkout-readiness.spec.ts` already enforce.
+
+## MINORs — four fixed, three recorded with `file:line`
+
+Fixed: `province` marked `required` on the billing form; `deviceSessionMissing` no longer tells the
+customer to reload a page that under §12b loads nothing; `PLACE_ORDER_LABEL` de-exported; the Mercado
+Pago row gained an off-site caption warning that *Realizar pedido* leaves the site.
+
+Recorded in `tasks.md` rather than actioned: `canPlaceOrder`'s dead call site (2c.45 — it is
+design-mandated public API, RC-1), the gift-card split (2c.46), and the Openpay-unavailable wording
+(2c.42).
+
+## Disagreement recorded
+
+**The `PLACE_ORDER_LABEL` minor's prescribed fix was refused.** The finding asks to "wire both
+variants to it". Both variants already render the same `PlaceOrderButton`, and that component renders
+the constant — there is exactly one label **by construction**, and no drift is possible. The real
+defect was a docstring making a claim about an export nothing imported. The export was removed and
+the claim corrected; contorting the two variants to import a label they do not render would have
+added indirection to defend against an impossibility.
+
+Everything else in both reports was reproduced against this codebase before being fixed. Two claims
+were verified rather than taken on trust, and both held: the Headless UI keyboard behaviour (read out
+of the installed dist) and the `small: "1024px"` breakpoint.
+
+## Manual QA this remediation ADDS — none of it is provable by the runner
+
+- [ ] **2c.37** — the card form's keyboard (CRITICAL). Space in the cardholder name; ←/→/↑/↓ in the
+      PAN, expiry and CVV; and the negative case, that radio navigation between methods still works.
+- [ ] **2c.38** — the complete itemized list on a real phone, announced **once**, with exactly one
+      CTA on screen.
+- [ ] **2c.40** — on a real **notched** phone (not a devtools emulator — `env(safe-area-inset-bottom)`
+      is `0px` there) at maximum scroll: the discount field reachable and usable, the payment badges
+      visible, repeated with a two-line message in the bar.
+- [ ] **2c.41** — block `GET /store/provider-config`, select Openpay, confirm the unavailable message
+      renders and no skeleton does.
+- [ ] **2c.43** — both failure returns show the message; it clears on retry; a hand-crafted
+      `?error=<arbitrary text>` renders **nothing**.
+- [ ] **2c.39** — the spec/design/S2 contradiction needs a product answer before merge.
+
+Everything PARTs 10, 11 and 12 still owe is unchanged and still owed. **2c.28's wording is now stale**
+— it references the form column's `6rem` reservation, which moved; use 2c.40.
