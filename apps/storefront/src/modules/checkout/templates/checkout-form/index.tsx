@@ -84,12 +84,20 @@ export default function CheckoutForm({
       className={[
         "grid w-full grid-cols-1 gap-y-8",
         /**
-         * Scroll clearance for PR2c's sticky mobile CTA bar. Landed here, ahead
-         * of the bar itself, so the chain never has a commit where the bar
-         * covers the last field — the single most common bug in sticky checkout
-         * bars, and one that only shows up on a real phone.
+         * NOT the sticky bar's scroll clearance any more — that moved to the
+         * page grid (`checkout/page.tsx`).
+         *
+         * It was here, and reserving on the form column alone was the bug:
+         * on mobile the page is `grid-cols-1` with no `gap-y`, so
+         * `CheckoutSummary` and the layout footer render BELOW this padding and
+         * got no clearance at all. The customer could not reach the discount
+         * field and never saw the payment badges — the very bug D9 names as
+         * "the single most common bug in sticky checkout bars".
+         *
+         * What is left is ordinary separation from the summary below, matching
+         * this grid's own `gap-y-8`.
          */
-        "pb-[calc(6rem+env(safe-area-inset-bottom))] small:pb-12",
+        "pb-8 small:pb-12",
       ].join(" ")}
     >
       <ContactAddressSection customer={customer} />

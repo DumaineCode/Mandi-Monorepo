@@ -50,7 +50,33 @@ export default async function Checkout() {
   ])
 
   return (
-    <div className="grid grid-cols-1 small:grid-cols-[1fr_416px] content-container gap-x-40 py-12">
+    <div
+      className={[
+        "grid grid-cols-1 small:grid-cols-[1fr_416px] content-container gap-x-40 py-12",
+        /**
+         * Scroll clearance for the sticky mobile CTA bar, on the PAGE GRID.
+         *
+         * It used to sit on the form column alone
+         * (`checkout-form/index.tsx`), which reserved nothing for anything
+         * below it. On mobile this grid is `grid-cols-1` with no `gap-y`, so
+         * `CheckoutSummary` renders AFTER the form column's padding — putting
+         * the discount field and the totals under the bar with only the page's
+         * own `py-12` between them. The customer could not reach
+         * `DiscountCode` at all.
+         *
+         * Measured bar height on a notched iPhone with the cart resolved:
+         * `pt-3` 12 + total row 36 + `h-12` button 48 + the always-rendered
+         * `MissingItemsList` wrapper 8–26 + `pb` 12 + safe area ≈ 150–168 px.
+         * The old reservation was `6rem` ≈ 96 px + safe area, i.e. short even
+         * for the column it did cover. `10rem` clears the two-line case.
+         *
+         * `env(safe-area-inset-bottom)` is added on top because the bar adds it
+         * to its OWN padding, so the reservation has to as well or the
+         * clearance shrinks by the height of the home indicator.
+         */
+        "pb-[calc(10rem+env(safe-area-inset-bottom))] small:pb-12",
+      ].join(" ")}
+    >
       {/*
        * The provider owns every piece of client state the three sections share.
        * The RSC render supplies the INITIAL cart only; after mount `state.cart`
