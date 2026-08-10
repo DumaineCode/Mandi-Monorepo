@@ -3955,3 +3955,52 @@ describe("selectPlaceOrderView", () => {
     expect(view.firstMissingMessage).toBe("Tu carrito está vacío.")
   })
 })
+
+/**
+ * ---------------------------------------------------------------------------
+ * SET_PAYMENT_DETAILS_COMPLETE (PR2c slice 2, task 2c.1)
+ * ---------------------------------------------------------------------------
+ *
+ * `OpenpayCardContainer` re-runs its validation effect on EVERY card keystroke
+ * and reports the result unconditionally. Sixteen digits of a card number is
+ * sixteen dispatches, and fifteen of them carry the value the state already
+ * holds.
+ */
+describe("SET_PAYMENT_DETAILS_COMPLETE", () => {
+  it("records the transition", () => {
+    const complete = checkoutReducer(baseState(), {
+      type: "SET_PAYMENT_DETAILS_COMPLETE",
+      complete: true,
+    })
+
+    expect(complete.paymentDetailsComplete).toBe(true)
+
+    const cleared = checkoutReducer(complete, {
+      type: "SET_PAYMENT_DETAILS_COMPLETE",
+      complete: false,
+    })
+
+    expect(cleared.paymentDetailsComplete).toBe(false)
+  })
+
+  /**
+   * Identity, not equality, and it is the whole point of the assertion.
+   *
+   * A new object for an unchanged value re-renders every consumer of
+   * `CheckoutStateContext` — `ContactAddressSection`, `ShippingSection`, both
+   * `PlaceOrderBar` variants — once per character typed into a card field, on
+   * the page where the customer is least willing to see jank. The reducer is
+   * the only place that can decline: the effect cannot know what the state
+   * already holds without subscribing to it, which is the same re-render.
+   */
+  it("returns the SAME state when the value has not moved", () => {
+    const before = baseState()
+
+    expect(
+      checkoutReducer(before, {
+        type: "SET_PAYMENT_DETAILS_COMPLETE",
+        complete: false,
+      })
+    ).toBe(before)
+  })
+})

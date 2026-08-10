@@ -847,8 +847,24 @@ export function checkoutReducer(
     case "SELECT_PAYMENT_PROVIDER":
       return { ...state, selectedPaymentProviderId: action.providerId }
 
+    /**
+     * Declines an unchanged value, and the identity check is load-bearing.
+     *
+     * `OpenpayCardContainer`'s validation effect re-runs on every card
+     * keystroke and reports its verdict unconditionally, so sixteen digits of a
+     * PAN is sixteen dispatches of which fifteen say nothing new. A fresh state
+     * object for each of them re-renders every consumer of
+     * `CheckoutStateContext` — both address sections, Envío, and both CTA
+     * variants — once per character, on the page least able to afford it.
+     *
+     * The effect cannot filter this itself without subscribing to the state it
+     * would be filtering against, which is the same re-render. The reducer is
+     * the only party that already knows.
+     */
     case "SET_PAYMENT_DETAILS_COMPLETE":
-      return { ...state, paymentDetailsComplete: action.complete }
+      return state.paymentDetailsComplete === action.complete
+        ? state
+        : { ...state, paymentDetailsComplete: action.complete }
 
     /**
      * Clearing the error here is the point, not a side effect. A message left

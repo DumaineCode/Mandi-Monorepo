@@ -1,235 +1,109 @@
 "use client"
 
-import { isManual, isMercadopago, isOpenpay } from "@lib/constants"
-import { placeOrder, retrieveCart } from "@lib/data/cart"
-import { HttpTypes } from "@medusajs/types"
-import { Button } from "@modules/common/components/ui"
-import React, { useState } from "react"
-import ErrorMessage from "../error-message"
+import { useCheckoutActions } from "@modules/checkout/state/checkout-context"
+import { Button, clx } from "@modules/common/components/ui"
+import { useContext } from "react"
+
+import { OpenpayContext } from "../payment-wrapper/openpay-wrapper"
 import { CORAL_CTA } from "../submit-button"
 
-type PaymentButtonProps = {
-  cart: HttpTypes.StoreCart
-  "data-testid": string
-}
-
-const PaymentButton: React.FC<PaymentButtonProps> = ({
-  cart,
-  "data-testid": dataTestId,
-}) => {
-  const notReady =
-    !cart ||
-    !cart.shipping_address ||
-    !cart.billing_address ||
-    !cart.email ||
-    (cart.shipping_methods?.length ?? 0) < 1
-
-  const paymentSession = cart.payment_collection?.payment_sessions?.[0]
-
-  switch (true) {
-    case isOpenpay(paymentSession?.provider_id):
-      return (
-        <OpenpayPaymentButton notReady={notReady} data-testid={dataTestId} />
-      )
-    case isMercadopago(paymentSession?.provider_id):
-      return (
-        <MercadoPagoPaymentButton
-          notReady={notReady}
-          initPoint={paymentSession?.data?.init_point as string | undefined}
-          data-testid={dataTestId}
-        />
-      )
-    case isManual(paymentSession?.provider_id):
-      return (
-        <ManualTestPaymentButton notReady={notReady} data-testid={dataTestId} />
-      )
-    default:
-      return <Button disabled>Selecciona un método de pago</Button>
-  }
-}
-
-// Coral brand override for the final place-order CTA (visual only). Reuses the
-// shared CORAL_CTA constant so the coral surface stays identical to every other
-// checkout CTA.
-const PLACE_ORDER_CTA = CORAL_CTA
+/**
+ * The only order-placement label in the storefront (S2, task 2c.24). Exported
+ * so the two `PlaceOrderBar` variants cannot drift into two different words for
+ * the same action.
+ */
+export const PLACE_ORDER_LABEL = "Realizar pedido"
 
 /**
- * `StripePaymentButton` and its `case isStripeLike(...)` dispatch arm were
- * deleted here (task 2c.6, pulled forward into PR1b).
+ * The single order-placement button (tasks 2c.5, 2c.34).
  *
- * It could not stay: `payment-wrapper/stripe-wrapper.tsx` was deleted in the
- * same PR (1b.18), so no `<Elements>` provider is mounted anywhere in the app.
- * `useStripe()` and `useElements()` THROW outside that provider, so the
- * component would have crashed on mount rather than merely misbehaving. A
- * half-removed integration is strictly worse than either finishing or not
- * starting.
+ * ## What this replaces, and why the old shape could never have worked
  *
- * It was already unreachable per `design.md` §0 CONFLICT-1 RESOLUTION:
- * `apps/backend/medusa-config.ts` registers exactly two payment providers,
- * `openpay` and `mercadopago`, and `listCartPaymentMethods` is backend-driven
- * (`lib/data/payment.ts:16`), so `isStripeLike` can never match a real provider
- * id. Deleting it also let `@stripe/react-stripe-js` and `@stripe/stripe-js`
- * leave `package.json` (task 2c.13, likewise pulled forward) — this file held
- * the last source import of either package.
+ * It used to `switch (true)` on
+ * `cart.payment_collection?.payment_sessions?.[0]?.provider_id` and render one
+ * of four provider-specific buttons. Under R5 that array is EMPTY at render —
+ * no session exists until this button is clicked — so every checkout would have
+ * fallen to the disabled default branch and no order could ever have been
+ * placed. The customer's SELECTION is the input; the session is an outcome, and
+ * an outcome cannot also be the thing that decides what to render.
  *
- * `isStripeLike` itself STAYS exported from `lib/constants.tsx`: it still has a
- * live caller outside checkout at `modules/order/components/payment-details/
- * index.tsx:43`, which is out of scope for this change (task 2c.14).
+ * So there is no dispatch here at all any more. `state.selectedPaymentProviderId`
+ * feeds two places and both are pure and spec'd: `getMissingOrderRequirements`
+ * decides whether the button is enabled, and `resolvePaymentTail` inside
+ * `place-order-flow.ts` decides which provider tail runs. **This retires explore
+ * risk #8 rather than deferring it** — the `payment_sessions[0]` vs
+ * `status === "pending"` asymmetry disappears because nothing reads sessions.
+ *
+ * ## One label, not four
+ *
+ * `design.md` D5 has the provider predicates selecting the LABEL as well as the
+ * tail, with a disabled `Selecciona un método de pago` default branch. That
+ * conflicts with S2/2c.24, which requires exactly one order-placement button
+ * labelled `Realizar pedido`; the old Mercado Pago branch said `Pagar con
+ * Mercado Pago`. It is also redundant now: "no method chosen" is already
+ * reported, in the customer's own list, as `Elige un método de pago.` — the
+ * same string `PLACE_ORDER_MESSAGES.providerUnsupported` delegates to. Two
+ * vocabularies for one condition is what slice 1's remediation removed.
+ *
+ * ## The gateway is read HERE, at click time, and that is not incidental
+ *
+ * `CheckoutProvider` is mounted OUTSIDE `PaymentWrapper`, which is what supplies
+ * `OpenpayContext`. Anything above the wrapper reading that context gets the
+ * DEFAULT value — `deviceSessionId: null`, a `tokenize` that rejects — and every
+ * Openpay charge fails in a way no unit test can see, because the wiring is the
+ * untestable part. This component renders inside the wrapper and passes the live
+ * value as an argument, which also means it is read fresh: `deviceSessionId` is
+ * populated asynchronously as `openpay-data.v1.min.js` loads, so a value
+ * captured any earlier would be pinned to `null`.
+ *
+ * `release()` is NOT called from here. It is wired to the `pageshow` listener in
+ * `checkout-context.tsx`, which is the only event that fires on a back/forward
+ * cache restore — the one case the lock has to survive and then be given back.
  */
-const OpenpayPaymentButton = ({
-  notReady,
+const PlaceOrderButton = ({
+  disabled,
+  isPlacing,
+  className,
   "data-testid": dataTestId,
 }: {
-  notReady: boolean
+  disabled: boolean
+  isPlacing: boolean
+  className?: string
   "data-testid"?: string
 }) => {
-  const [submitting, setSubmitting] = useState(false)
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
-
-  const handlePayment = async () => {
-    setSubmitting(true)
-    setErrorMessage(null)
-
-    try {
-      // On success placeOrder redirects to the order confirmation page.
-      await placeOrder()
-    } catch (err) {
-      // NEVER key this decision off the error message wording (design R1
-      // mitigation): re-fetch the cart and inspect the payment session state.
-      // A 3DS challenge surfaces as status "requires_more" with a
-      // redirect_url provided by the payment provider (OP-4).
-      const updatedCart = await retrieveCart().catch(() => null)
-      const session = updatedCart?.payment_collection?.payment_sessions?.find(
-        (s) => isOpenpay(s.provider_id)
-      )
-      const redirectUrl =
-        session?.status === "requires_more"
-          ? (session.data?.redirect_url as string | undefined)
-          : undefined
-
-      if (redirectUrl) {
-        // Keep the button in its loading state while the browser navigates
-        // to the bank's 3DS challenge page.
-        window.location.href = redirectUrl
-        return
-      }
-
-      // Declined or other provider error — the cart stays intact and the
-      // order remains retryable from the review step (OP-3).
-      setErrorMessage(err instanceof Error ? err.message : String(err))
-      setSubmitting(false)
-    }
-  }
+  const { placeOrderFlow } = useCheckoutActions()
+  const openpay = useContext(OpenpayContext)
 
   return (
-    <>
-      <Button
-        disabled={notReady}
-        onClick={handlePayment}
-        size="large"
-        className={PLACE_ORDER_CTA}
-        isLoading={submitting}
-        data-testid={dataTestId}
-      >
-        Realizar pedido
-      </Button>
-      <ErrorMessage
-        error={errorMessage}
-        data-testid="openpay-payment-error-message"
-      />
-    </>
+    <Button
+      size="large"
+      className={clx(CORAL_CTA, className)}
+      /**
+       * `disabled` alone — no `aria-disabled` beside it. The pair is redundant,
+       * and the reason the button will not move is announced by the
+       * `role="status"` list rendered outside it (D9).
+       */
+      disabled={disabled}
+      isLoading={isPlacing}
+      /**
+       * Fire-and-forget on purpose. Every outcome the flow can reach is already
+       * dispatched into `state.placingOrder` and `state.error`, which is what
+       * this button and the list beside it render. Awaiting the promise here
+       * would add a second, component-local copy of that state.
+       *
+       * Re-entrancy is NOT guarded here either: the authoritative lock is a
+       * synchronous closure flag inside the flow, because this button's
+       * `disabled` prop reaches it through a ref that lags by one commit and two
+       * clicks inside one commit would both read it as enabled.
+       */
+      onClick={() => {
+        void placeOrderFlow(openpay)
+      }}
+      data-testid={dataTestId}
+    >
+      {PLACE_ORDER_LABEL}
+    </Button>
   )
 }
 
-const MercadoPagoPaymentButton = ({
-  notReady,
-  initPoint,
-  "data-testid": dataTestId,
-}: {
-  notReady: boolean
-  initPoint?: string
-  "data-testid"?: string
-}) => {
-  const [submitting, setSubmitting] = useState(false)
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
-
-  const handlePayment = () => {
-    setSubmitting(true)
-    setErrorMessage(null)
-
-    // Checkout Pro is a hosted redirect: the order is NOT completed here. The
-    // customer pays on MP's page and returns via a back_url; the webhook is the
-    // source of truth for confirmation (MP-3/MP-4). Keep the button loading
-    // while the browser navigates to MP.
-    if (!initPoint) {
-      setErrorMessage(
-        "Mercado Pago is not ready yet. Please go back and re-select it."
-      )
-      setSubmitting(false)
-      return
-    }
-
-    window.location.href = initPoint
-  }
-
-  return (
-    <>
-      <Button
-        disabled={notReady}
-        onClick={handlePayment}
-        size="large"
-        className={PLACE_ORDER_CTA}
-        isLoading={submitting}
-        data-testid={dataTestId}
-      >
-        Pagar con Mercado Pago
-      </Button>
-      <ErrorMessage
-        error={errorMessage}
-        data-testid="mercadopago-payment-error-message"
-      />
-    </>
-  )
-}
-
-const ManualTestPaymentButton = ({ notReady }: { notReady: boolean }) => {
-  const [submitting, setSubmitting] = useState(false)
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
-
-  const onPaymentCompleted = async () => {
-    await placeOrder()
-      .catch((err) => {
-        setErrorMessage(err.message)
-      })
-      .finally(() => {
-        setSubmitting(false)
-      })
-  }
-
-  const handlePayment = () => {
-    setSubmitting(true)
-
-    onPaymentCompleted()
-  }
-
-  return (
-    <>
-      <Button
-        disabled={notReady}
-        isLoading={submitting}
-        onClick={handlePayment}
-        size="large"
-        className={PLACE_ORDER_CTA}
-        data-testid="submit-order-button"
-      >
-        Realizar pedido
-      </Button>
-      <ErrorMessage
-        error={errorMessage}
-        data-testid="manual-payment-error-message"
-      />
-    </>
-  )
-}
-
-export default PaymentButton
+export default PlaceOrderButton

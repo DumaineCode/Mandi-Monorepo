@@ -3,8 +3,9 @@
 import { HttpTypes } from "@medusajs/types"
 import CheckoutUnavailable from "@modules/checkout/components/checkout-unavailable"
 import ContactAddressSection from "@modules/checkout/components/contact-address-section"
-import Payment from "@modules/checkout/components/payment"
-import Review from "@modules/checkout/components/review"
+import LegalNotice from "@modules/checkout/components/legal-notice"
+import PaymentSection from "@modules/checkout/components/payment-section"
+import PlaceOrderBar from "@modules/checkout/components/place-order-bar"
 import ShippingSection from "@modules/checkout/components/shipping-section"
 import { useCheckoutCart } from "@modules/checkout/state/checkout-context"
 import { Text } from "@modules/common/components/ui"
@@ -39,15 +40,23 @@ const SectionUnavailable = ({
  * `CheckoutProvider`, so it cannot `await` anything, and the page is the one
  * place both lists have more than one consumer anyway.
  *
- * ## Chain state, stated plainly
+ * ## The migration is finished here
  *
- * *Datos* and *Envío* are now the single-page sections. *Pago* and *Revisión*
- * are still the four-step components and are still driven by `?step=` — PR2c
- * replaces them with `PaymentSection` and one final CTA reading this same
- * context. Until then they open through their own "Editar" buttons rather than
- * through a step the address form pushes, because nothing pushes one any more.
- * That is an intermediate state on a chained branch; it never reaches `main`,
- * which is the reason the chain targets a tracker branch.
+ * Three sections, always open, plus one CTA. *Revisión* is gone entirely — it
+ * was a step whose only content was the legal text and the place-order button,
+ * and both of those now render in flow at the bottom of this column. There is no
+ * `?step=` reader and no `?step=` writer left anywhere in the checkout, which is
+ * what closes S5 and the deadlock it caused: `Payment` gated its body on
+ * `?step=payment`, and the only thing that ever pushed that parameter was a
+ * button inside the closed body.
+ *
+ * ## Both CTA variants render HERE, inside `PaymentWrapper`
+ *
+ * `design.md` D7 places the sticky variant next to `CheckoutSummary`, outside
+ * the wrapper. That would give it the default `OpenpayContext` —
+ * `deviceSessionId: null` — and every Openpay charge from a phone would fail
+ * while the desktop one worked. The sticky bar is `position: fixed`, so its
+ * position in the document costs nothing. See `place-order-bar/index.tsx`.
  */
 export default function CheckoutForm({
   customer,
@@ -60,8 +69,9 @@ export default function CheckoutForm({
    * The CART slice, not the whole state (W6 / C3).
    *
    * Subscribing to the full state re-rendered this template on every keystroke,
-   * and through it `Payment` and `Review`. This context changes only when the
-   * cart or the option SET actually changes.
+   * and through it every section below. This context changes only when the cart
+   * or the option SET actually changes — and this template no longer passes the
+   * cart down at all: each section reads exactly the slice it renders.
    */
   const { cart } = useCheckoutCart()
 
@@ -103,16 +113,29 @@ export default function CheckoutForm({
       <ShippingSection />
 
       {availablePaymentMethods ? (
-        <>
-          <Payment cart={cart} availablePaymentMethods={availablePaymentMethods} />
-          <Review cart={cart} />
-        </>
+        <PaymentSection availablePaymentMethods={availablePaymentMethods} />
       ) : (
         <SectionUnavailable
           title="Pago"
           reason="No pudimos obtener los métodos de pago. Recarga la página para intentarlo de nuevo."
         />
       )}
+
+      {/*
+       * Informational, never a gate (settled decision 2). It renders even when
+       * the payment list failed to load, because it describes what clicking the
+       * button means and that does not depend on which methods are on offer.
+       */}
+      <LegalNotice />
+
+      {/*
+       * The CTA renders unconditionally, INCLUDING when the payment list could
+       * not be fetched. A checkout that hides its purchase button leaves the
+       * customer with nothing to read; one that shows it disabled beside `Elige
+       * un método de pago.` has told them exactly where they are.
+       */}
+      <PlaceOrderBar variant="inline" />
+      <PlaceOrderBar variant="sticky" />
     </div>
   )
 }

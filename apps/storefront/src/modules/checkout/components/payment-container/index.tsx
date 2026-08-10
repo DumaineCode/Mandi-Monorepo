@@ -2,8 +2,6 @@ import { Radio as RadioGroupOption } from "@headlessui/react"
 import { Text, clx } from "@modules/common/components/ui"
 import React, { useContext, useEffect, useState } from "react"
 
-import Radio from "@modules/common/components/radio"
-
 import { isManual, type PaymentInfo } from "@lib/constants"
 import SkeletonCardDetails from "@modules/skeletons/components/skeleton-card-details"
 import PaymentTest from "../payment-test"
@@ -35,7 +33,9 @@ const PaymentContainer: React.FC<PaymentContainerProps> = ({
       value={paymentProviderId}
       disabled={disabled}
       className={clx(
-        "flex flex-col gap-y-2 text-small-regular cursor-pointer py-4 border rounded-rounded px-8 mb-2 hover:shadow-borders-interactive-with-active",
+        // `group` so the decorative indicator below can react to this row's
+        // own `data-checked`, which Headless UI sets.
+        "group flex flex-col gap-y-2 text-small-regular cursor-pointer py-4 border rounded-rounded px-8 mb-2 hover:shadow-borders-interactive-with-active",
         {
           "border-ui-border-interactive":
             selectedPaymentOptionId === paymentProviderId,
@@ -44,7 +44,26 @@ const PaymentContainer: React.FC<PaymentContainerProps> = ({
     >
       <div className="flex items-center justify-between gap-x-3">
         <div className="flex items-center gap-x-4">
-          <Radio checked={selectedPaymentOptionId === paymentProviderId} />
+          {/*
+           * Decorative, and it has to be (task 2c.35).
+           *
+           * This slot used to hold the shared `common/components/radio` — a
+           * `<button role="radio" aria-checked="true">`. Two defects in one
+           * element: it nests an interactive control inside a radio option, and
+           * it hard-codes EVERY row as checked, so a screen-reader user was told
+           * all payment methods were selected at once. That becomes
+           * customer-visible the moment this list is the only way to pay.
+           *
+           * The `RadioGroupOption` wrapping it already carries `role="radio"`
+           * and the real `aria-checked`, so the indicator only has to be a
+           * picture. Same pattern, and same reasoning, as `shipping-section`.
+           */}
+          <span
+            aria-hidden="true"
+            className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full border border-line bg-white group-data-[checked]:border-coral"
+          >
+            <span className="h-2 w-2 rounded-full bg-transparent group-data-[checked]:bg-coral" />
+          </span>
           <div className="flex flex-col">
             <Text className="text-base-regular">
               {paymentInfoMap[paymentProviderId]?.title || paymentProviderId}
