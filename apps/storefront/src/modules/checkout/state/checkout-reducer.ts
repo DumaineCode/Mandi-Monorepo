@@ -1286,8 +1286,22 @@ export function selectShippingIsProvisional(state: CheckoutState): boolean {
 export type PlaceOrderView = {
   /** Every unmet requirement, in catalogue order (R8 / S9). */
   missing: MissingRequirement[]
-  /** The sticky bar's single line (D9). `null` when nothing is missing. */
-  firstMissingMessage: string | null
+  /**
+   * The sticky bar's single line (D9). `null` when nothing is missing.
+   *
+   * The REQUIREMENT and not just its message, because the bar renders it
+   * through `MissingItemsList` — which needs the `code` for its React key and
+   * owns the `role="status"` / `aria-live="polite"` contract that must not be
+   * re-typed anywhere else.
+   *
+   * This field used to be `firstMissingMessage: string | null` and had no
+   * consumer at all: the sticky bar re-derived the identical rule inline as
+   * `view.missing.slice(0, 1)`. Three tests and a mutant guarded the dead copy
+   * while the live one was in a `.tsx` no spec can load, so changing it to
+   * `.slice(-1)` — showing every mobile customer the LAST thing they had to
+   * fix instead of the next one — left the whole suite green.
+   */
+  firstMissing: MissingRequirement | null
   /** The `disabled` attribute for BOTH CTA variants. */
   disabled: boolean
   /** An attempt is in flight — the button's loading affordance. */
@@ -1335,7 +1349,7 @@ export function selectPlaceOrderView(state: CheckoutState): PlaceOrderView {
 
   return {
     missing,
-    firstMissingMessage: missing.length > 0 ? missing[0].message : null,
+    firstMissing: missing[0] ?? null,
     disabled: missing.length > 0 || state.placingOrder,
     placing: state.placingOrder,
     error: state.error,

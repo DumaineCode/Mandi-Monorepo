@@ -3825,7 +3825,7 @@ describe("selectPlaceOrderView", () => {
     const view = selectPlaceOrderView(ready())
 
     expect(view.missing).toEqual([])
-    expect(view.firstMissingMessage).toBeNull()
+    expect(view.firstMissing).toBeNull()
     expect(view.disabled).toBe(false)
   })
 
@@ -3850,7 +3850,8 @@ describe("selectPlaceOrderView", () => {
   it("surfaces the first missing requirement, not an arbitrary one", () => {
     const view = selectPlaceOrderView(baseState({ email: null }))
 
-    expect(view.firstMissingMessage).toBe("Falta tu correo electrónico.")
+    expect(view.firstMissing?.message).toBe("Falta tu correo electrónico.")
+    expect(view.firstMissing?.code).toBe("email")
     expect(view.missing[0].code).toBe("email")
   })
 
@@ -3952,7 +3953,7 @@ describe("selectPlaceOrderView", () => {
     const view = selectPlaceOrderView(emptied)
 
     expect(view.missing.map((item) => item.code)).toEqual(["cart_empty"])
-    expect(view.firstMissingMessage).toBe("Tu carrito está vacío.")
+    expect(view.firstMissing?.message).toBe("Tu carrito está vacío.")
   })
 })
 

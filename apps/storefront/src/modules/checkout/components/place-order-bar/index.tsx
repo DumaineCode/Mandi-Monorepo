@@ -131,10 +131,16 @@ const PlaceOrderBar = ({ variant }: { variant: "inline" | "sticky" }) => {
        * cannot grow to four items without covering the form behind it. It is
        * the FIRST entry because the catalogue is ordered by page position, so
        * the first entry is the next thing the customer can act on. The complete
-       * list renders in page flow above, in the inline variant.
+       * list renders in page flow above — `MissingItemsList` in the form
+       * column on mobile, and the inline variant on desktop.
+       *
+       * `view.firstMissing` and NOT a `.slice(0, 1)` here. The selector already
+       * makes this decision, in a module a spec can load; re-deriving it in
+       * this file put the live rule where nothing could contradict it while
+       * three tests guarded an identical field that no component read.
        */}
       <MissingItemsList
-        items={view.missing.slice(0, 1)}
+        items={view.firstMissing ? [view.firstMissing] : []}
         className="mt-2"
         data-testid="place-order-sticky-missing-item"
       />
