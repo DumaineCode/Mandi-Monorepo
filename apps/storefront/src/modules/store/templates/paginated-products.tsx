@@ -1,6 +1,7 @@
 import { retrieveCart } from "@lib/data/cart"
 import { listProductsWithSort } from "@lib/data/products"
 import { getRegion } from "@lib/data/regions"
+import { buildCartLineByVariant } from "@lib/util/cart-line-map"
 import ProductPreview from "@modules/products/components/product-preview"
 import { Pagination } from "@modules/store/components/pagination"
 import { SortOptions } from "@modules/store/components/refinement-list/sort-products"
@@ -66,21 +67,9 @@ export default async function PaginatedProducts({
   })
 
   // Fetch the cart once so each card can reflect the REAL cart quantity for its
-  // single variant. Build a variant_id -> { lineId, quantity } lookup map (O(1)).
+  // single variant. See `buildCartLineByVariant` for the shared lookup logic.
   const cart = await retrieveCart().catch(() => null)
-  const cartLineByVariant = new Map<
-    string,
-    { lineId: string; quantity: number }
-  >()
-  for (const item of cart?.items ?? []) {
-    const variantId = item.variant_id ?? item.variant?.id
-    if (variantId) {
-      cartLineByVariant.set(variantId, {
-        lineId: item.id,
-        quantity: item.quantity,
-      })
-    }
-  }
+  const cartLineByVariant = buildCartLineByVariant(cart)
 
   const totalPages = Math.ceil(count / PRODUCT_LIMIT)
 

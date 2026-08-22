@@ -23,116 +23,51 @@ type NavShellProps = {
  * never overlaps the page content (announcement ticker / hero) below it.
  * All data-bound pieces (cart count, side-menu) are injected as server-rendered
  * slots so their logic stays on the server and is never altered here.
+ *
+ * Two-level layout: a top row for the brand lockup (logo, account, cart,
+ * mobile menu) and a bottom row for category navigation, which uses the same
+ * `font-blusans` family as the home hero headline so both live under one
+ * typographic voice.
  */
 const NavShell = ({ categories, cart, sideMenu }: NavShellProps) => {
   // ---- style maps ---------------------------------------------------------
   const shell = "sticky top-0 inset-x-0 z-50"
 
-  const header =
-    "relative h-16 mx-auto border-b border-cream/10 bg-ink"
+  const header = "relative mx-auto border-b border-cream/10 bg-ink"
 
-  const navLink = "text-cream-muted hover:text-cream transition-colors"
+  const navLink =
+    "font-blusans text-base font-normal text-cream-muted transition-colors hover:text-cream"
+
+  const navChildLink =
+    "block px-4 py-2 font-blusans text-sm font-medium text-cream-muted transition-colors hover:text-cream"
 
   const accountLink = "text-cream-muted hover:text-cream"
 
   const cartSlot =
-    "flex items-center rounded-full bg-coral px-3 py-2 text-coral-foreground transition-colors hover:bg-coral-hover"
+    "flex items-center rounded-full bg-coral px-4 py-2.5 text-coral-foreground transition-colors hover:bg-coral-hover"
 
   return (
     <div className={shell}>
       <header className={header}>
-        <nav className="content-container flex h-full w-full items-center justify-between text-small-regular">
-          {/* logo lockup */}
-          <div className="flex h-full flex-1 basis-0 items-center">
-            <LocalizedClientLink
-              href="/"
-              className="flex items-center"
-              data-testid="nav-store-link"
-            >
-              <Image
-                src="/Logo_Crema_trim.png"
-                alt="MANDO Oficial"
-                width={802}
-                height={220}
-                priority
-                className="h-9 w-auto"
-              />
-            </LocalizedClientLink>
-          </div>
+        {/* top level — account/cart pinned right, logo centred over the bar */}
+        <div className="content-container relative flex h-24 w-full items-center justify-end">
+          <LocalizedClientLink
+            href="/"
+            className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center"
+            data-testid="nav-store-link"
+          >
+            <Image
+              src="/Logo_Crema_trim.png"
+              alt="MANDO Oficial"
+              width={802}
+              height={220}
+              priority
+              className="h-12 w-auto small:h-14"
+            />
+          </LocalizedClientLink>
 
-          {/* center menu — dynamic product categories */}
-          <div className="flex h-full items-center">
-            <div className="hidden h-full items-center gap-x-6 small:flex">
-              {categories.map((category) => {
-                const children = category.category_children ?? []
-                const hasChildren = children.length > 0
-
-                // Leaf category → direct link, no dropdown.
-                if (!hasChildren) {
-                  return (
-                    <LocalizedClientLink
-                      key={category.id}
-                      href={`/categories/${category.handle}`}
-                      className={navLink}
-                      data-testid="nav-category-link"
-                    >
-                      {category.name}
-                    </LocalizedClientLink>
-                  )
-                }
-
-                // Category with children → hover/focus dropdown. The trigger
-                // itself is a link to the parent category; children are
-                // revealed on hover and keyboard focus (group-focus-within),
-                // keeping every target reachable without nested buttons.
-                return (
-                  <div
-                    key={category.id}
-                    className="group relative flex h-full items-center"
-                  >
-                    <LocalizedClientLink
-                      href={`/categories/${category.handle}`}
-                      className={clx("flex items-center gap-x-1", navLink)}
-                      data-testid="nav-category-link"
-                    >
-                      {category.name}
-                      <ChevronDownMini className="h-4 w-4" />
-                    </LocalizedClientLink>
-
-                    <div
-                      className={clx(
-                        "invisible absolute left-0 top-full z-50 min-w-[12rem] rounded-md border border-cream/10 bg-ink py-2 opacity-0 shadow-lg transition-opacity duration-150",
-                        "group-hover:visible group-hover:opacity-100",
-                        "group-focus-within:visible group-focus-within:opacity-100"
-                      )}
-                      data-testid="nav-category-panel"
-                    >
-                      <ul className="flex flex-col">
-                        {children.map((child) => (
-                          <li key={child.id}>
-                            <LocalizedClientLink
-                              href={`/categories/${child.handle}`}
-                              className={clx(
-                                "block px-4 py-2 text-small-regular",
-                                navLink
-                              )}
-                              data-testid="nav-category-child-link"
-                            >
-                              {child.name}
-                            </LocalizedClientLink>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-
-          {/* account + cart + mobile menu */}
-          <div className="flex h-full flex-1 basis-0 items-center justify-end gap-x-6">
-            <div className="hidden h-full items-center gap-x-6 small:flex">
+          <div className="flex items-center justify-end gap-x-6">
+            <div className="hidden items-center small:flex">
               <LocalizedClientLink
                 className={clx("flex items-center", accountLink)}
                 href="/account"
@@ -140,15 +75,83 @@ const NavShell = ({ categories, cart, sideMenu }: NavShellProps) => {
                 aria-label="Account"
                 title="Account"
               >
-                <User className="h-5 w-5" />
+                <User className="h-6 w-6" />
               </LocalizedClientLink>
             </div>
             <div className={cartSlot}>{cart}</div>
-            <div className="flex h-full items-center small:hidden">
-              {sideMenu}
-            </div>
+            <div className="flex items-center small:hidden">{sideMenu}</div>
           </div>
-        </nav>
+        </div>
+
+        {/* bottom level — dynamic product categories, desktop only */}
+        <div className="hidden small:block">
+          <nav
+            className="content-container flex h-16 w-full items-center justify-center gap-x-8"
+            data-testid="nav-categories-row"
+          >
+            {categories.map((category) => {
+              const children = category.category_children ?? []
+              const hasChildren = children.length > 0
+
+              // Leaf category → direct link, no dropdown.
+              if (!hasChildren) {
+                return (
+                  <LocalizedClientLink
+                    key={category.id}
+                    href={`/categories/${category.handle}`}
+                    className={navLink}
+                    data-testid="nav-category-link"
+                  >
+                    {category.name}
+                  </LocalizedClientLink>
+                )
+              }
+
+              // Category with children → hover/focus dropdown. The trigger
+              // itself is a link to the parent category; children are
+              // revealed on hover and keyboard focus (group-focus-within),
+              // keeping every target reachable without nested buttons.
+              return (
+                <div
+                  key={category.id}
+                  className="group relative flex h-full items-center"
+                >
+                  <LocalizedClientLink
+                    href={`/categories/${category.handle}`}
+                    className={clx("flex items-center gap-x-1", navLink)}
+                    data-testid="nav-category-link"
+                  >
+                    {category.name}
+                    <ChevronDownMini className="h-5 w-5" />
+                  </LocalizedClientLink>
+
+                  <div
+                    className={clx(
+                      "invisible absolute left-0 top-full z-50 min-w-[12rem] rounded-md border border-cream/10 bg-ink py-2 opacity-0 shadow-lg transition-opacity duration-150",
+                      "group-hover:visible group-hover:opacity-100",
+                      "group-focus-within:visible group-focus-within:opacity-100"
+                    )}
+                    data-testid="nav-category-panel"
+                  >
+                    <ul className="flex flex-col">
+                      {children.map((child) => (
+                        <li key={child.id}>
+                          <LocalizedClientLink
+                            href={`/categories/${child.handle}`}
+                            className={navChildLink}
+                            data-testid="nav-category-child-link"
+                          >
+                            {child.name}
+                          </LocalizedClientLink>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )
+            })}
+          </nav>
+        </div>
       </header>
     </div>
   )

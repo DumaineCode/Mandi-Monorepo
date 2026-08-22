@@ -1,6 +1,5 @@
 import { Metadata } from "next"
 
-import AnnouncementTicker from "@modules/home/components/announcement-ticker"
 import BestSellers from "@modules/home/components/best-sellers"
 import Categories from "@modules/home/components/categories"
 import FeaturedFlavor from "@modules/home/components/featured-flavor"
@@ -31,9 +30,7 @@ export default async function Home(props: {
     // Surface colour comes from <body>; repainting bg-cream here would cover the
     // brand watermark rendered behind the page content.
     <div className="min-h-screen font-hanken text-ink">
-      <AnnouncementTicker />
       <Hero />
-      <FlavorMarquee />
 
       <Categories />
       <FeaturedFlavor countryCode={countryCode} />

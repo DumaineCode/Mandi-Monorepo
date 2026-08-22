@@ -18,7 +18,7 @@ const ImageGallery = ({ images }: ImageGalleryProps) => {
     return (
       <div
         aria-hidden
-        className="h-[420px] w-full rounded-[20px]"
+        className="aspect-square w-full rounded-[20px]"
         style={{
           background:
             "repeating-linear-gradient(135deg,#ECE4D5 0,#ECE4D5 13px,#F5F0E5 13px,#F5F0E5 26px)",
@@ -32,8 +32,8 @@ const ImageGallery = ({ images }: ImageGalleryProps) => {
 
   return (
     <div className="flex flex-col gap-y-3">
-      {/* Main image */}
-      <div className="relative aspect-[4/3] w-full overflow-hidden rounded-[20px] bg-cream small:aspect-auto small:h-[420px]">
+      {/* Main image — 1:1 at every breakpoint to match every other product image. */}
+      <div className="relative aspect-square w-full overflow-hidden rounded-[20px] bg-cream">
         <Image
           key={activeImage.id}
           src={activeImage.url as string}

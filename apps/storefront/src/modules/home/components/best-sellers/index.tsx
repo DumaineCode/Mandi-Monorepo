@@ -1,15 +1,17 @@
+import { retrieveCart } from "@lib/data/cart"
 import { listCollections } from "@lib/data/collections"
 import { listProducts } from "@lib/data/products"
 import { getRegion } from "@lib/data/regions"
 import { HttpTypes } from "@medusajs/types"
-import { getProductPrice } from "@lib/util/get-product-price"
+import { buildCartLineByVariant } from "@lib/util/cart-line-map"
 import LocalizedClientLink from "@modules/common/components/localized-client-link"
-import Thumbnail from "@modules/products/components/thumbnail"
+import ProductPreview from "@modules/products/components/product-preview"
 
 // Más vendidos (ref wireframe lines 177-201). Fetches up to 4 best-selling
 // products robustly and renders them as cards. Server component.
-// NOTE: no quick-add in this part — both the card and the "+" button navigate
-// to the product page. True quick-add is a follow-up.
+// Reuses `ProductPreview` — the same card the catalog and category pages
+// render — instead of a hand-rolled card, so styling and quick-add behave
+// identically everywhere a product grid shows up.
 
 const pickBestSellers = async (
   countryCode: string
@@ -52,11 +54,17 @@ const pickBestSellers = async (
 }
 
 const BestSellers = async ({ countryCode }: { countryCode: string }) => {
+  const region = await getRegion(countryCode)
   const products = await pickBestSellers(countryCode)
 
-  if (products.length === 0) {
+  if (!region || products.length === 0) {
     return null
   }
+
+  // Same cart-aware quick-add state as the catalog grid — see
+  // `buildCartLineByVariant`.
+  const cart = await retrieveCart().catch(() => null)
+  const cartLineByVariant = buildCartLineByVariant(cart)
 
   return (
     <section className="mx-auto max-w-[1180px] px-6 pb-2.5 pt-14">
@@ -79,59 +87,18 @@ const BestSellers = async ({ countryCode }: { countryCode: string }) => {
 
       <div className="grid grid-cols-1 gap-4 small:grid-cols-2 large:grid-cols-4">
         {products.map((product) => {
-          const { cheapestPrice } = getProductPrice({ product })
-          const tag =
-            product.subtitle ||
-            (product.tags && product.tags.length > 0
-              ? product.tags[0].value
-              : undefined)
+          const variantId = product.variants?.[0]?.id
+          const cartLine = variantId
+            ? cartLineByVariant.get(variantId)
+            : undefined
           return (
-            <LocalizedClientLink
+            <ProductPreview
               key={product.id}
-              href={`/products/${product.handle}`}
-              className="group block overflow-hidden rounded-2xl border border-line bg-paper transition-all duration-200 hover:-translate-y-[3px] hover:border-ink"
-            >
-              <div className="relative h-[150px] overflow-hidden">
-                {product.thumbnail || product.images?.length ? (
-                  <Thumbnail
-                    thumbnail={product.thumbnail}
-                    images={product.images}
-                    size="full"
-                    className="h-full rounded-none bg-transparent p-0 shadow-none"
-                  />
-                ) : (
-                  <div
-                    aria-hidden
-                    className="h-full w-full"
-                    style={{
-                      background:
-                        "repeating-linear-gradient(135deg,#ECE4D5 0,#ECE4D5 11px,#F5F0E5 11px,#F5F0E5 22px)",
-                    }}
-                  />
-                )}
-              </div>
-              <div className="px-[15px] py-3.5">
-                <div className="font-bricolage text-base font-bold leading-[1.15]">
-                  {product.title}
-                </div>
-                {tag ? (
-                  <div className="mt-1 font-mono text-[11px] text-ink-muted">
-                    {tag}
-                  </div>
-                ) : null}
-                <div className="mt-3 flex items-center justify-between">
-                  <span className="font-bricolage text-lg font-bold">
-                    {cheapestPrice ? cheapestPrice.calculated_price : ""}
-                  </span>
-                  <span
-                    aria-hidden
-                    className="flex h-9 w-9 items-center justify-center rounded-[10px] bg-coral text-xl text-coral-foreground transition-colors group-hover:bg-coral-hover"
-                  >
-                    +
-                  </span>
-                </div>
-              </div>
-            </LocalizedClientLink>
+              product={product}
+              region={region}
+              countryCode={countryCode}
+              cartLine={cartLine}
+            />
           )
         })}
       </div>

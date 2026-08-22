@@ -71,13 +71,13 @@ const FeaturedFlavor = async ({ countryCode }: { countryCode: string }) => {
   return (
     <section className="mx-auto max-w-[1180px] px-6 pb-2.5 pt-14">
       <div className="grid grid-cols-1 overflow-hidden rounded-[22px] border border-line bg-paper small:grid-cols-2">
-        <div className="relative flex min-h-[280px] items-end small:min-h-[340px]">
+        <div className="relative flex min-h-[280px] items-center small:min-h-[340px]">
           {product.thumbnail || product.images?.length ? (
             <Thumbnail
               thumbnail={product.thumbnail}
               images={product.images}
-              size="full"
-              className="h-full rounded-none bg-transparent p-0 shadow-none"
+              size="square"
+              className="rounded-none bg-transparent p-0 shadow-none"
             />
           ) : (
             <div

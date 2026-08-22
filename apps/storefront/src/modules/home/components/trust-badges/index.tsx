@@ -1,24 +1,28 @@
-import { RefreshCw, ShieldCheck, Truck } from "lucide-react"
+import {
+  PiArrowsClockwiseLight,
+  PiShieldCheckLight,
+  PiTruckLight,
+} from "react-icons/pi"
 
 // Trust badges band. A dark `ink` surface (same family as Hero/Newsletter) that
 // answers the three checkout objections: is it safe, when does it arrive, what
 // if I don't like it. Each badge sits in a coral-tinted icon disc, mirroring the
 // decorative circle language used in `wholesale-band`. Stacks on mobile, becomes
-// a 3-up row on `small` (>=1024px). Icons are lucide-react with strokeWidth 1.5
-// to match the fine stroke of the project's local SVG icons.
+// a 3-up row on `small` (>=1024px). Icons are react-icons/pi (Phosphor) Light
+// weight to match the fine stroke of the project's local SVG icons.
 const BADGES = [
   {
-    Icon: ShieldCheck,
+    Icon: PiShieldCheckLight,
     title: "Pago 100% seguro",
     body: "Tarjeta (débito/crédito), PayPal, Apple Pay, OXXO, banco o transferencia. Todo encriptado.",
   },
   {
-    Icon: Truck,
+    Icon: PiTruckLight,
     title: "Envío rápido",
     body: "A todo México. Tu pedido en camino en menos de 24 horas.",
   },
   {
-    Icon: RefreshCw,
+    Icon: PiArrowsClockwiseLight,
     title: "Cambios y devoluciones",
     body: "30 días de garantía. Si no estás feliz, te regresamos tu dinero. Así de fácil.",
   },
@@ -41,7 +45,7 @@ const TrustBadges = () => {
           {BADGES.map(({ Icon, title, body }) => (
             <div key={title} className="flex flex-col items-center text-center">
               <span className="flex h-16 w-16 items-center justify-center rounded-full bg-coral/15 text-coral-light ring-1 ring-inset ring-coral/25">
-                <Icon className="h-7 w-7" strokeWidth={1.5} />
+                <Icon className="h-7 w-7" />
               </span>
               <h3 className="mt-5 font-bricolage text-xl font-extrabold uppercase tracking-[-0.02em] small:text-[22px]">
                 {title}

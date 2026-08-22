@@ -44,7 +44,7 @@ export default async function ProductPreview({
         href={`/products/${product.handle}`}
         className="block"
       >
-        <div className="relative h-[150px] overflow-hidden">
+        <div className="relative aspect-square overflow-hidden">
           {product.thumbnail || product.images?.length ? (
             <Thumbnail
               thumbnail={product.thumbnail}
