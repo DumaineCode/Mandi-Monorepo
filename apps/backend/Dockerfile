@@ -30,6 +30,12 @@ FROM base AS builder
 # Toolchain for any native module that has no prebuilt musl binary
 RUN apk add --no-cache python3 make g++
 
+# NODE_ENV is deliberately NOT set to production in this stage. `medusa build`
+# loads medusa-config.ts, whose production guard throws unless the R2 storage
+# variables are present — and a build stage has no business holding storage
+# credentials. Setting NODE_ENV here to shrink the image would break the build
+# instead, with an error about object storage that points nowhere near the cause.
+
 # 1) Install workspace deps first (this layer is cached until a manifest changes)
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json .npmrc ./
 COPY apps/backend/package.json ./apps/backend/
@@ -81,20 +87,15 @@ RUN apk add --no-cache libc6-compat
 # Copy the self-contained server (compiled code + node_modules + built admin)
 COPY --from=builder --chown=node:node /server/apps/backend/.medusa/server ./
 
-# Medusa registers no File module, so uploads fall back to @medusajs/file-local,
-# which writes to `<cwd>/static` — /app/static here.
+# No local upload storage on purpose. Uploads go to Cloudflare R2 through the
+# file-s3 provider, and this stage sets NODE_ENV=production, where the backend
+# refuses to boot without the R2 variables (see medusa-config.ts) — so the
+# @medusajs/file-local fallback that used to write to /app/static is
+# unreachable in this image.
 #
-# WORKDIR created /app as root:root, and the COPY above only chowns its
-# CONTENTS. Creating this directory from the unprivileged `node` user would fail
-# with EACCES on the first upload, so it is created and handed over here.
-#
-# Mount a persistent volume at /app/static in production. Without one the
-# directory lives on the container's writable layer and every image uploaded
-# through the admin is destroyed on the next deploy — the database keeps the URL,
-# the file stops existing, and the catalog renders broken images with no error.
-RUN mkdir -p /app/static && chown node:node /app/static
-VOLUME /app/static
-
+# Do not reintroduce a `VOLUME` here to "be safe": VOLUME creates an ANONYMOUS
+# volume per container, which accumulates undeletable-by-compose junk on the
+# host and quietly re-enables the exact ephemeral-storage failure R2 replaced.
 USER node
 EXPOSE 9000
 

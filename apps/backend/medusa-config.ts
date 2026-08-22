@@ -52,6 +52,155 @@ const redisModules = REDIS_URL
   : []
 
 /**
+ * Reads an R2 env var, trimmed, treating a whitespace-only value as absent.
+ *
+ * These values are pasted into a Dokploy form field, which routinely carries a
+ * trailing space along for the ride. Untrimmed, that space lands inside the
+ * values it is concatenated into — `R2_ACCOUNT_ID` becomes part of the endpoint
+ * HOSTNAME — and the deploy stays green: boot succeeds, the health check passes,
+ * and the only symptom is an opaque DNS failure the first time someone uploads
+ * an image from the admin, long after anyone connects it to the deploy.
+ *
+ * Whitespace-only counts as absent so the production guard below stays honest:
+ * " " is not a configured bucket, and letting it satisfy the check would ship
+ * exactly the ephemeral local storage the guard exists to prevent.
+ */
+function readR2Env(name: string): string | undefined {
+  const value = process.env[name]?.trim()
+
+  return value ? value : undefined
+}
+
+/**
+ * Optional key prefix, normalized into an actual folder path.
+ *
+ * The provider concatenates the prefix RAW (`${prefix}${name}-${ulid}${ext}`),
+ * so "media" does not create a folder — it writes the object
+ * "mediaphoto-01ABC.jpg" at the bucket root. A leading slash is the mirror
+ * mistake: "/media/" yields a key starting with "/", which renders as a double
+ * slash in every public URL. Both are the same failure class
+ * `requireR2PublicUrl` exists to prevent — the wrong value is not undone by
+ * fixing the env var afterwards, because it is already baked into every image
+ * row written while it was wrong. Normalizing here means the operator cannot
+ * get it wrong in the first place.
+ */
+function normalizeR2Prefix(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined
+  }
+
+  const stripped = value.replace(/^\/+/, '')
+
+  if (!stripped) {
+    return undefined
+  }
+
+  return stripped.endsWith('/') ? stripped : `${stripped}/`
+}
+
+const R2_ACCOUNT_ID = readR2Env('R2_ACCOUNT_ID')
+const R2_BUCKET = readR2Env('R2_BUCKET')
+const R2_ACCESS_KEY_ID = readR2Env('R2_ACCESS_KEY_ID')
+const R2_SECRET_ACCESS_KEY = readR2Env('R2_SECRET_ACCESS_KEY')
+const R2_PUBLIC_URL = readR2Env('R2_PUBLIC_URL')
+const R2_PREFIX = normalizeR2Prefix(readR2Env('R2_PREFIX'))
+
+/**
+ * The public base URL images are served from, validated and normalized.
+ *
+ * This is not a value that is merely read at render time. The provider
+ * concatenates it into every URL it returns (`${file_url}/${key}`) and Medusa
+ * then PERSISTS that string onto each image row. A malformed value is not a
+ * runtime inconvenience you fix by editing an env var — it is baked into every
+ * row written while it was wrong, and correcting it afterwards means rewriting
+ * those rows or re-uploading the catalog.
+ *
+ * The protocol check earns its place because omitting it fails in the most
+ * confusing way available: "cdn.example.com/photo.jpg" is a RELATIVE URL. The
+ * upload succeeds, the bytes reach R2, the bucket is fine, and nothing logs an
+ * error — but every browser resolves it against the current page, so the admin
+ * requests /app/products/cdn.example.com/photo.jpg and renders a broken image.
+ * The symptom points at storage while the cause is a missing "https://".
+ * Refusing to boot costs one redeploy; failing silently costs a re-upload.
+ */
+function requireR2PublicUrl(value: string): string {
+  if (!/^https?:\/\//.test(value)) {
+    throw new Error(
+      `R2_PUBLIC_URL must include the protocol (got "${value}"). ` +
+        `Use the full public origin, e.g. https://${value.replace(/^\/+/, '')} — ` +
+        `without it the provider stores relative URLs and every image 404s ` +
+        `in both the admin and the storefront.`
+    )
+  }
+
+  // The provider builds `${file_url}/${key}`, so a trailing slash here produces
+  // a double slash in every URL it then persists.
+  return value.replace(/\/+$/, '')
+}
+
+/**
+ * Object storage for uploaded files, registered only when R2 is configured.
+ *
+ * With no `file` module registered Medusa falls back to @medusajs/file-local,
+ * which writes into the container's own filesystem and hands back
+ * http://localhost:9000/static/... URLs. Both halves of that are wrong once
+ * deployed: the URL is unreachable from a browser, and the bytes live in a
+ * layer that a redeploy replaces — every product image uploaded since the last
+ * deploy 404s afterwards, while the database still points at them.
+ *
+ * Cloudflare R2 speaks the S3 API, so the stock S3 provider drives it. Two
+ * details are R2-specific: `region` must still be sent because the AWS SDK
+ * requires one, but R2 ignores its value ('auto' is the documented placeholder;
+ * the bucket's real location is fixed at creation). And `file_url` must be the
+ * PUBLIC custom domain, never the *.r2.cloudflarestorage.com endpoint — that
+ * endpoint only answers signed requests, so images would come back 401.
+ *
+ * Kept conditional so local development and CI keep using the local provider
+ * untouched. Production is guarded below instead, because there the fallback is
+ * silent data loss rather than a convenience.
+ */
+const fileModules =
+  R2_ACCOUNT_ID &&
+  R2_BUCKET &&
+  R2_ACCESS_KEY_ID &&
+  R2_SECRET_ACCESS_KEY &&
+  R2_PUBLIC_URL
+    ? [
+        {
+          resolve: '@medusajs/medusa/file',
+          options: {
+            providers: [
+              {
+                resolve: '@medusajs/medusa/file-s3',
+                id: 's3',
+                options: {
+                  file_url: requireR2PublicUrl(R2_PUBLIC_URL),
+                  access_key_id: R2_ACCESS_KEY_ID,
+                  secret_access_key: R2_SECRET_ACCESS_KEY,
+                  region: 'auto',
+                  bucket: R2_BUCKET,
+                  endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+                  ...(R2_PREFIX ? { prefix: R2_PREFIX } : {}),
+                },
+              },
+            ],
+          },
+        },
+      ]
+    : []
+
+if (fileModules.length === 0 && process.env.NODE_ENV === 'production') {
+  throw new Error(
+    'R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and ' +
+      'R2_PUBLIC_URL must all be set in production. Without them Medusa falls ' +
+      'back to local file storage, which writes uploads into the container ' +
+      'filesystem: every redeploy destroys them and leaves the database ' +
+      'pointing at images that no longer exist. Refusing to boot is the only ' +
+      'way that failure surfaces before customers see broken product pages.'
+  )
+}
+
+/**
  * Whether to open the Postgres connection with TLS.
  *
  * Managed Postgres (Neon, Supabase, RDS) requires TLS; a Postgres container on
@@ -166,5 +315,6 @@ module.exports = defineConfig({
       },
     },
     ...redisModules,
+    ...fileModules,
   ],
 })

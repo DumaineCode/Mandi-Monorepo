@@ -117,6 +117,29 @@ services:
       # Public origin the backend advertises to providers building webhook URLs.
       # Mercado Pago calls this back, so it must be reachable from the internet.
       BACKEND_PUBLIC_URL: ${BACKEND_PUBLIC_URL}
+
+      # Cloudflare R2 replaces container-local file storage. This container has
+      # no volume, so anything the local provider wrote would be destroyed by
+      # the next redeploy while the database kept pointing at it.
+      #
+      # Guarded twice on purpose, exactly like JWT_SECRET. The `:?` stops the
+      # deploy here, at interpolation, naming the missing variable; the backend's
+      # own production check (medusa-config.ts) covers every start path that does
+      # not go through this file — `docker run` of the same image, a one-off
+      # `medusa user` container, a future deploy target. Neither guard makes the
+      # other redundant.
+      #
+      # R2_PUBLIC_URL is the public custom domain (https://cdn.example.com), not
+      # the r2.cloudflarestorage.com endpoint.
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:?R2_ACCOUNT_ID is required}
+      R2_BUCKET: ${R2_BUCKET:?R2_BUCKET is required}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:?R2_ACCESS_KEY_ID is required}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:?R2_SECRET_ACCESS_KEY is required}
+      R2_PUBLIC_URL: ${R2_PUBLIC_URL:?R2_PUBLIC_URL is required (public custom domain, e.g. https://cdn.example.com)}
+      # Optional key prefix; empty means objects land at the bucket root. Leading
+      # and trailing slashes are normalized by the backend, so "media" and
+      # "media/" behave identically.
+      R2_PREFIX: ${R2_PREFIX:-}
     networks:
       - internal
       - dokploy-network
