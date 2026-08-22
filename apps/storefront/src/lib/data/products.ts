@@ -7,6 +7,31 @@ import { SortOptions } from "@modules/store/components/refinement-list/sort-prod
 import { getAuthHeaders, getCacheOptions } from "./cookies"
 import { getRegion, retrieveRegion } from "./regions"
 
+/**
+ * How long a cached product response may be served before Next revalidates it.
+ *
+ * This read used to be `cache: "force-cache"`, and here that means UNTIL THE
+ * NEXT DEPLOY. Nothing in this repo revalidates the `products` tag in response
+ * to an Admin edit: every `revalidateTag` call site is either a cart mutation
+ * (`lib/data/cart.ts`) or the locale switch (`lib/data/locale-actions.ts`).
+ * There is no webhook and no revalidation route. So a perfectly tagged entry is
+ * just as stale as an untagged one, and an Admin price change or a swapped
+ * product image stays invisible on every listing and detail page.
+ *
+ * The uncookied window aggravates that, it does not cause it. `getCacheOptions`
+ * returns `{}` while `_medusa_cache_id` is absent, so those entries would not be
+ * reachable even by a tag revalidation someone adds later — but as
+ * `fulfillment.ts` establishes, that hole is genuine and narrow, since the
+ * middleware sets the cookie on the first page navigation. It is a secondary
+ * reason.
+ *
+ * Five minutes follows the `categories.ts:18` `revalidate: 300` precedent. It is
+ * not free: these route segments export `generateStaticParams`, and a
+ * fetch-level `revalidate` lowers the segment's own revalidate, so pages that
+ * were static after build become ISR and regenerate every 5 minutes per path.
+ */
+const PRODUCT_REVALIDATE_SECONDS = 300
+
 export const listProducts = async ({
   pageParam = 1,
   queryParams,
@@ -51,6 +76,7 @@ export const listProducts = async ({
 
   const next = {
     ...(await getCacheOptions("products")),
+    revalidate: PRODUCT_REVALIDATE_SECONDS,
   }
 
   return sdk.client
@@ -68,7 +94,6 @@ export const listProducts = async ({
         },
         headers,
         next,
-        cache: "force-cache",
       }
     )
     .then(({ products, count }) => {
