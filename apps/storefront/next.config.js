@@ -79,6 +79,15 @@ const nextConfig = {
     // Coupled to outputFileTracingExcludes above: this being true is what
     // makes dropping sharp from the traced output safe. Flipping it to false
     // requires putting the @img and sharp entries back first.
+    //
+    // It also short-circuits `remotePatterns`: with `unoptimized` true the
+    // allowlist is never consulted (verified in next 15.5.18,
+    // `get-img-props.js:98`), which is the only reason product images served
+    // from the Cloudflare R2 custom domain render at all — that host is NOT in
+    // the list below. So flipping this flag needs a SECOND change beyond sharp:
+    // add the R2 public domain to `remotePatterns`, or every product image
+    // throws `Invalid src prop`. Both are production-only failures; the dev
+    // server hides neither the traced tree nor this coupling.
     unoptimized: true,
     remotePatterns: [
       {
