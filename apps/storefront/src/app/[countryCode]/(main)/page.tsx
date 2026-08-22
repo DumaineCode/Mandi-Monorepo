@@ -31,6 +31,7 @@ export default async function Home(props: {
     // brand watermark rendered behind the page content.
     <div className="min-h-screen font-hanken text-ink">
       <Hero />
+      <FlavorMarquee />
 
       <Categories />
       <FeaturedFlavor countryCode={countryCode} />
