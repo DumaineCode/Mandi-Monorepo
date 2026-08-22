@@ -78,7 +78,7 @@ export type HeroSlide = {
  * Intrinsic size of EVERY hero artwork, and the single source of the frame's
  * aspect ratio.
  *
- * Every artwork must be exported at exactly this size (2560x1440, 16:9). The
+ * Every artwork must be exported at exactly this size (2400x1000, 12:5). The
  * frame ratio is derived from here, not from any one slide, so the hero height
  * never jumps while sliding.
  *
@@ -88,13 +88,8 @@ export type HeroSlide = {
  * still passes — the headline just sits off its mark. That failure is INVISIBLE,
  * which is why it has to be prevented at export time rather than caught later.
  */
-export const HERO_ARTWORK = { width: 2560, height: 1440 } as const
+export const HERO_ARTWORK = { width: 2400, height: 1000 } as const
 
-/**
- * Shared by the first two slides, which carry the same headline over different
- * artwork. Referenced instead of duplicated so a copy change cannot land on one
- * slide and miss the other.
- */
 const OPCION_1_LINES: HeroTextSegment[][] = [
   [
     { kind: "plain", text: "Somos la " },
@@ -123,21 +118,8 @@ export const HERO_SLIDES: HeroSlide[] = [
     href: "/store",
   },
   {
-    id: "opcion-1-taro",
-    image: "/hero/slide-2.webp",
-    text: {
-      lines: OPCION_1_LINES,
-      align: "left",
-      position: { left: "6.52%", top: "55.90%" },
-      fontSize: "3.32vw",
-      highlight: "lilac",
-    },
-    alt: "Bote de polvo Mandi sabor Taro con cubos de taro",
-    href: "/store",
-  },
-  {
     id: "ice-frutal",
-    image: "/hero/slide-3.webp",
+    image: "/hero/slide-2.webp",
     text: {
       lines: [
         [
@@ -160,7 +142,7 @@ export const HERO_SLIDES: HeroSlide[] = [
   },
   {
     id: "tisana-frutal",
-    image: "/hero/slide-4.webp",
+    image: "/hero/slide-3.webp",
     text: {
       lines: [
         [{ kind: "plain", text: "Llena tus bebidas de" }],
@@ -184,7 +166,7 @@ export const HERO_SLIDES: HeroSlide[] = [
   },
   {
     id: "envases",
-    image: "/hero/slide-5.webp",
+    image: "/hero/slide-4.webp",
     text: {
       lines: [
         [
@@ -208,7 +190,7 @@ export const HERO_SLIDES: HeroSlide[] = [
   },
   {
     id: "syrope-soda",
-    image: "/hero/slide-6.webp",
+    image: "/hero/slide-5.webp",
     text: {
       lines: [
         [
