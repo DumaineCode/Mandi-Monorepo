@@ -65,7 +65,7 @@ const OrderCard = ({ order }: OrderCardProps) => {
               <Thumbnail
                 thumbnail={i.thumbnail}
                 images={i.variant?.product?.images}
-                size="full"
+                size="square"
               />
               <div className="flex min-w-0 items-center text-xs text-ink-muted">
                 <span
