@@ -62,7 +62,11 @@ const OrderCard = ({ order }: OrderCardProps) => {
               className="flex min-w-0 flex-col gap-y-2"
               data-testid="order-item"
             >
-              <Thumbnail thumbnail={i.thumbnail} images={[]} size="full" />
+              <Thumbnail
+                thumbnail={i.thumbnail}
+                images={i.variant?.product?.images}
+                size="full"
+              />
               <div className="flex min-w-0 items-center text-xs text-ink-muted">
                 <span
                   className="truncate font-semibold text-ink"
