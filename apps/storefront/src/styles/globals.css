@@ -35,9 +35,9 @@
   select:-webkit-autofill,
   select:-webkit-autofill:hover,
   select:-webkit-autofill:focus {
-    border: 1px solid #212121;
-    -webkit-text-fill-color: #212121;
-    -webkit-box-shadow: 0 0 0px 1000px #fff inset;
+    border: 1px solid theme(colors.line);
+    -webkit-text-fill-color: theme(colors.ink);
+    -webkit-box-shadow: 0 0 0px 1000px theme(colors.paper) inset;
     transition: background-color 5000s ease-in-out 0s;
   }
 

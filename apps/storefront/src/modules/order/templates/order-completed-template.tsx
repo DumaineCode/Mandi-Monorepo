@@ -22,26 +22,33 @@ export default async function OrderCompletedTemplate({
   const isOnboarding = cookies.get("_medusa_onboarding")?.value === "true"
 
   return (
-    <div className="py-6 min-h-[calc(100vh-64px)]">
-      <div className="content-container flex flex-col justify-center items-center gap-y-10 max-w-4xl h-full w-full">
+    <div className="min-h-[calc(100vh-64px)] py-8 small:py-14">
+      <div className="content-container flex h-full w-full max-w-4xl flex-col items-center justify-center gap-y-10">
         {isOnboarding && <OnboardingCta orderId={order.id} />}
         <div
-          className="flex flex-col gap-4 max-w-4xl h-full bg-white w-full py-10"
+          className="flex h-full w-full max-w-4xl flex-col gap-5 rounded-[22px] border border-line bg-paper p-5 shadow-sm xsmall:p-8 small:p-10"
           data-testid="order-complete-container"
         >
           <Heading
             level="h1"
-            className="flex flex-col gap-y-3 text-ui-fg-base text-3xl mb-4"
+            className="mb-2 flex flex-col gap-y-2 font-bricolage !text-3xl font-extrabold tracking-[-0.03em] text-ink"
           >
-            <span>Thank you!</span>
-            <span>Your order was placed successfully.</span>
+            <span>¡Gracias por tu compra!</span>
+            <span className="text-xl font-semibold text-ink-muted">
+              Tu pedido se realizó correctamente.
+            </span>
           </Heading>
           <OrderDetails order={order} />
-          <Heading level="h2" className="flex flex-row text-3xl-regular">
-            Summary
-          </Heading>
           <Items order={order} />
-          <CartTotals totals={order} />
+          <section className="rounded-2xl border border-line bg-cream/40 p-5">
+            <Heading
+              level="h2"
+              className="mb-4 font-bricolage !text-xl font-bold text-ink"
+            >
+              Resumen
+            </Heading>
+            <CartTotals totals={order} />
+          </section>
           <ShippingDetails order={order} />
           <PaymentDetails order={order} />
           <Help />

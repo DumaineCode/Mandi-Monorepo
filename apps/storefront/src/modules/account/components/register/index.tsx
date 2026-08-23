@@ -13,92 +13,105 @@ type Props = {
 }
 
 const Register = ({ setCurrentView }: Props) => {
-  const [message, formAction] = useActionState(signup as (state: string | null, formData: FormData) => Promise<string | null>, null as string | null)
+  const [message, formAction] = useActionState(signup, null)
 
   return (
-    <div
-      className="max-w-sm flex flex-col items-center"
-      data-testid="register-page"
-    >
-      <h1 className="text-large-semi uppercase mb-6">
-        Become a Medusa Store Member
-      </h1>
-      <p className="text-center text-base-regular text-ui-fg-base mb-4">
-        Create your Medusa Store Member profile, and get access to an enhanced
-        shopping experience.
+    <div className="flex w-full max-w-lg flex-col" data-testid="register-page">
+      <p className="mb-3 font-mono text-xs uppercase tracking-[0.18em] text-ink-muted">
+        Únete a MANDO
+      </p>
+      <h2 className="font-bricolage text-3xl font-extrabold tracking-[-0.03em] text-ink">
+        Crea tu cuenta
+      </h2>
+      <p className="mb-6 mt-3 text-sm leading-6 text-ink-muted">
+        Regístrate para comprar más rápido y tener tus pedidos siempre a la
+        mano.
       </p>
       <form className="w-full flex flex-col" action={formAction}>
-        <div className="flex flex-col w-full gap-y-2">
-          <Input
-            label="First name"
-            name="first_name"
-            required
-            autoComplete="given-name"
-            data-testid="first-name-input"
-          />
-          <Input
-            label="Last name"
-            name="last_name"
-            required
-            autoComplete="family-name"
-            data-testid="last-name-input"
-          />
-          <Input
-            label="Email"
-            name="email"
-            required
-            type="email"
-            autoComplete="email"
-            data-testid="email-input"
-          />
-          <Input
-            label="Phone"
-            name="phone"
-            type="tel"
-            autoComplete="tel"
-            data-testid="phone-input"
-          />
-          <Input
-            label="Password"
-            name="password"
-            required
-            type="password"
-            autoComplete="new-password"
-            data-testid="password-input"
-          />
+        <div className="grid w-full grid-cols-1 gap-3 xsmall:grid-cols-2">
+          <div className="xsmall:col-span-1">
+            <Input
+              label="Nombre"
+              name="first_name"
+              required
+              autoComplete="given-name"
+              data-testid="first-name-input"
+            />
+          </div>
+          <div className="xsmall:col-span-1">
+            <Input
+              label="Apellidos"
+              name="last_name"
+              required
+              autoComplete="family-name"
+              data-testid="last-name-input"
+            />
+          </div>
+          <div className="xsmall:col-span-2">
+            <Input
+              label="Correo electrónico"
+              name="email"
+              required
+              type="email"
+              autoComplete="email"
+              data-testid="email-input"
+            />
+          </div>
+          <div className="xsmall:col-span-2">
+            <Input
+              label="Teléfono"
+              name="phone"
+              type="tel"
+              autoComplete="tel"
+              data-testid="phone-input"
+            />
+          </div>
+          <div className="xsmall:col-span-2">
+            <Input
+              label="Contraseña"
+              name="password"
+              required
+              type="password"
+              autoComplete="new-password"
+              data-testid="password-input"
+            />
+          </div>
         </div>
         <ErrorMessage error={message} data-testid="register-error" />
-        <span className="text-center text-ui-fg-base text-small-regular mt-6">
-          By creating an account, you agree to Medusa Store&apos;s{" "}
+        <p className="mt-5 text-center text-xs leading-5 text-ink-muted">
+          Al crear una cuenta, aceptas el{" "}
           <LocalizedClientLink
             href="/content/privacy-policy"
-            className="underline"
+            className="font-semibold text-ink underline underline-offset-2"
           >
-            Privacy Policy
+            Aviso de privacidad
           </LocalizedClientLink>{" "}
-          and{" "}
+          y los{" "}
           <LocalizedClientLink
             href="/content/terms-of-use"
-            className="underline"
+            className="font-semibold text-ink underline underline-offset-2"
           >
-            Terms of Use
+            Términos y condiciones
           </LocalizedClientLink>
           .
-        </span>
-        <SubmitButton className="w-full mt-6" data-testid="register-button">
-          Join
+        </p>
+        <SubmitButton
+          className="mt-5 h-12 w-full"
+          data-testid="register-button"
+        >
+          Crear cuenta
         </SubmitButton>
       </form>
-      <span className="text-center text-ui-fg-base text-small-regular mt-6">
-        Already a member?{" "}
+      <p className="mt-5 text-center text-sm text-ink-muted">
+        ¿Ya tienes cuenta?{" "}
         <button
+          type="button"
           onClick={() => setCurrentView(LOGIN_VIEW.SIGN_IN)}
-          className="underline"
+          className="min-h-11 font-semibold text-ink underline decoration-coral decoration-2 underline-offset-4 hover:text-ink-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral"
         >
-          Sign in
+          Inicia sesión
         </button>
-        .
-      </span>
+      </p>
     </div>
   )
 }

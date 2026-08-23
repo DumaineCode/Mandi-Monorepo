@@ -7,8 +7,8 @@ import { getRegion } from "@lib/data/regions"
 import { retrieveCustomer } from "@lib/data/customer"
 
 export const metadata: Metadata = {
-  title: "Addresses",
-  description: "View your addresses",
+  title: "Mis direcciones | MANDO",
+  description: "Consulta y administra tus direcciones de envío.",
 }
 
 export default async function Addresses(props: {
@@ -25,13 +25,18 @@ export default async function Addresses(props: {
 
   return (
     <div className="w-full" data-testid="addresses-page-wrapper">
-      <div className="mb-8 flex flex-col gap-y-4">
-        <h1 className="text-2xl-semi">Shipping Addresses</h1>
-        <p className="text-base-regular">
-          View and update your shipping addresses, you can add as many as you
-          like. Saving your addresses will make them available during checkout.
+      <header className="mb-8 border-b border-line pb-6">
+        <p className="font-mono text-xs uppercase tracking-[0.18em] text-ink-muted">
+          Mi cuenta
         </p>
-      </div>
+        <h2 className="mt-2 font-bricolage text-3xl font-extrabold tracking-[-0.03em] text-ink">
+          Mis direcciones
+        </h2>
+        <p className="mt-3 max-w-2xl text-sm leading-6 text-ink-muted">
+          Guarda y actualiza tus direcciones de envío para encontrarlas listas
+          al momento de pagar.
+        </p>
+      </header>
       <AddressBook customer={customer} region={region} />
     </div>
   )

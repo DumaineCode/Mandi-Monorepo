@@ -17,7 +17,13 @@ export type NativeSelectProps = {
 
 const NativeSelect = forwardRef<HTMLSelectElement, NativeSelectProps>(
   (
-    { placeholder = "Select...", defaultValue, className, children, ...props },
+    {
+      placeholder = "Selecciona...",
+      defaultValue,
+      className,
+      children,
+      ...props
+    },
     ref
   ) => {
     const innerRef = useRef<HTMLSelectElement>(null)
@@ -42,7 +48,7 @@ const NativeSelect = forwardRef<HTMLSelectElement, NativeSelectProps>(
           onFocus={() => innerRef.current?.focus()}
           onBlur={() => innerRef.current?.blur()}
           className={clx(
-            "relative flex items-center text-base-regular border border-ui-border-base bg-ui-bg-subtle rounded-md hover:bg-ui-bg-field-hover",
+            "relative flex h-12 items-center rounded-xl border border-line bg-paper text-sm text-ink transition-colors hover:border-coral focus-within:border-coral focus-within:ring-2 focus-within:ring-coral/20",
             className,
             {
               "text-ui-fg-muted": isPlaceholder,
@@ -53,14 +59,14 @@ const NativeSelect = forwardRef<HTMLSelectElement, NativeSelectProps>(
             ref={innerRef}
             defaultValue={defaultValue}
             {...props}
-            className="appearance-none flex-1 bg-transparent border-none px-4 py-2.5 transition-colors duration-150 outline-none "
+            className="h-full flex-1 appearance-none border-none bg-transparent px-4 py-2.5 outline-none"
           >
             <option disabled value="">
               {placeholder}
             </option>
             {children}
           </select>
-          <span className="absolute right-4 inset-y-0 flex items-center pointer-events-none ">
+          <span className="pointer-events-none absolute inset-y-0 right-4 flex items-center text-ink-muted">
             <ChevronUpDown />
           </span>
         </div>

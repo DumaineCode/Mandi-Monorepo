@@ -36,11 +36,11 @@ export type PaymentInfo = {
  */
 export const paymentInfoMap: Record<string, PaymentInfo> = {
   pp_stripe_stripe: {
-    title: "Credit card",
+    title: "Tarjeta de crédito",
     icon: <CreditCard />,
   },
   "pp_medusa-payments_default": {
-    title: "Credit card",
+    title: "Tarjeta de crédito",
     icon: <CreditCard />,
   },
   "pp_stripe-ideal_stripe": {
@@ -56,7 +56,7 @@ export const paymentInfoMap: Record<string, PaymentInfo> = {
     icon: <PayPal />,
   },
   pp_system_default: {
-    title: "Manual Payment",
+    title: "Pago manual",
     icon: <CreditCard />,
   },
   // NOTE: provider id literals below are duplicated in

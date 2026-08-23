@@ -4,6 +4,7 @@ import NativeSelect, {
   NativeSelectProps,
 } from "@modules/common/components/native-select"
 import { HttpTypes } from "@medusajs/types"
+import { formatCountryName } from "@lib/util/store-locale"
 
 const CountrySelect = forwardRef<
   HTMLSelectElement,
@@ -25,7 +26,7 @@ const CountrySelect = forwardRef<
 
     return region.countries?.map((country) => ({
       value: country.iso_2,
-      label: country.display_name,
+      label: formatCountryName(country.iso_2, country.display_name),
     }))
   }, [region])
 

@@ -75,7 +75,11 @@ export const createTransferRequest = async (
   const id = formData.get("order_id") as string
 
   if (!id) {
-    return { success: false, error: "Order ID is required", order: null }
+    return {
+      success: false,
+      error: "Ingresa el número del pedido.",
+      order: null,
+    }
   }
 
   const headers = await getAuthHeaders()
@@ -90,7 +94,15 @@ export const createTransferRequest = async (
       headers
     )
     .then(({ order }) => ({ success: true, error: null, order }))
-    .catch((err) => ({ success: false, error: err.message, order: null }))
+    .catch((error) => {
+      console.error("[account.order-transfer] Transfer request failed", error)
+      return {
+        success: false,
+        error:
+          "No pudimos vincular el pedido. Verifica el número e inténtalo de nuevo.",
+        order: null,
+      }
+    })
 }
 
 export const acceptTransferRequest = async (id: string, token: string) => {
@@ -99,7 +111,17 @@ export const acceptTransferRequest = async (id: string, token: string) => {
   return await sdk.store.order
     .acceptTransfer(id, { token }, {}, headers)
     .then(({ order }) => ({ success: true, error: null, order }))
-    .catch((err) => ({ success: false, error: err.message, order: null }))
+    .catch((error) => {
+      console.error(
+        "[account.order-transfer] Transfer acceptance failed",
+        error
+      )
+      return {
+        success: false,
+        error: "No pudimos vincular el pedido. Inténtalo de nuevo.",
+        order: null,
+      }
+    })
 }
 
 export const declineTransferRequest = async (id: string, token: string) => {
@@ -108,5 +130,12 @@ export const declineTransferRequest = async (id: string, token: string) => {
   return await sdk.store.order
     .declineTransfer(id, { token }, {}, headers)
     .then(({ order }) => ({ success: true, error: null, order }))
-    .catch((err) => ({ success: false, error: err.message, order: null }))
+    .catch((error) => {
+      console.error("[account.order-transfer] Transfer decline failed", error)
+      return {
+        success: false,
+        error: "No pudimos rechazar la vinculación. Inténtalo de nuevo.",
+        order: null,
+      }
+    })
 }

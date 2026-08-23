@@ -1,4 +1,5 @@
 import { getBaseURL } from "@lib/util/env"
+import { STORE_LOCALE } from "@lib/util/store-locale"
 import { Metadata } from "next"
 import {
   Bricolage_Grotesque,
@@ -19,9 +20,21 @@ import "styles/globals.css"
 // weight, so they are declarations, not payload.
 const blusans = localFont({
   src: [
-    { path: "../fonts/blusans/BluSans-Medium.woff2", weight: "500", style: "normal" },
-    { path: "../fonts/blusans/BluSans-Bold.woff2", weight: "700", style: "normal" },
-    { path: "../fonts/blusans/BluSans-Black.woff2", weight: "900", style: "normal" },
+    {
+      path: "../fonts/blusans/BluSans-Medium.woff2",
+      weight: "500",
+      style: "normal",
+    },
+    {
+      path: "../fonts/blusans/BluSans-Bold.woff2",
+      weight: "700",
+      style: "normal",
+    },
+    {
+      path: "../fonts/blusans/BluSans-Black.woff2",
+      weight: "900",
+      style: "normal",
+    },
   ],
   variable: "--font-blusans",
   display: "swap",
@@ -55,7 +68,7 @@ export const metadata: Metadata = {
 export default function RootLayout(props: { children: React.ReactNode }) {
   return (
     <html
-      lang="en"
+      lang={STORE_LOCALE}
       data-mode="light"
       className={`${bricolage.variable} ${hanken.variable} ${spaceMono.variable} ${blusans.variable}`}
     >
@@ -65,7 +78,7 @@ export default function RootLayout(props: { children: React.ReactNode }) {
           any route that repaints an opaque background hides it — a route that
           wants a clean surface opts out that way, on purpose.
         */}
-        <body className="brand-watermark bg-cream font-hanken text-ink">
+      <body className="brand-watermark bg-cream font-hanken text-ink">
         <main className="relative">{props.children}</main>
       </body>
     </html>

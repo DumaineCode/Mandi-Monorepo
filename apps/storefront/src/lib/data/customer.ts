@@ -59,7 +59,10 @@ export const updateCustomer = async (body: HttpTypes.StoreUpdateCustomer) => {
   return updateRes
 }
 
-export async function signup(_currentState: unknown, formData: FormData) {
+export async function signup(
+  _currentState: unknown,
+  formData: FormData
+): Promise<string | null> {
   const password = formData.get("password") as string
   const customerForm = {
     email: formData.get("email") as string,
@@ -80,12 +83,13 @@ export async function signup(_currentState: unknown, formData: FormData) {
       ...(await getAuthHeaders()),
     }
 
-    const { customer: createdCustomer } = await sdk.store.customer.create(
-      customerForm,
-      {},
-      headers
-    )
+    await sdk.store.customer.create(customerForm, {}, headers)
+  } catch (error) {
+    console.error("[account.signup] Account creation failed", error)
+    return "No pudimos crear tu cuenta. Revisa tus datos e inténtalo de nuevo."
+  }
 
+  try {
     const loginToken = await sdk.auth.login("customer", "emailpass", {
       email: customerForm.email,
       password,
@@ -95,16 +99,25 @@ export async function signup(_currentState: unknown, formData: FormData) {
 
     const customerCacheTag = await getCacheTag("customers")
     revalidateTag(customerCacheTag)
-
-    await transferCart()
-
-    return createdCustomer
   } catch (error) {
-    return String(error)
+    console.error("[account.signup] Post-creation login failed", error)
+    return "Tu cuenta se creó, pero no pudimos iniciar sesión automáticamente. Vuelve a Iniciar sesión con tus datos."
   }
+
+  try {
+    await transferCart()
+  } catch (error) {
+    console.error("[account.signup] Cart transfer failed", error)
+    return "Tu cuenta se creó e iniciaste sesión, pero no pudimos recuperar tu carrito. Revísalo antes de continuar."
+  }
+
+  return null
 }
 
-export async function login(_currentState: unknown, formData: FormData) {
+export async function login(
+  _currentState: unknown,
+  formData: FormData
+): Promise<string | null> {
   const email = formData.get("email") as string
   const password = formData.get("password") as string
 
@@ -117,14 +130,18 @@ export async function login(_currentState: unknown, formData: FormData) {
         revalidateTag(customerCacheTag)
       })
   } catch (error) {
-    return String(error)
+    console.error("[account.login] Authentication failed", error)
+    return "No pudimos iniciar sesión. Verifica tu correo y contraseña."
   }
 
   try {
     await transferCart()
   } catch (error) {
-    return String(error)
+    console.error("[account.login] Cart transfer failed", error)
+    return "Iniciaste sesión, pero no pudimos recuperar tu carrito. Revísalo antes de continuar."
   }
+
+  return null
 }
 
 export async function signout(countryCode: string) {
@@ -191,8 +208,13 @@ export const addCustomerAddress = async (
       revalidateTag(customerCacheTag)
       return { success: true, error: null }
     })
-    .catch((err) => {
-      return { success: false, error: err.toString() }
+    .catch((error) => {
+      console.error("[account.address] Address creation failed", error)
+      return {
+        success: false,
+        error:
+          "No pudimos guardar la dirección. Revisa los datos e inténtalo de nuevo.",
+      }
     })
 }
 
@@ -223,7 +245,10 @@ export const updateCustomerAddress = async (
     (currentState.addressId as string) || (formData.get("addressId") as string)
 
   if (!addressId) {
-    return { success: false, error: "Address ID is required" }
+    return {
+      success: false,
+      error: "No encontramos la dirección a actualizar.",
+    }
   }
 
   const address = {
@@ -255,7 +280,12 @@ export const updateCustomerAddress = async (
       revalidateTag(customerCacheTag)
       return { success: true, error: null }
     })
-    .catch((err) => {
-      return { success: false, error: err.toString() }
+    .catch((error) => {
+      console.error("[account.address] Address update failed", error)
+      return {
+        success: false,
+        error:
+          "No pudimos actualizar la dirección. Revisa los datos e inténtalo de nuevo.",
+      }
     })
 }

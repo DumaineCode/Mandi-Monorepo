@@ -72,8 +72,8 @@ const NavShell = ({ categories, cart, sideMenu }: NavShellProps) => {
                 className={clx("flex items-center", accountLink)}
                 href="/account"
                 data-testid="nav-account-link"
-                aria-label="Account"
-                title="Account"
+                aria-label="Mi cuenta"
+                title="Mi cuenta"
               >
                 <User className="h-6 w-6" />
               </LocalizedClientLink>

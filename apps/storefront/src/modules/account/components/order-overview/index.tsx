@@ -1,7 +1,5 @@
 "use client"
 
-import { Button } from "@modules/common/components/ui"
-
 import OrderCard from "../order-card"
 import LocalizedClientLink from "@modules/common/components/localized-client-link"
 import { HttpTypes } from "@medusajs/types"
@@ -9,12 +7,9 @@ import { HttpTypes } from "@medusajs/types"
 const OrderOverview = ({ orders }: { orders: HttpTypes.StoreOrder[] }) => {
   if (orders?.length) {
     return (
-      <div className="flex flex-col gap-y-8 w-full">
+      <div className="flex w-full flex-col gap-y-4">
         {orders.map((o) => (
-          <div
-            key={o.id}
-            className="border-b border-gray-200 pb-6 last:pb-0 last:border-none"
-          >
+          <div key={o.id}>
             <OrderCard order={o} />
           </div>
         ))}
@@ -24,20 +19,23 @@ const OrderOverview = ({ orders }: { orders: HttpTypes.StoreOrder[] }) => {
 
   return (
     <div
-      className="w-full flex flex-col items-center gap-y-4"
+      className="flex w-full flex-col items-center rounded-2xl border border-dashed border-line bg-cream/40 p-8 text-center"
       data-testid="no-orders-container"
     >
-      <h2 className="text-large-semi">Nothing to see here</h2>
-      <p className="text-base-regular">
-        You don&apos;t have any orders yet, let us change that {":)"}
+      <h2 className="font-bricolage text-2xl font-extrabold text-ink">
+        Aún no tienes pedidos
+      </h2>
+      <p className="max-w-md text-sm leading-6 text-ink-muted">
+        Cuando hagas tu primera compra, aquí podrás consultar su avance y todos
+        sus detalles.
       </p>
-      <div className="mt-4">
-        <LocalizedClientLink href="/" passHref>
-          <Button data-testid="continue-shopping-button">
-            Continue shopping
-          </Button>
-        </LocalizedClientLink>
-      </div>
+      <LocalizedClientLink
+        href="/store"
+        className="mt-4 inline-flex min-h-11 items-center justify-center rounded-xl bg-coral-light px-5 py-2 font-semibold text-ink transition-colors hover:bg-coral-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral"
+        data-testid="continue-shopping-button"
+      >
+        Ir a la tienda
+      </LocalizedClientLink>
     </div>
   )
 }
