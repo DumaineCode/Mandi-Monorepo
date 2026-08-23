@@ -35,7 +35,7 @@ import { getLocale } from "./locale-actions"
 export async function retrieveCart(cartId?: string, fields?: string) {
   const id = cartId || (await getCartId())
   fields ??=
-    "*items, *region, *items.product, *items.variant, *items.thumbnail, *items.metadata, +items.total, *promotions, +shipping_methods.name"
+    "*items, *region, *items.product, *items.variant, *items.variant.product.images, *items.thumbnail, *items.metadata, +items.total, *promotions, +shipping_methods.name"
 
   if (!id) {
     return null
@@ -141,7 +141,7 @@ export async function retrieveCartFresh(
 ): Promise<FreshCartRead> {
   const id = cartId || (await getCartId())
   fields ??=
-    "*items, *region, *items.product, *items.variant, *items.thumbnail, *items.metadata, +items.total, *promotions, +shipping_methods.name"
+    "*items, *region, *items.product, *items.variant, *items.variant.product.images, *items.thumbnail, *items.metadata, +items.total, *promotions, +shipping_methods.name"
 
   if (!id) {
     return { ok: false, error: "No existing cart found" }
