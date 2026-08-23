@@ -7,6 +7,8 @@ import {
   checkoutReducer,
   initFromServer,
   selectCarrierRatesUnavailable,
+  selectFocusAnchor,
+  selectPaymentModalPhase,
   selectPlaceOrderView,
   selectPostalCodeIsUsable,
   selectQuoteIsBlockedByFailure,
@@ -3869,12 +3871,92 @@ describe("selectPlaceOrderView", () => {
     expect(view.disabled).toBe(false)
   })
 
-  it("blocks the CTA and names every unmet requirement", () => {
+  /**
+   * The CTA stays LIVE while requirements are unmet, and the list still names
+   * every one of them.
+   *
+   * ## The disabled button is the thing being removed
+   *
+   * `disabled` used to be `missing.length > 0 || placingOrder`. A greyed-out
+   * button asserts that the order cannot be placed and then declines to explain
+   * itself; the customer's only move is to go hunting through the form. The
+   * itemized list mitigates that for whoever scrolls far enough to read it, and
+   * on mobile — where the sticky bar pins the CTA over a form the customer has
+   * scrolled past — it frequently is not on screen at all.
+   *
+   * A live button turns the dead end into a question with an answer: the press
+   * is refused by flow step 0, which was already re-checking every one of these
+   * conditions defensively, and the refusal scrolls to the offending control
+   * and rings it. Nothing that guards the money changed — step 0 was always the
+   * real gate, and a `disabled` attribute never was one.
+   *
+   * `missing` is asserted alongside so this cannot be read as the list having
+   * been weakened too. It has not; only the button's `disabled` term moved.
+   */
+  it("keeps the CTA live and still names every unmet requirement", () => {
     const view = selectPlaceOrderView(baseState({ email: null }))
 
-    expect(view.disabled).toBe(true)
+    expect(view.disabled).toBe(false)
     expect(view.missing.map((item) => item.code)).toEqual([
       "email",
+      "shipping_method",
+      "payment_method",
+    ])
+  })
+
+  /**
+   * Nothing is ringed before the customer has pressed anything.
+   *
+   * A checkout that opens with three controls already lit in red has told
+   * someone they are failing before they have typed a character. `blockedAt`
+   * gates the highlight for exactly that reason, and it is zero on a fresh
+   * state no matter how incomplete the form is.
+   */
+  it("highlights nothing until the CTA has actually been refused", () => {
+    const view = selectPlaceOrderView(baseState({ email: null }))
+
+    expect(view.highlighted).toEqual([])
+    expect(view.blockedAt).toBe(0)
+    expect(view.phase).toBe("hidden")
+  })
+
+  /**
+   * After a refusal the highlight names the CONTROLS, not the codes: the
+   * itemized list says what is missing in a sentence, and this says where to go
+   * and fix it. `shipping_method` and `payment_method` come through as sections
+   * because there is no single input to ring for either.
+   */
+  it("rings the offending controls once the CTA has been refused", () => {
+    const blocked = checkoutReducer(baseState({ email: null }), { type: "PLACE_ORDER_BLOCKED" })
+    const view = selectPlaceOrderView(blocked)
+
+    expect(view.blockedAt).toBe(1)
+    expect(view.highlighted).toEqual([
+      "email",
+      "shipping_method",
+      "payment_method",
+    ])
+    /**
+     * A refusal is not a decline: no card was touched, so the payment modal
+     * stays shut and the customer is left looking at the form they have to fix.
+     */
+    expect(view.phase).toBe("hidden")
+  })
+
+  /**
+   * The highlight is recomputed, never stored — so a ring clears itself as soon
+   * as its own field is satisfied, without the customer having to press the
+   * refused button a second time to find out.
+   */
+  it("drops a ring as soon as its field is filled", () => {
+    const blocked = checkoutReducer(baseState({ email: null }), { type: "PLACE_ORDER_BLOCKED" })
+    const typed = checkoutReducer(blocked, {
+      type: "FIELD_CHANGE",
+      field: "email",
+      value: "ana@example.com",
+    })
+
+    expect(selectPlaceOrderView(typed).highlighted).toEqual([
       "shipping_method",
       "payment_method",
     ])
@@ -3920,7 +4002,15 @@ describe("selectPlaceOrderView", () => {
 
     expect(view.placing).toBe(false)
     expect(view.disabled).toBe(false)
-    expect(view.error).toBe("Tu tarjeta fue rechazada.")
+    /**
+     * The reason is NOT on this view any more. It is `state.error`, rendered by
+     * the payment modal and by nothing else — the red line under the CTA that
+     * used to be its second home has been removed, because a customer who
+     * dismissed the dialog was reading the identical sentence again two
+     * elements below the button.
+     */
+    expect(settled.error).toBe("Tu tarjeta fue rechazada.")
+    expect(selectPaymentModalPhase(settled)).toBe("failed")
   })
 
   /**
@@ -3945,7 +4035,13 @@ describe("selectPlaceOrderView", () => {
     const view = selectPlaceOrderView({ ...baseState(), cart: null })
 
     expect(view.total).toBeNull()
-    expect(view.disabled).toBe(true)
+    /**
+     * Live, like every other unmet requirement. The press is refused by step 0
+     * with `Tu carrito está vacío.` — which is more than a greyed-out button
+     * ever said, and the only reading a customer can give a dead button on a
+     * page whose cart failed to load is that the site is broken.
+     */
+    expect(view.disabled).toBe(false)
     expect(view.missing.map((item) => item.code)).toEqual(["cart_empty"])
     /**
      * A CURRENCY, not `""`. `convertToLocale` falls back to a bare number on an
@@ -4043,5 +4139,246 @@ describe("SET_PAYMENT_DETAILS_COMPLETE", () => {
         complete: false,
       })
     ).toBe(before)
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * The payment modal's phase, and the two events that look identical
+ * ---------------------------------------------------------------------------
+ */
+describe("selectPaymentModalPhase", () => {
+  const ready = () =>
+    run(
+      baseState({ shipping_methods: [{ shipping_option_id: "so_std" }] }),
+      selectShipping("so_std"),
+      {
+        type: "SELECT_PAYMENT_PROVIDER",
+        providerId: "pp_mercadopago_mercadopago",
+      }
+    )
+
+  it("stays hidden on a checkout nobody has pressed", () => {
+    expect(selectPaymentModalPhase(ready())).toBe("hidden")
+  })
+
+  it("shows the processing state while an attempt is in flight", () => {
+    const busy = checkoutReducer(ready(), { type: "PLACE_ORDER_STARTED" })
+
+    expect(selectPaymentModalPhase(busy)).toBe("processing")
+  })
+
+  it("shows the rejection state when an attempt failed", () => {
+    const failed = run(
+      ready(),
+      { type: "PLACE_ORDER_STARTED" },
+      {
+        type: "PLACE_ORDER_SETTLED",
+        error: "La tarjeta no tiene fondos suficientes.",
+      }
+    )
+
+    expect(selectPaymentModalPhase(failed)).toBe("failed")
+  })
+
+  it("shows the success state only when success was stated", () => {
+    const placed = run(
+      ready(),
+      { type: "PLACE_ORDER_STARTED" },
+      { type: "PLACE_ORDER_SUCCEEDED" }
+    )
+
+    expect(selectPaymentModalPhase(placed)).toBe("succeeded")
+  })
+
+  /**
+   * ## The confirmation animation over an unpaid cart
+   *
+   * `PLACE_ORDER_SETTLED { error: null }` has TWO producers with opposite
+   * meanings. One is the flow standing down cleanly. The other is `release()`,
+   * fired on a `pageshow` bfcache restore — i.e. the customer pressed Back out
+   * of Mercado Pago WITHOUT paying.
+   *
+   * A phase derived as "not placing and no error" cannot tell them apart, and
+   * would play a green tick and "¡Pago aprobado!" at someone who just abandoned
+   * a payment. That is why success is stated by its own action and never
+   * inferred, and this is the test that stops the inference from coming back.
+   */
+  it("does not congratulate a customer who came back without paying", () => {
+    const returned = run(
+      ready(),
+      { type: "PLACE_ORDER_STARTED" },
+      { type: "PLACE_ORDER_SETTLED", error: null }
+    )
+
+    expect(returned.placingOrder).toBe(false)
+    expect(returned.error).toBeNull()
+    expect(selectPaymentModalPhase(returned)).toBe("hidden")
+  })
+
+  /**
+   * A refusal for missing data is not a payment failure. No card was touched,
+   * the answer is on the form BEHIND the dialog, and a modal the customer has
+   * to dismiss to reach the fix adds a click and explains nothing the itemized
+   * list did not.
+   *
+   * It writes no message either: whatever it would say is already rendered by
+   * `MissingItemsList`, from the same catalogue, live. `state.error` is the
+   * modal's channel and the modal has nothing to show here.
+   */
+  it("stays hidden and writes no message when the CTA is refused", () => {
+    const blocked = checkoutReducer(ready(), { type: "PLACE_ORDER_BLOCKED" })
+
+    expect(selectPaymentModalPhase(blocked)).toBe("hidden")
+    expect(blocked.error).toBeNull()
+    expect(blocked.blockedAt).toBe(1)
+  })
+
+  /**
+   * A decline left over from a previous attempt must not survive into a refusal
+   * that has nothing to do with it — the customer would dismiss the dialog, fix
+   * a field, press again, and be refused while a stale card message sat in
+   * state waiting for something to render it.
+   */
+  it("clears a previous decline when the next press is refused", () => {
+    const afterDecline = run(
+      ready(),
+      { type: "PLACE_ORDER_STARTED" },
+      { type: "PLACE_ORDER_SETTLED", error: "La tarjeta fue rechazada." },
+      { type: "PLACE_ORDER_BLOCKED" }
+    )
+
+    expect(afterDecline.error).toBeNull()
+    expect(selectPaymentModalPhase(afterDecline)).toBe("hidden")
+  })
+
+  /**
+   * ## The checkout that is ENTERED already carrying a verdict
+   *
+   * Both payment-return routes redirect to `?error=payment_failed` — a declined
+   * 3DS challenge, or a Mercado Pago checkout abandoned without paying. That
+   * message had exactly one renderer, the red line under the CTA, and that line
+   * is gone.
+   *
+   * Seeding the outcome is what keeps it reachable, and it is the better home:
+   * the failure this parameter exists to prevent is the customer reading a
+   * pristine-looking checkout as "my click didn't register" and trying again,
+   * which on Openpay is a SECOND authorization hold on their card. A dialog is
+   * hard to misread that way.
+   */
+  it("raises the modal for a checkout entered after a failed payment", () => {
+    const entered = initFromServer({
+      cart: cartWith({}),
+      customer: null,
+      shippingOptions: [option("so_std")],
+      error: "Tu pago no se completó y no se creó ningún pedido.",
+    })
+
+    expect(selectPaymentModalPhase(entered)).toBe("failed")
+    expect(entered.error).toBe(
+      "Tu pago no se completó y no se creó ningún pedido."
+    )
+  })
+
+  it("stays hidden for an ordinary entry with no verdict", () => {
+    const entered = initFromServer({
+      cart: cartWith({}),
+      customer: null,
+      shippingOptions: [option("so_std")],
+    })
+
+    expect(selectPaymentModalPhase(entered)).toBe("hidden")
+  })
+
+  /**
+   * A retry must not flash the previous rejection before the spinner —
+   * `PLACE_ORDER_STARTED` clears the outcome along with the error.
+   */
+  it("clears the previous verdict when a retry starts", () => {
+    const retrying = run(
+      ready(),
+      { type: "PLACE_ORDER_STARTED" },
+      { type: "PLACE_ORDER_SETTLED", error: "La tarjeta fue rechazada." },
+      { type: "PLACE_ORDER_STARTED" }
+    )
+
+    expect(retrying.error).toBeNull()
+    expect(selectPaymentModalPhase(retrying)).toBe("processing")
+  })
+
+  /**
+   * Dismissal clears the message along with the phase.
+   *
+   * It used to keep it, on the grounds that the red line under the CTA was the
+   * durable record. That line is gone — the modal is the only renderer of
+   * `state.error` — so a message left behind is state nothing can observe,
+   * waiting for the next reader who assumes it still means something.
+   */
+  it("clears the message when the modal is dismissed", () => {
+    const dismissed = run(
+      ready(),
+      { type: "PLACE_ORDER_STARTED" },
+      { type: "PLACE_ORDER_SETTLED", error: "La tarjeta fue rechazada." },
+      { type: "PLACE_ORDER_DISMISSED" }
+    )
+
+    expect(selectPaymentModalPhase(dismissed)).toBe("hidden")
+    expect(dismissed.error).toBeNull()
+  })
+
+  /**
+   * ## The one that costs real money
+   *
+   * Escape and a backdrop click both reach `PLACE_ORDER_DISMISSED`. Honouring
+   * it mid-authorization leaves the customer looking at an idle checkout over a
+   * LIVE charge, and their next move is to try again — a second authorization
+   * hold on the same card, which on a Mexican debit card is money frozen for
+   * days.
+   */
+  it("refuses to be dismissed while a charge is in flight", () => {
+    const busy = checkoutReducer(ready(), { type: "PLACE_ORDER_STARTED" })
+    const stillBusy = checkoutReducer(busy, { type: "PLACE_ORDER_DISMISSED" })
+
+    expect(selectPaymentModalPhase(stillBusy)).toBe("processing")
+    // Identity, not just equality: the dismissal is a no-op, not a rebuild.
+    expect(stillBusy).toBe(busy)
+  })
+})
+
+/**
+ * Where a refused CTA sends the customer.
+ *
+ * @see `modules/checkout/components/place-order-focus` — the effect that
+ * consumes this. It lives in a `.tsx` the node runner cannot load, which is why
+ * the DECISION is here and only the `scrollIntoView` call is there.
+ */
+describe("selectFocusAnchor", () => {
+  it("has no destination before the CTA has been refused", () => {
+    expect(selectFocusAnchor(baseState({ email: null }))).toBeNull()
+  })
+
+  /**
+   * The FIRST unmet requirement in catalogue order, which is page order — so
+   * the customer lands on the next thing to fix rather than the last one.
+   */
+  it("points at the first unmet requirement once refused", () => {
+    const blocked = checkoutReducer(baseState({ email: null }), { type: "PLACE_ORDER_BLOCKED" })
+
+    expect(selectFocusAnchor(blocked)).toBe("email")
+  })
+
+  /**
+   * It MOVES as the customer fixes things, so a second press takes them to
+   * whatever is left rather than back to the field they just corrected.
+   */
+  it("advances to the next problem as each one is fixed", () => {
+    const blocked = checkoutReducer(baseState({ email: null }), { type: "PLACE_ORDER_BLOCKED" })
+    const fixed = checkoutReducer(blocked, {
+      type: "FIELD_CHANGE",
+      field: "email",
+      value: "ana@example.com",
+    })
+
+    expect(selectFocusAnchor(fixed)).toBe("shipping_method")
   })
 })

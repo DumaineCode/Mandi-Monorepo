@@ -302,18 +302,27 @@ export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
     const missing = getMissingOrderRequirements(selectReadinessInput(state))
 
     if (missing.length > 0) {
-      const error = missing[0].message
-      deps.dispatch({ type: "SET_ERROR", error })
-      return { status: "blocked", error }
+      return settleBlocked(missing[0].message)
     }
 
     const providerId = state.selectedPaymentProviderId
     const tail = resolvePaymentTail(providerId)
 
     if (tail === "unsupported" || !providerId) {
-      const error = PLACE_ORDER_MESSAGES.providerUnsupported
-      deps.dispatch({ type: "SET_ERROR", error })
-      return { status: "blocked", error }
+      /**
+       * Spoken through the MODAL, unlike step 0's refusal above.
+       *
+       * The distinction is whether the form can explain itself. Step 0's
+       * message is the itemized list's first entry, already on screen. This one
+       * is not: reaching here means the provider id passed the catalogue —
+       * it is present, and it is not Openpay, so no rule complains — but
+       * `resolvePaymentTail` does not recognise it. The list is EMPTY. Left
+       * silent, the customer would press the button and watch nothing happen.
+       *
+       * `blocked` is still the outcome: nothing was attempted and the cart was
+       * not touched, which is what a caller needs to know.
+       */
+      return settleFailed(PLACE_ORDER_MESSAGES.providerUnsupported, "blocked")
     }
 
     deps.dispatch({ type: "PLACE_ORDER_STARTED" })
@@ -439,9 +448,22 @@ export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
     )
 
     if (stillMissing.length > 0) {
-      const error = stillMissing[0].message
-      deps.dispatch({ type: "PLACE_ORDER_SETTLED", error })
-      return { status: "aborted", error }
+      /**
+       * The MODAL, not step 0's silent refusal — and the reason is that nothing
+       * on the customer's screen is wrong.
+       *
+       * Step 0 judges the DRAFT, and step 2 sends the draft, so reaching here
+       * means the cart the server RETURNED disagrees with what we sent: a
+       * partial write, a normalisation, another writer. The itemized list and
+       * the field rings are both derived from the draft, so both are EMPTY for
+       * this condition — they have nothing to complain about. A silent refusal
+       * here is a button that does nothing, twice in a row, with no explanation
+       * anywhere on the page.
+       *
+       * `aborted` stays the outcome: something WAS underway and was stopped,
+       * which is a different fact from step 0 never starting.
+       */
+      return settleFailed(stillMissing[0].message, "aborted")
     }
 
     // ---------------------------------------------------------------------
@@ -520,7 +542,21 @@ export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
       return settleFailed(messageFrom(error))
     }
 
-    deps.dispatch({ type: "PLACE_ORDER_SETTLED", error: null })
+    /**
+     * `PLACE_ORDER_SUCCEEDED`, not `PLACE_ORDER_SETTLED { error: null }`.
+     *
+     * The two were the same action until the payment modal needed to tell them
+     * apart, and they never meant the same thing: `release()` also settles with
+     * no error, on a bfcache restore after the customer pressed Back out of
+     * Mercado Pago WITHOUT paying. A modal deriving success from "not placing,
+     * no error" would congratulate them on an order that does not exist.
+     *
+     * `placeOrder` has already issued its own server-side `redirect()` to the
+     * confirmation page, so this state is short-lived by design: it holds the
+     * success frame over the navigation gap instead of leaving the customer on
+     * a checkout that has gone quiet.
+     */
+    deps.dispatch({ type: "PLACE_ORDER_SUCCEEDED" })
     return { status: "placed" }
   }
 
@@ -553,32 +589,63 @@ export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
   }
 
   /**
+   * Step 0's refusal: the form on screen is incomplete, and the form says so.
+   *
+   * The `error` argument is REPORTED to the caller and deliberately not
+   * dispatched. It is `getMissingOrderRequirements`' first entry, which is the
+   * string `MissingItemsList` is already rendering from the same catalogue —
+   * writing a copy into `state.error` printed it twice on one screen, once in
+   * the list and once in red under the button.
+   *
+   * What the dispatch DOES do is bump `blockedAt`, which is what rings the
+   * offending control and scrolls to it. That is the half the customer could
+   * not previously get.
+   */
+  const settleBlocked = (error: string): PlaceOrderOutcome => {
+    deps.dispatch({ type: "PLACE_ORDER_BLOCKED" })
+    return { status: "blocked", error }
+  }
+
+  /**
    * The order was ATTEMPTED and did not go through.
    *
    * ## Every failure message passes the same gate, here
    *
-   * `resolvePaymentFailureMessage` could have gone into `messageFrom`, which is
-   * where the provider's English was arriving from. That would have covered the
-   * three `catch` blocks and nothing else — leaving `synced.error`, a string
-   * `syncCheckoutAddresses` builds out of `describeError(...)` on an HTTP
-   * failure, going straight to the customer unfiltered. Same class of leak,
-   * different door.
+   * `resolvePaymentFailureMessage` was originally applied inside `messageFrom`,
+   * which covered the three `catch` blocks and nothing else. That left
+   * `synced.error` — a string built by `syncCheckoutAddresses`, which reads
+   * `describeError(...)` off an HTTP failure — going straight to the customer
+   * unfiltered. Same class of leak as the Openpay one, different door.
    *
-   * Putting the gate on the single function that DISPATCHES a failure makes the
+   * Putting the gate on the single function that dispatches a failure makes the
    * property structural rather than remembered: there is no path to
    * `state.error` from a failed attempt that does not come through this line.
-   * Applying it to the storefront's own constants costs nothing — they are
-   * neither tokens nor provider envelopes, so they pass through untouched — and
+   * Applying it to the storefront's own constants is free — they are not
+   * tokens and not provider envelopes, so they pass through untouched — and
    * applying it twice is idempotent for the same reason.
    */
-  const settleFailed = (error: string): PlaceOrderOutcome => {
+  const settleFailed = (
+    error: string,
+    /**
+     * What the CALLER is told, which is not always `failed`.
+     *
+     * Two refusals route through here because the form cannot explain them —
+     * an unrecognised provider and a post-write divergence — and both need the
+     * modal. What they must not do is lie about what happened to the cart:
+     * `blocked` means nothing was attempted, `aborted` means something was
+     * stopped. The customer-facing half is identical; the caller-facing half is
+     * not, and flattening the two would tell a caller a cart was touched when
+     * it was not.
+     */
+    status: "failed" | "blocked" | "aborted" = "failed"
+  ): PlaceOrderOutcome => {
     const message = resolvePaymentFailureMessage(error)
 
     // One action for both halves of "show the reason and give the button back"
     // (task 2c.11), rather than a flag each of the three tails has to remember
     // to reset. A tail that forgets is a button that spins forever.
     deps.dispatch({ type: "PLACE_ORDER_SETTLED", error: message })
-    return { status: "failed", error: message }
+    return { status, error: message } as PlaceOrderOutcome
   }
 
   const buildSessionData = (

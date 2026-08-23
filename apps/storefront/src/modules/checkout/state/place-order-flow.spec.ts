@@ -757,53 +757,217 @@ describe("step 3 — total-change guard", () => {
 
 /**
  * ---------------------------------------------------------------------------
- * Step 3.5 — the readiness re-check against the cart that was actually WRITTEN
+ * Step 0 and step 3.5 — the two readiness gates, and which one catches what
  * ---------------------------------------------------------------------------
  *
- * ## The gate reads the CART; step 2 writes the DRAFT
- *
- * `toReadinessInput` sources the shipping address from `cart.shipping_address`
- * (`checkout-readiness.ts`), and the reducer defends that on the ground that
- * "a field the customer has typed but the autosave has not yet persisted is
- * genuinely not ready". That is sound for ADDING data and inverted for
- * REMOVING it — and step 2 persists the removal.
+ * ## The cleared field, and the gate that moved
  *
  * `shipping-address/index.tsx`'s `handleChange` mutates the draft on every
  * KEYSTROKE, no blur required, and `run` calls `cancelAutosave()` as its first
- * action, which guarantees the draft is never persisted before step 0 reads
- * the cart. So this is not a race — it is deterministic.
+ * action — which GUARANTEES the draft is not persisted before step 0 runs. So
+ * a customer who selects the phone field, deletes it and presses the CTA
+ * reaches step 0 with a draft and a cart that deterministically disagree.
  *
- * The customer: a complete persisted address, the phone field selected and
- * emptied, then *Realizar pedido*. Step 0 passes on `cart.shipping_address`,
- * step 2 writes `phone: ""`, and without this re-check step 4 creates the
- * payment session and the customer is CHARGED for an order Skydropx will
- * refuse to label — `{"address_to":{"phone":["no puede estar en blanco"]}}`,
- * the exact post-sale incident `checkout-readiness.ts` records.
+ * `toReadinessInput` used to source the address from `cart.shipping_address`,
+ * so step 0 saw the old value and waved them through. Step 2 then wrote
+ * `phone: ""`, and step 3.5 existed to catch it before step 4 created the
+ * payment session and charged for an order Skydropx will refuse to label —
+ * `{"address_to":{"phone":["no puede estar en blanco"]}}`, the post-sale
+ * incident `checkout-readiness.ts` records.
  *
- * The quote-relevant fields cannot reach this: clearing `postal_code`, `city`,
+ * The catch worked. What it cost was a minted single-use token, a cart write
+ * and — per F2 — a live carrier quote, all spent on an attempt that could not
+ * succeed. And the cart-sourced gate was wrong in the other direction too: the
+ * customer who FILLS the last field and clicks inside the 400 ms debounce was
+ * refused over a lag they cannot perceive, told to complete a form that is
+ * visibly complete.
+ *
+ * `selectReadinessInput` now overlays `state.draft`, so step 0 judges what the
+ * customer is looking at — which is also exactly what step 2 sends. Both
+ * defects close, and they close at the cheapest possible point.
+ *
+ * ## What that leaves for step 3.5, which still runs
+ *
+ * The gate and the write now agree on their INPUT, so they can only diverge on
+ * the way back: `syncCheckoutAddresses` returns the server's account of what
+ * landed, and it is not obliged to equal what was sent. Step 3.5 re-runs the
+ * identical catalogue against that returned cart — unchanged, still on
+ * `toReadinessInput` — and it is the last gate before a payment session exists.
+ *
+ * The quote-relevant fields reach neither gate: clearing `postal_code`, `city`,
  * `province`, `country_code` or `address_2` moves `quoteSignature`, which
- * clears the selection and raises `shipping_method_stale` at step 0. That
- * partial protection is exactly why the hole reads as closed.
+ * clears the selection and raises `shipping_method_stale`. That partial
+ * protection is exactly why the hole read as closed.
+ */
+describe("step 0 — a cleared field is caught before anything is spent", () => {
+  /**
+   * The customer above, at the gate that now catches them.
+   *
+   * `selectReadinessInput` sources the shipping address from `state.draft`, so
+   * emptying the phone is visible to step 0 immediately — with no token minted,
+   * no cart written and, per F2, no live carrier quote spent. Under the
+   * cart-sourced gate this same customer sailed past step 0 and was stopped at
+   * step 3.5, one tokenize and one write later.
+   *
+   * `blocked`, not `aborted`: nothing was attempted.
+   */
+  it("refuses a draft whose phone was emptied, before tokenizing", async () => {
+    const h = harness({ draft: { phone: "" } })
+
+    const outcome = await h.flow.place()
+
+    expect(outcome.status).toBe("blocked")
+    expect(outcome.status === "blocked" && outcome.error).toBe(
+      "Falta tu teléfono."
+    )
+    expect(h.tokenize).not.toHaveBeenCalled()
+    expect(h.sync).not.toHaveBeenCalled()
+    expect(h.initiate).not.toHaveBeenCalled()
+    expect(h.placeOrder).not.toHaveBeenCalled()
+  })
+
+  /**
+   * A guard that only re-checked `phone` would pass the case above and still
+   * ship an order with no recipient name.
+   */
+  it("catches a cleared name, not just the phone", async () => {
+    const h = harness({ draft: { first_name: "", last_name: "" } })
+
+    const outcome = await h.flow.place()
+
+    expect(outcome.status === "blocked" && outcome.error).toBe(
+      "Completa tu dirección de envío."
+    )
+    expect(h.sync).not.toHaveBeenCalled()
+  })
+
+  /**
+   * The catalogue is ordered by page position, so the first entry is the next
+   * thing the customer can act on — and it is the entry the sticky bar is
+   * already showing them. Two must be missing at once for the difference to be
+   * observable, which is why the single-field cases cannot stand in for this.
+   */
+  it("reports the FIRST missing entry when several are", async () => {
+    const h = harness({ draft: { phone: "", address_1: "" } })
+
+    const outcome = await h.flow.place()
+
+    // Catalogue order: … phone, shipping_address, colonia, …
+    expect(outcome.status === "blocked" && outcome.error).toBe(
+      "Falta tu teléfono."
+    )
+  })
+
+  /**
+   * The refusal has to be DISTINGUISHABLE from a decline, because the two get
+   * opposite treatment on screen: a refusal rings the offending field and leaves
+   * the payment modal shut, while a failure raises the modal's rejection state.
+   *
+   * `blockedAt` is what drives the ring and the scroll; without the bump the
+   * customer gets a sentence and no destination, which on mobile — where the
+   * sticky CTA is pinned over a form scrolled out of view — is a button that
+   * appears to do nothing at all.
+   */
+  it("bumps blockedAt, writes no message, and leaves the modal shut", async () => {
+    const h = harness({ draft: { phone: "" } })
+
+    const outcome = await h.flow.place()
+
+    expect(h.readState().blockedAt).toBe(1)
+    expect(h.readState().placeOrderOutcome).toBe("none")
+    expect(h.readState().placingOrder).toBe(false)
+
+    /**
+     * The reason is REPORTED to the caller and not written to state.
+     *
+     * `MissingItemsList` is already rendering that exact string under the CTA,
+     * from the same catalogue, recomputed live. Copying it into `state.error`
+     * printed the same sentence twice on one screen — once in the list, once in
+     * red beneath the button — which is what this removes.
+     */
+    expect(outcome.status === "blocked" && outcome.error).toBe(
+      "Falta tu teléfono."
+    )
+    expect(h.readState().error).toBeNull()
+
+    // A second press must move it again, or the scroll effect cannot re-run.
+    await h.flow.place()
+    expect(h.readState().blockedAt).toBe(2)
+  })
+
+  /**
+   * The draft is what the customer SEES, and it is also what step 2 writes —
+   * so agreeing with it lets a complete form through to the write that persists
+   * it, rather than refusing over a lag the customer cannot perceive.
+   *
+   * This is the case the cart-sourced gate got WRONG, and it is the ordinary
+   * one: fill the last field, click inside the 400 ms autosave debounce. The
+   * cart still holds the old value, and the old gate answered with an
+   * accusation the customer could disprove by looking at the screen.
+   */
+  it("accepts a complete draft the cart has not caught up with", async () => {
+    const h = harness({
+      cart: readyCart({
+        shipping_address: { id: "caaddr_ship", ...ADDRESS, phone: "" },
+      }),
+      draft: { phone: "5598765432" },
+      /**
+       * Models step 2 honestly: the write SENDS the draft, so the cart it
+       * returns carries the phone the customer just typed. Echoing the
+       * pre-write cart instead would abort at step 3.5 and this test would be
+       * asserting that the flow refuses its own successful write.
+       */
+      syncAddresses: async () => ({
+        ok: true as const,
+        cart: readyCart({
+          shipping_address: {
+            id: "caaddr_ship",
+            ...ADDRESS,
+            phone: "5598765432",
+          },
+        }),
+      }),
+    })
+
+    const outcome = await h.flow.place()
+
+    expect(outcome.status).toBe("placed")
+    expect(h.sync).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * What is LEFT for step 3.5 once step 0 reads the draft.
+ *
+ * The gate and the write now agree on their input, so the two can only diverge
+ * on the way BACK: the cart `syncCheckoutAddresses` returns is the server's
+ * account of what landed, and it is not required to equal what was sent. A
+ * field dropped by a partial write, normalised to empty, or overwritten by
+ * another writer between the read and the response arrives here and nowhere
+ * else.
+ *
+ * That is a narrower job than before and a real one, and it is the last gate
+ * before money moves: past this point the flow creates a payment session.
  */
 describe("step 3.5 — the post-write readiness re-check", () => {
   /**
-   * Models step 2 honestly: `syncCheckoutAddresses` sends `state.draft`, so the
-   * cart it returns carries whatever the customer currently holds. A stub that
-   * echoed the PRE-write cart back would make this whole class of defect
-   * invisible, which is how it shipped.
+   * A complete draft, and a write that comes back having LOST a field.
+   *
+   * The draft is deliberately untouched — if it were incomplete, step 0 would
+   * refuse first and this block would be asserting against the wrong gate,
+   * which is exactly what happened when the gate moved.
    */
-  const writesTheDraft = (draft: Record<string, string>) => ({
-    draft,
+  const writeDrops = (lost: Record<string, string>) => ({
     syncAddresses: async () => ({
       ok: true as const,
       cart: readyCart({
-        shipping_address: { id: "caaddr_ship", ...ADDRESS, ...draft },
+        shipping_address: { id: "caaddr_ship", ...ADDRESS, ...lost },
       }),
     }),
   })
 
-  it("aborts before creating a payment session when the write emptied the phone", async () => {
-    const h = harness(writesTheDraft({ phone: "" }))
+  it("aborts before creating a payment session when the write lost the phone", async () => {
+    const h = harness(writeDrops({ phone: "" }))
 
     const outcome = await h.flow.place()
 
@@ -820,7 +984,7 @@ describe("step 3.5 — the post-write readiness re-check", () => {
    * read on the page — the same rule step 0 follows.
    */
   it("reports the catalogue's own wording and re-enables the button", async () => {
-    const h = harness(writesTheDraft({ phone: "" }))
+    const h = harness(writeDrops({ phone: "" }))
 
     const outcome = await h.flow.place()
 
@@ -832,12 +996,34 @@ describe("step 3.5 — the post-write readiness re-check", () => {
   })
 
   /**
-   * `first_name` is not quote-relevant either, so it reaches step 2 by the same
-   * route. Named separately because a guard that only re-checked `phone` would
-   * pass the test above and still ship an order with no recipient name.
+   * ## This one HAS to raise the modal, unlike step 0's refusal
+   *
+   * The rule is whether the form can explain itself, and here it cannot.
+   *
+   * Step 0 judges the DRAFT and step 2 sends the draft, so reaching step 3.5
+   * means the cart the server RETURNED disagrees with what we sent. The
+   * itemized list and the field rings are both derived from the draft — which
+   * is complete — so both are empty for this condition. A silent refusal would
+   * be a button that does nothing, with no explanation anywhere on the page.
+   *
+   * The counterpart assertion lives in `checkout-reducer.spec.ts`: step 0's
+   * refusal writes NO message and raises no dialog, because there the list is
+   * already saying it.
    */
-  it("catches a cleared name, not just the phone", async () => {
-    const h = harness(writesTheDraft({ first_name: "", last_name: "" }))
+  it("raises the modal, because the form cannot explain this one", async () => {
+    const h = harness(writeDrops({ phone: "" }))
+
+    await h.flow.place()
+
+    expect(h.readState().placeOrderOutcome).toBe("failed")
+    expect(h.readState().error).toBe("Falta tu teléfono.")
+    // No ring: the draft is complete, so there is no field on screen to point
+    // at. Bumping `blockedAt` here would scroll to nothing.
+    expect(h.readState().blockedAt).toBe(0)
+  })
+
+  it("catches a lost name, not just the phone", async () => {
+    const h = harness(writeDrops({ first_name: "", last_name: "" }))
 
     const outcome = await h.flow.place()
 
@@ -849,33 +1035,12 @@ describe("step 3.5 — the post-write readiness re-check", () => {
   })
 
   /**
-   * The FIRST entry, not merely "an" entry.
-   *
-   * The catalogue is ordered by page position, so the first entry is the next
-   * thing the customer can act on — and it is the same entry the sticky bar is
-   * showing them. Reporting the last one instead sends them to the bottom of
-   * the form to fix something that is not next. Two requirements have to be
-   * missing at once for the difference to be observable, which is why the
-   * single-field cases above cannot stand in for this one.
-   */
-  it("reports the FIRST missing entry when several are", async () => {
-    const h = harness(writesTheDraft({ phone: "", address_1: "" }))
-
-    const outcome = await h.flow.place()
-
-    // Catalogue order: … phone, shipping_address, colonia, …
-    expect(outcome.status === "aborted" && outcome.error).toBe(
-      "Falta tu teléfono."
-    )
-  })
-
-  /**
    * The re-check reads the cart the write RETURNED, not the one held in state.
    * An unchanged address must not cost the customer an extra click, or every
    * order acquires a spurious second confirmation.
    */
   it("lets an unchanged address straight through", async () => {
-    const h = harness(writesTheDraft({}))
+    const h = harness(writeDrops({}))
 
     const outcome = await h.flow.place()
 
@@ -885,12 +1050,11 @@ describe("step 3.5 — the post-write readiness re-check", () => {
 
   /**
    * Ordering. The total-change guard runs FIRST, so a write that both re-priced
-   * shipping and emptied a field reports the total — the thing the customer
-   * must confirm before anything else is worth telling them.
+   * shipping and lost a field reports the total — the thing the customer must
+   * confirm before anything else is worth telling them.
    */
   it("runs after the total-change guard", async () => {
     const h = harness({
-      draft: { phone: "" },
       syncAddresses: async () => ({
         ok: true as const,
         cart: readyCart({
@@ -1331,6 +1495,27 @@ describe("an unsupported provider", () => {
     )
   })
 
+  /**
+   * ## The one refusal that must SPEAK, even though nothing was attempted
+   *
+   * Step 0's refusal is silent in state because the itemized list is already
+   * saying it. This one is not covered by the list: the provider id is present
+   * and is not Openpay, so no catalogue rule complains — the list is EMPTY —
+   * and `resolvePaymentTail` simply does not recognise it. Left silent, the
+   * customer presses the button and watches absolutely nothing happen.
+   *
+   * `blocked` stays the outcome, because the cart genuinely was not touched.
+   * Only the customer-facing half differs.
+   */
+  it("still tells the customer, because the form cannot", async () => {
+    const h = harness({ providerId: "pp_paypal_paypal" })
+
+    await h.flow.place()
+
+    expect(h.readState().error).toBe(PLACE_ORDER_MESSAGES.providerUnsupported)
+    expect(h.readState().placeOrderOutcome).toBe("failed")
+  })
+
   it("never even marks the checkout busy", async () => {
     const h = harness({ providerId: "pp_paypal_paypal" })
 
@@ -1411,14 +1596,41 @@ describe("re-entrancy", () => {
 })
 
 describe("the busy affordance", () => {
-  it("marks the checkout busy while running and settles it at the end", async () => {
+  /**
+   * A placed order settles with `PLACE_ORDER_SUCCEEDED`, not with
+   * `PLACE_ORDER_SETTLED { error: null }`.
+   *
+   * The two were one action until the payment modal had to tell them apart, and
+   * they never meant the same thing: `release()` also settles with no error, on
+   * a bfcache restore after the customer pressed Back out of Mercado Pago
+   * WITHOUT paying. A modal deriving success from "not placing, no error" would
+   * play a confirmation animation over an unpaid cart — which is why
+   * `placeOrderOutcome` is asserted here and not just the boolean.
+   */
+  it("marks the checkout busy while running and reports success at the end", async () => {
     const h = harness()
 
     await h.flow.place()
 
     const types = h.actions.map((action) => action.type)
     expect(types).toContain("PLACE_ORDER_STARTED")
-    expect(types[types.length - 1]).toBe("PLACE_ORDER_SETTLED")
+    expect(types[types.length - 1]).toBe("PLACE_ORDER_SUCCEEDED")
+    expect(h.readState().placingOrder).toBe(false)
+    expect(h.readState().placeOrderOutcome).toBe("succeeded")
+  })
+
+  /**
+   * The other producer of "not placing, no error", asserted as the DIFFERENT
+   * thing it is. Without this the two actions could be collapsed back into one
+   * and only the success test above would fail — which reads as an over-strict
+   * assertion rather than as the confirmation-over-an-unpaid-cart it prevents.
+   */
+  it("does not report success when the redirect lock is released", async () => {
+    const h = harness()
+
+    h.flow.release()
+
+    expect(h.readState().placeOrderOutcome).toBe("none")
     expect(h.readState().placingOrder).toBe(false)
   })
 

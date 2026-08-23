@@ -677,6 +677,123 @@ const toRequirement = (code: MissingRequirementCode): MissingRequirement => ({
 })
 
 /**
+ * A control the customer can actually go and fix, addressed by name.
+ *
+ * The itemized list says WHAT is missing in a sentence; this says WHERE, in a
+ * value that can be put in a `data-` attribute, queried, scrolled to and
+ * focused. The two are deliberately different vocabularies for different jobs —
+ * one is read, the other is dereferenced — but they are derived from the same
+ * catalogue by {@link getMissingFieldAnchors}, so they cannot point at
+ * different things.
+ *
+ * `shipping.*` and `billing.*` are namespaced because the two forms carry the
+ * SAME seven field names on one page. An un-namespaced `city` would resolve to
+ * whichever input the DOM happened to return first, which on a checkout where
+ * the billing form renders below the shipping one means every billing
+ * correction scrolls the customer back up to a shipping field that is already
+ * correct.
+ */
+export type CheckoutFieldAnchor =
+  | "cart"
+  | "email"
+  | "phone"
+  | "colonia"
+  | `shipping.${BillingRequiredField}`
+  | `billing.${BillingRequiredField}`
+  | "shipping_method"
+  | "payment_method"
+  | "card_details"
+
+/**
+ * WHERE to send the customer, for everything currently missing.
+ *
+ * ## Why this expands `shipping_address` and the message does not
+ *
+ * `MISSING_REQUIREMENT_MESSAGES.shipping_address` is one sentence — "Completa
+ * tu dirección de envío." — because seven field names in a sentence is a wall,
+ * not help. A HIGHLIGHT has the opposite constraint: ringing the whole address
+ * block tells the customer to re-read six fields that are already right. So the
+ * code expands here, field by field, against the same `REQUIRED_ADDRESS_FIELDS`
+ * and the same `isAbsent` the code itself was decided by.
+ *
+ * ## Derived from the codes, never re-deciding them
+ *
+ * This calls {@link getMissingOrderRequirements} rather than re-running the
+ * conditions. A second copy of "what is missing" is how the ring around a field
+ * and the sentence under the button come to disagree — and that disagreement is
+ * unfalsifiable to the customer, who can only conclude the form is broken.
+ *
+ * Order is the catalogue's, so the FIRST anchor is the first thing to fix going
+ * down the page. That is the one the CTA scrolls to.
+ */
+export function getMissingFieldAnchors(
+  input: OrderReadinessInput
+): CheckoutFieldAnchor[] {
+  const anchors: CheckoutFieldAnchor[] = []
+
+  for (const { code } of getMissingOrderRequirements(input)) {
+    switch (code) {
+      case "cart_empty":
+        anchors.push("cart")
+        break
+      case "email":
+        anchors.push("email")
+        break
+      case "phone":
+        anchors.push("phone")
+        break
+      case "shipping_address":
+        for (const field of REQUIRED_ADDRESS_FIELDS) {
+          if (isAbsent(input.shippingAddress?.[field])) {
+            anchors.push(`shipping.${field}`)
+          }
+        }
+        break
+      case "colonia":
+        anchors.push("colonia")
+        break
+      /**
+       * The whole form, because `billing_address` is the code for "nothing has
+       * been typed" — every field is missing, and singling one out would be
+       * arbitrary.
+       */
+      case "billing_address":
+        for (const field of REQUIRED_ADDRESS_FIELDS) {
+          anchors.push(`billing.${field}`)
+        }
+        break
+      /**
+       * The named subset. `billingMissingFields` is derived by
+       * `toReadinessInput` from `missingBillingFields`, the same function that
+       * chose this code over `billing_address` — so the ringed inputs are
+       * exactly the ones the composed message names.
+       *
+       * An absent list rings nothing rather than everything: the caller has not
+       * established that any particular field is at fault, and a form lit up
+       * end to end on no evidence is noise.
+       */
+      case "billing_address_incomplete":
+        for (const field of input.billingMissingFields ?? []) {
+          anchors.push(`billing.${field}`)
+        }
+        break
+      case "shipping_method":
+      case "shipping_method_stale":
+        anchors.push("shipping_method")
+        break
+      case "payment_method":
+        anchors.push("payment_method")
+        break
+      case "card_details":
+        anchors.push("card_details")
+        break
+    }
+  }
+
+  return anchors
+}
+
+/**
  * Defined AS the emptiness of the missing list, never as a second derivation of
  * the same conditions.
  *

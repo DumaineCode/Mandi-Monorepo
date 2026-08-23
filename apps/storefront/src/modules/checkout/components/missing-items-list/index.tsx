@@ -7,19 +7,27 @@ import type { MissingRequirement } from "@lib/util/checkout-readiness"
  *
  * ## Why it lives OUTSIDE the button and is always in the DOM
  *
- * A `disabled` button is removed from the tab order and skipped by screen
- * readers. A customer using one who tabs through the checkout would reach the
- * legal text, then the summary, and never learn that the CTA exists or why it
- * will not move. Putting the explanation inside the button would therefore
- * defeat R8 entirely — the one requirement this component exists to satisfy.
+ * It was written when the CTA was disabled while anything was missing, and a
+ * `disabled` button is removed from the tab order and skipped by screen
+ * readers — so a customer tabbing through would reach the legal text, then the
+ * summary, and never learn the CTA existed or why it would not move. Putting
+ * the explanation inside the button would have defeated R8 outright.
+ *
+ * The CTA is live now, so that particular trap is gone, and this list is if
+ * anything more important rather than less: it is the standing checklist a
+ * customer reads BEFORE pressing, which is the reading that saves them a
+ * refusal. The refusal itself adds a ring and a scroll (`place-order-focus`);
+ * those two are complementary — this says what, the ring says where.
  *
  * The container is rendered unconditionally, empty when there is nothing to
  * say, because `aria-live` only announces changes to a region that was ALREADY
  * present. A region mounted at the same moment its first message arrives is a
  * region that announces nothing.
  *
- * `aria-disabled` is deliberately NOT added alongside `disabled` on the button:
- * the pair is redundant, and the explanation lives here.
+ * The per-field `aria-invalid` set by `anchorProps` deliberately carries NO
+ * message of its own. This region is the one place the reason is worded; ten
+ * inputs each repeating it would have a screen reader read the same complaint
+ * ten times as the customer tabs through fixing it.
  *
  * ## Order is the catalogue's, not this component's
  *

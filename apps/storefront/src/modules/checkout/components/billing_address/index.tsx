@@ -6,8 +6,11 @@ import {
   useCheckoutState,
 } from "@modules/checkout/state/checkout-context"
 import type { AddressField } from "@modules/checkout/state/checkout-reducer"
+import { useCheckoutHighlight } from "@modules/checkout/state/use-checkout-highlight"
+import type { BillingRequiredField } from "@lib/util/checkout-readiness"
 import React from "react"
 import CountrySelect from "../country-select"
+import { anchorProps } from "../field-anchor"
 
 /**
  * The billing address, shown only when it differs from the shipping address.
@@ -40,6 +43,20 @@ const BillingAddress = () => {
   const { dispatch } = useCheckoutActions()
   const { billingDraft } = state
 
+  /**
+   * Which billing inputs the refused CTA named.
+   *
+   * `billing_address_incomplete` expands to exactly the fields
+   * `missingBillingFields` reported, so the ringed inputs are the ones the
+   * composed message lists — the customer reads "falta ciudad y estado" and
+   * sees precisely those two lit up, rather than a nine-input form in red.
+   */
+  const isHighlighted = useCheckoutHighlight()
+  const anchor = (field: BillingRequiredField) => {
+    const key = `billing.${field}` as const
+    return anchorProps(key, isHighlighted(key))
+  }
+
   const handleChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>
   ) =>
@@ -59,6 +76,7 @@ const BillingAddress = () => {
         onChange={handleChange}
         required
         data-testid="billing-first-name-input"
+        {...anchor("first_name")}
       />
       <Input
         label="Apellido"
@@ -68,6 +86,7 @@ const BillingAddress = () => {
         onChange={handleChange}
         required
         data-testid="billing-last-name-input"
+        {...anchor("last_name")}
       />
       <Input
         label="Dirección"
@@ -77,6 +96,7 @@ const BillingAddress = () => {
         onChange={handleChange}
         required
         data-testid="billing-address-input"
+        {...anchor("address_1")}
       />
       <Input
         label="Empresa"
@@ -96,6 +116,7 @@ const BillingAddress = () => {
         onChange={handleChange}
         required
         data-testid="billing-postal-input"
+        {...anchor("postal_code")}
       />
       <Input
         label="Ciudad"
@@ -105,6 +126,7 @@ const BillingAddress = () => {
         onChange={handleChange}
         required
         data-testid="billing-city-input"
+        {...anchor("city")}
       />
       <CountrySelect
         name="billing_address.country_code"
@@ -114,6 +136,7 @@ const BillingAddress = () => {
         onChange={handleChange}
         required
         data-testid="billing-country-select"
+        {...anchor("country_code")}
       />
       {/*
        * `required`, and it was missing. Amendment A6's own motivation is that
@@ -131,6 +154,7 @@ const BillingAddress = () => {
         onChange={handleChange}
         required
         data-testid="billing-province-input"
+        {...anchor("province")}
       />
       <Input
         label="Teléfono"

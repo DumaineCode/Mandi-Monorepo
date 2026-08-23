@@ -110,6 +110,74 @@ module.exports = {
           from: { transform: "translateX(0)" },
           to: { transform: "translateX(-50%)" },
         },
+
+        // --- Payment status modal ------------------------------------------
+        //
+        // CSS keyframes over an animation library on purpose. The checkout is
+        // the highest-intent page in the funnel and `design.md` D1 already
+        // rejected a 13-40 kB state library for it; a Lottie runtime or
+        // framer-motion would cost more than both for four shapes that move.
+        // Every one of these degrades to a static frame under
+        // `motion-reduce:`, which the components apply.
+
+        /**
+         * The verdict marks — the cross and the check — arriving.
+         *
+         * Overshoots to 1.12 and settles. A linear scale-in reads as a shape
+         * being drawn; the overshoot reads as an answer landing, which is what
+         * this is. Deliberately short: it is in front of someone waiting to
+         * find out whether they have been charged.
+         */
+        "verdict-pop": {
+          "0%": { opacity: "0", transform: "scale(0.4)" },
+          "60%": { opacity: "1", transform: "scale(1.12)" },
+          "100%": { opacity: "1", transform: "scale(1)" },
+        },
+        /**
+         * A short lateral shake under the cross. Two cycles, six pixels — a
+         * rejection should register as a rejection without being punitive
+         * about it, and this runs at the moment someone has just been told
+         * their card did not work.
+         */
+        "verdict-shake": {
+          "0%, 100%": { transform: "translateX(0)" },
+          "20%": { transform: "translateX(-6px)" },
+          "40%": { transform: "translateX(5px)" },
+          "60%": { transform: "translateX(-3px)" },
+          "80%": { transform: "translateX(2px)" },
+        },
+        /**
+         * The parcel crossing its track on success.
+         *
+         * Ends at `translateX(0)` and holds — paired with `forwards`, so the
+         * box comes to rest under the check rather than snapping back to the
+         * start. The whole run has to fit inside the confirmation redirect,
+         * which `placeOrder` fires from the server action, so it is 900 ms and
+         * not the two seconds the gesture would like.
+         */
+        "parcel-travel": {
+          "0%": { opacity: "0", transform: "translateX(-140%)" },
+          "25%": { opacity: "1" },
+          "100%": { opacity: "1", transform: "translateX(0)" },
+        },
+        /**
+         * The expanding halo behind the processing icon. Fades as it grows so
+         * it reads as a pulse rather than a spinner: this state can last three
+         * seconds against a bank, and a spinner that long reads as stuck.
+         */
+        "pulse-halo": {
+          "0%": { opacity: "0.5", transform: "scale(0.85)" },
+          "100%": { opacity: "0", transform: "scale(1.6)" },
+        },
+        /**
+         * The dashed line the parcel travels along, drawn left to right.
+         * `stroke-dashoffset` on a plain `<hr>`-like element is not available,
+         * so this animates a background-size instead.
+         */
+        "track-draw": {
+          "0%": { backgroundSize: "0% 100%" },
+          "100%": { backgroundSize: "100% 100%" },
+        },
         ring: {
           "0%": { transform: "rotate(0deg)" },
           "100%": { transform: "rotate(360deg)" },
@@ -198,6 +266,21 @@ module.exports = {
       },
       animation: {
         marquee: "scrollx 30s linear infinite",
+
+        // --- Payment status modal ------------------------------------------
+        "verdict-pop":
+          "verdict-pop 420ms cubic-bezier(0.34, 1.56, 0.64, 1) both",
+        "verdict-shake": "verdict-shake 420ms ease-in-out 120ms both",
+        /**
+         * `both` + a delay so the parcel waits for the panel's own 300 ms
+         * entrance before it sets off. Without it the box is already halfway
+         * across before the dialog has finished scaling in, and the two
+         * motions fight.
+         */
+        "parcel-travel":
+          "parcel-travel 900ms cubic-bezier(0.22, 0.61, 0.36, 1) 120ms both",
+        "pulse-halo": "pulse-halo 1.6s cubic-bezier(0.4, 0, 0.6, 1) infinite",
+        "track-draw": "track-draw 900ms cubic-bezier(0.22, 0.61, 0.36, 1) 120ms both",
         ring: "ring 2.2s cubic-bezier(0.5, 0, 0.5, 1) infinite",
         "fade-in-right":
           "fade-in-right 0.3s cubic-bezier(0.5, 0, 0.5, 1) forwards",

@@ -15,8 +15,11 @@ import {
   selectShippingChoices,
   type ShippingChoice,
 } from "@modules/checkout/state/checkout-reducer"
+import { useCheckoutHighlight } from "@modules/checkout/state/use-checkout-highlight"
 import { Button, clx, Heading, Text } from "@modules/common/components/ui"
 import { useState } from "react"
+
+import { HIGHLIGHT_CLASS } from "../field-anchor"
 
 /**
  * "Envío" — the quotation lifecycle, rendered.
@@ -131,6 +134,7 @@ const ShippingSection = () => {
   const state = useCheckoutState()
   const { cart } = useCheckoutCart()
   const { dispatch, nextWriteSequence } = useCheckoutActions()
+  const isHighlighted = useCheckoutHighlight()
 
   /**
    * The clicked option, held only while its write is open.
@@ -209,7 +213,21 @@ const ShippingSection = () => {
 
   return (
     <section
-      className="rounded-large border border-line bg-paper p-6 small:p-8"
+      /*
+       * The whole SECTION is the anchor, not a single control.
+       *
+       * `shipping_method` and `shipping_method_stale` mean "pick one of these
+       * radios", and there is no one radio to ring — the customer's job is to
+       * choose, so what has to be pointed at is the choice. The section is also
+       * not focusable, which is deliberate: `place-order-focus` scrolls to it
+       * and leaves focus alone rather than stranding a keyboard user on a
+       * container that is not in the tab order.
+       */
+      className={clx(
+        "rounded-large border border-line bg-paper p-6 small:p-8",
+        isHighlighted("shipping_method") && HIGHLIGHT_CLASS
+      )}
+      data-checkout-anchor="shipping_method"
       data-testid="shipping-section"
     >
       <Heading

@@ -3,8 +3,10 @@ import {
   type CheckoutDraftAddress,
 } from "@lib/util/cart-address-payload"
 import {
+  getMissingFieldAnchors,
   getMissingOrderRequirements,
   toReadinessInput,
+  type CheckoutFieldAnchor,
   type MissingRequirement,
   type OrderReadinessInput,
   type ReadinessClientInput,
@@ -172,8 +174,57 @@ export type CheckoutState = {
    */
   placingOrder: boolean
 
+  /**
+   * How the LAST attempt ended, which is a different question from whether one
+   * is running.
+   *
+   * `placingOrder` alone cannot drive the payment modal, and the gap is not
+   * cosmetic. `PLACE_ORDER_SETTLED { error: null }` has two producers with
+   * opposite meanings: the flow settling a placed order, and `release()`
+   * handing the lock back after the customer pressed Back out of Mercado Pago
+   * without paying. Deriving "succeeded" from "not placing and no error" would
+   * congratulate the second one — a success animation, and then a checkout page
+   * still holding an unpaid cart.
+   *
+   * So success is stated, never inferred: only `PLACE_ORDER_SUCCEEDED` sets it.
+   *
+   * `"failed"` deliberately does NOT cover a refusal for missing data. That is
+   * {@link blockedAt}'s job, and the two must stay apart — see its docstring.
+   */
+  placeOrderOutcome: PlaceOrderOutcomeState
+
+  /**
+   * How many times the CTA has been pressed and refused for missing data.
+   *
+   * ## Why a counter and not a list of fields
+   *
+   * WHICH fields are missing is never stored, because a stored copy goes stale
+   * the moment the customer fixes one: they would fill in the phone and the ring
+   * would stay until they pressed the button again to be told the same thing.
+   * {@link selectHighlightedAnchors} recomputes from live state instead, so each
+   * ring clears itself as its field is filled and the highlight converges on
+   * what is genuinely left.
+   *
+   * This only records WHETHER to highlight at all — a pristine checkout must not
+   * open with half its form ringed in red before the customer has typed
+   * anything.
+   *
+   * ## Why a counter and not a boolean
+   *
+   * Pressing a refused CTA a second time has to scroll to the offending field
+   * again. A boolean is already `true`, so nothing changes, so the effect does
+   * not re-run — and on mobile, where the sticky bar is pinned over a form the
+   * customer has scrolled away from, that is a button that visibly does nothing.
+   */
+  blockedAt: number
+
   error: string | null
 }
+
+/**
+ * @see {@link CheckoutState.placeOrderOutcome}
+ */
+export type PlaceOrderOutcomeState = "none" | "failed" | "succeeded"
 
 export type CheckoutInit = {
   cart: HttpTypes.StoreCart | null
@@ -259,6 +310,41 @@ export type CheckoutAction =
        */
       error: string | null
     }
+  /**
+   * The order was completed. Distinct from `PLACE_ORDER_SETTLED { error: null }`
+   * because that action has a second producer — `release()` on a bfcache
+   * restore — that means the exact opposite. @see CheckoutState.placeOrderOutcome
+   */
+  | { type: "PLACE_ORDER_SUCCEEDED" }
+  /**
+   * Flow step 0 refused the press: the form on screen is incomplete.
+   *
+   * ## It carries no message, and that is the design
+   *
+   * Whatever step 0 would say is `getMissingOrderRequirements`' first entry —
+   * the exact string `MissingItemsList` is ALREADY rendering under the CTA,
+   * from the same catalogue, recomputed live. Putting a copy into `state.error`
+   * printed the same sentence twice on one screen, once in the list and once in
+   * red beneath the button.
+   *
+   * So this action says only THAT a refusal happened. The explanation is the
+   * list (what), the ring (where) and the scroll (take me there), all three
+   * derived from live state so they correct themselves as the customer types.
+   *
+   * It is also why this is not `PLACE_ORDER_SETTLED`: a refusal is not a failed
+   * payment. No card was touched, and raising the payment modal would cover the
+   * very field the customer has to go and fix.
+   */
+  | { type: "PLACE_ORDER_BLOCKED" }
+  /**
+   * The customer closed the payment modal after a failure.
+   *
+   * Clears the message with it. The modal is the ONLY thing that renders
+   * `state.error` — the red line under the CTA that used to be its second home
+   * is gone — so a message left behind here would be state nothing can observe,
+   * waiting to be resurrected by the next reader who assumes it means something.
+   */
+  | { type: "PLACE_ORDER_DISMISSED" }
   | { type: "SET_ERROR"; error: string | null }
 
 const draftFromAddress = (
@@ -490,6 +576,32 @@ export function initFromServer(init: CheckoutInit): CheckoutState {
     selectedPaymentProviderId: null,
     paymentDetailsComplete: false,
     placingOrder: false,
+
+    /**
+     * ## A checkout can be ENTERED already carrying a verdict
+     *
+     * `?error=payment_failed` is set by both payment-return routes — a declined
+     * 3DS challenge, or a Mercado Pago checkout abandoned without paying — and
+     * `selectCheckoutEntryError` turns it into `init.error`.
+     *
+     * That message used to be rendered by the red line under the CTA, which was
+     * its only home. With that line gone the modal is the only renderer of
+     * `state.error`, so seeding the outcome is what keeps the message reachable
+     * at all — and it is a better home for it anyway. The customer arrives on a
+     * page that otherwise looks pristine, and the failure mode this whole
+     * parameter exists to prevent is precisely that they read the page as "my
+     * click didn't register" and try again, taking a SECOND authorization hold.
+     * A dialog is hard to read that way.
+     */
+    placeOrderOutcome: init.error ? "failed" : "none",
+
+    /**
+     * Zero even when `init.error` is set. A customer returning from a declined
+     * 3DS challenge has a message to read, but nothing on the form is known to
+     * be wrong — opening their checkout with the address block ringed in red
+     * would blame fields the bank never complained about.
+     */
+    blockedAt: 0,
 
     /**
      * Normally `null`. Non-null only when the customer arrived from a failed
@@ -891,10 +1003,72 @@ export function checkoutReducer(
      * attempt is the total-change guard, which is not a failure at all.
      */
     case "PLACE_ORDER_STARTED":
-      return { ...state, placingOrder: true, error: null }
+      return {
+        ...state,
+        placingOrder: true,
+        error: null,
+        /**
+         * The previous outcome is cleared with the previous error, and for the
+         * same reason: a `"failed"` left over from the last attempt would put
+         * the modal into its rejection state the instant it opens, so the
+         * customer would watch a red cross for a frame before the spinner —
+         * reading, correctly, as if the new attempt had already been refused.
+         */
+        placeOrderOutcome: "none",
+      }
 
     case "PLACE_ORDER_SETTLED":
-      return { ...state, placingOrder: false, error: action.error }
+      return {
+        ...state,
+        placingOrder: false,
+        error: action.error,
+        /**
+         * Never `"succeeded"` here, whatever `error` says. This action's
+         * no-error case is also how `release()` hands the lock back after the
+         * customer returned from Mercado Pago WITHOUT paying.
+         */
+        placeOrderOutcome: action.error ? "failed" : "none",
+      }
+
+    case "PLACE_ORDER_SUCCEEDED":
+      return {
+        ...state,
+        placingOrder: false,
+        error: null,
+        placeOrderOutcome: "succeeded",
+      }
+
+    /**
+     * `placeOrderOutcome` stays `"none"`: a refusal is not a failed payment.
+     * Raising the modal here would put a rejection animation in front of a
+     * customer whose card was never touched, and would cover the very field
+     * `blockedAt` is about to ring.
+     *
+     * `error` is CLEARED rather than set. The reason is already on screen, in
+     * the itemized list, from the same catalogue — and a decline left over from
+     * a previous attempt must not survive into a refusal that has nothing to do
+     * with it.
+     */
+    case "PLACE_ORDER_BLOCKED":
+      return {
+        ...state,
+        placingOrder: false,
+        error: null,
+        placeOrderOutcome: "none",
+        blockedAt: state.blockedAt + 1,
+      }
+
+    /**
+     * Closes the modal and clears the message with it, because the modal is now
+     * the only thing that renders one.
+     *
+     * Ignored while an attempt is running, so a stray dismissal cannot hide a
+     * live charge behind a checkout that looks idle.
+     */
+    case "PLACE_ORDER_DISMISSED":
+      return state.placingOrder
+        ? state
+        : { ...state, placeOrderOutcome: "none", error: null }
 
     case "SET_ERROR":
       return { ...state, error: action.error }
@@ -1319,12 +1493,47 @@ export type PlaceOrderView = {
    * fix instead of the next one — left the whole suite green.
    */
   firstMissing: MissingRequirement | null
-  /** The `disabled` attribute for BOTH CTA variants. */
+  /**
+   * The `disabled` attribute for BOTH CTA variants — an attempt already in
+   * flight, and NOTHING else.
+   *
+   * ## Missing data no longer disables this button, and that is the change
+   *
+   * It used to be `missing.length > 0 || placingOrder`, which is the shape every
+   * checkout starter ships and the shape that loses orders. A greyed-out button
+   * states that the order cannot be placed and declines to say why; the
+   * customer's next move is to hunt the form for whatever is wrong, and the
+   * itemized list under the CTA only helps the ones who scroll far enough to
+   * read it. On mobile, where the sticky bar pins the CTA over a form the
+   * customer has scrolled past, the list is frequently off screen entirely.
+   *
+   * A live button turns that into a question with an answer. The press is
+   * refused — by flow step 0, which was ALREADY re-checking every condition
+   * defensively and returning `blocked`, so nothing new guards the money — and
+   * the refusal scrolls to the first offending control and rings it. The
+   * customer is taken to the fix instead of being told to go find it.
+   *
+   * The `placingOrder` term stays. It is not an explanation the customer needs;
+   * it is the affordance for work already underway, and the modal covers the
+   * button anyway. Re-entrancy remains the flow's synchronous closure flag —
+   * this prop lags a commit and never was the guard.
+   */
   disabled: boolean
+  /**
+   * The controls to ring, empty until the CTA has actually been refused.
+   *
+   * @see {@link selectHighlightedAnchors}
+   */
+  highlighted: readonly CheckoutFieldAnchor[]
+  /**
+   * Bumped on every refusal, so the scroll effect re-runs when the customer
+   * presses a refused button twice. @see {@link CheckoutState.blockedAt}
+   */
+  blockedAt: number
+  /** What the payment modal is showing. @see {@link selectPaymentModalPhase} */
+  phase: PaymentModalPhase
   /** An attempt is in flight — the button's loading affordance. */
   placing: boolean
-  /** The inline message under the CTA. */
-  error: string | null
   /** `cart.total`, the field `CartTotals` renders. `null` before the cart resolves. */
   total: number | null
   currencyCode: string
@@ -1362,14 +1571,26 @@ export type PlaceOrderView = {
  * reaches the button through a ref that lags by one commit.
  */
 export function selectPlaceOrderView(state: CheckoutState): PlaceOrderView {
-  const missing = getMissingOrderRequirements(selectReadinessInput(state))
+  const input = selectReadinessInput(state)
+  const missing = getMissingOrderRequirements(input)
 
   return {
     missing,
     firstMissing: missing[0] ?? null,
-    disabled: missing.length > 0 || state.placingOrder,
+    disabled: state.placingOrder,
+    highlighted: selectHighlightedAnchors(state),
+    blockedAt: state.blockedAt,
+    phase: selectPaymentModalPhase(state),
     placing: state.placingOrder,
-    error: state.error,
+    /**
+     * No `error` field. It existed for the red line under the CTA, and that
+     * line is gone: every message `state.error` can hold is now rendered by the
+     * payment modal, which reads the state directly.
+     *
+     * Leaving it here as an unread field is the shape that produced
+     * `firstMissingMessage` — a view property with no consumer, guarded by
+     * tests, while the live rule sat in a `.tsx` nothing could contradict.
+     */
     total: state.cart?.total ?? null,
     /**
      * `"mxn"` and not `""`: `convertToLocale` falls back to a BARE NUMBER when
@@ -1444,5 +1665,140 @@ export function selectReadinessClientInput(
 export function selectReadinessInput(
   state: CheckoutState
 ): OrderReadinessInput {
-  return toReadinessInput(state.cart, selectReadinessClientInput(state))
+  return {
+    ...toReadinessInput(state.cart, selectReadinessClientInput(state)),
+    /**
+     * ## The address comes from the DRAFT now, and this is a correction
+     *
+     * `toReadinessInput` reads `cart.shipping_address`, and the docstring above
+     * defends that: the cart is what gets ordered, so an unpersisted field is
+     * genuinely not ready, and a 400 ms debounce keeps the lag short.
+     *
+     * That reasoning was sound while it was gating a DISABLED button. It
+     * inverts now that the button is live. The customer who fills the last
+     * field and clicks inside the debounce window — the ordinary sequence, not
+     * a race — reaches step 0 with a cart that has not caught up, and is
+     * refused with `Completa tu dirección de envío.` pointing at a form that is
+     * visibly complete. Under the old shape they were merely blocked for a few
+     * hundred milliseconds; under the new one they get an accusation they can
+     * disprove by looking at the screen, which reads as the site being broken.
+     *
+     * The draft is what the customer can see, so the draft is what may be used
+     * to contradict them.
+     *
+     * ## Nothing about the money moved
+     *
+     * The draft is also exactly what step 2 WRITES, so agreeing with it does not
+     * let anything unpersisted through — it lets the flow reach the write that
+     * persists it. Step 3.5 then re-runs the identical catalogue against the
+     * cart the write actually returned, and that check still uses
+     * `toReadinessInput` unchanged, so the guarantee "no order is placed against
+     * an address the catalogue rejects" is enforced where it always was: after
+     * the write, against the server's copy.
+     *
+     * This also closes the inversion `toReadinessInput`'s own docstring records
+     * as open — a customer EMPTYING a field the cart still holds was reported
+     * ready, because the stale cart was the thing being asked.
+     *
+     * Only the address and email move. `itemCount` and `hasShippingMethod` stay
+     * cart-derived: they are facts about the server's state that no draft has an
+     * opinion about.
+     */
+    email: state.email,
+    shippingAddress: state.draft,
+  }
+}
+
+/**
+ * WHICH controls to ring, recomputed from live state on every render.
+ *
+ * ## Nothing is remembered, deliberately
+ *
+ * The obvious implementation stores the offending fields when the CTA is
+ * refused. It is wrong in the direction that annoys people: the customer types
+ * the missing phone number and the ring stays, because the snapshot was taken
+ * before they fixed it, and it will keep staying until they press the button to
+ * be told the same thing again. Recomputing means each ring disappears the
+ * moment its own field is satisfied, and the highlight narrows toward whatever
+ * is genuinely left.
+ *
+ * `blockedAt` therefore gates WHETHER to highlight, never WHAT. Before the first
+ * refusal this is empty regardless of how incomplete the form is — a checkout
+ * that opens with six inputs already in red has told the customer they are
+ * failing before they have started.
+ *
+ * @see {@link getMissingFieldAnchors} — the expansion from codes to controls.
+ */
+export function selectHighlightedAnchors(
+  state: CheckoutState
+): readonly CheckoutFieldAnchor[] {
+  return state.blockedAt === 0
+    ? EMPTY_ANCHORS
+    : getMissingFieldAnchors(selectReadinessInput(state))
+}
+
+/**
+ * The single control to take the customer to when the CTA is refused.
+ *
+ * The FIRST anchor, because `getMissingFieldAnchors` runs in catalogue order
+ * and the catalogue is ordered by page position — so the first entry is the
+ * next thing to fix going down the form, and it is the same entry the sticky
+ * bar's one-line message is already naming. Scrolling anywhere else sends the
+ * customer past work they still have to do, to fix something out of order.
+ *
+ * Exported rather than inlined into the effect that uses it: that effect lives
+ * in a `.tsx` this repo's node-only runner cannot load, and "which field do we
+ * jump to" is a rule, not wiring.
+ */
+export function selectFocusAnchor(
+  state: CheckoutState
+): CheckoutFieldAnchor | null {
+  return selectHighlightedAnchors(state)[0] ?? null
+}
+
+/**
+ * A stable identity for "nothing to highlight".
+ *
+ * Every field component subscribes to this list, and `selectHighlightedAnchors`
+ * runs on every render of every one of them. A fresh `[]` each time is a fresh
+ * identity each time, which defeats any memoisation a consumer puts on it — on
+ * the page whose docstrings already record two separate re-render incidents.
+ */
+const EMPTY_ANCHORS: readonly CheckoutFieldAnchor[] = []
+
+/** What the payment modal is showing. @see {@link selectPaymentModalPhase} */
+export type PaymentModalPhase = "hidden" | "processing" | "failed" | "succeeded"
+
+/**
+ * The payment modal's entire state, derived — the modal itself holds none.
+ *
+ * ## `processing` outranks everything, including a failure
+ *
+ * A retry dispatches `PLACE_ORDER_STARTED`, which clears both the error and the
+ * outcome, so the ordering below is belt and braces rather than load-bearing.
+ * It is stated anyway because the failure mode it prevents is the expensive
+ * one: a modal that shows "rejected" while a charge is in flight invites the
+ * customer to close it and try a second card, and on Openpay a second attempt
+ * is a second authorization hold — real money frozen on a Mexican debit card.
+ * If those two facts ever disagree, the safe reading is that something is
+ * happening.
+ *
+ * ## A refusal for missing data is `hidden`
+ *
+ * `PLACE_ORDER_BLOCKED` sets `error` and leaves `placeOrderOutcome` at `"none"`,
+ * so it lands here as `hidden` — by construction, not by a case below. The
+ * customer is one field away from paying and the answer is on the form behind
+ * this dialog; covering it with a modal they must dismiss to reach the fix adds
+ * a click and explains nothing the inline message did not.
+ */
+export function selectPaymentModalPhase(
+  state: CheckoutState
+): PaymentModalPhase {
+  if (state.placingOrder) {
+    return "processing"
+  }
+
+  return state.placeOrderOutcome === "none"
+    ? "hidden"
+    : state.placeOrderOutcome
 }

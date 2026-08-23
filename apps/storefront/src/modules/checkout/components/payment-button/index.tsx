@@ -88,9 +88,23 @@ const PlaceOrderButton = ({
       size="large"
       className={clx(CORAL_CTA, className)}
       /**
-       * `disabled` alone — no `aria-disabled` beside it. The pair is redundant,
-       * and the reason the button will not move is announced by the
-       * `role="status"` list rendered outside it (D9).
+       * `disabled` now means ONE thing: an attempt is already in flight.
+       *
+       * It used to also mean "something is missing", and that is the behaviour
+       * this removes. A greyed-out purchase button asserts that the order
+       * cannot be placed and then declines to explain itself; the itemized list
+       * beside it only helps a customer who has it on screen, which on mobile —
+       * sticky bar pinned over a form scrolled well past — is often not the
+       * case. Pressing now produces an answer: step 0 refuses, the offending
+       * control is scrolled to and ringed, and the sentence appears below.
+       *
+       * Nothing that guards the money moved. Step 0 was ALREADY re-checking
+       * every one of those conditions, precisely because a `disabled` attribute
+       * is a UI affordance and not a lock — a stale render, an Enter key or a
+       * devtools edit all reach the flow regardless.
+       *
+       * No `aria-disabled` beside it: the pair is redundant, and while an
+       * attempt is running the modal is over the button anyway.
        */
       disabled={disabled}
       isLoading={isPlacing}

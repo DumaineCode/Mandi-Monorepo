@@ -11,9 +11,12 @@ import {
   useCheckoutState,
 } from "@modules/checkout/state/checkout-context"
 import type { AddressField } from "@modules/checkout/state/checkout-reducer"
+import { useCheckoutHighlight } from "@modules/checkout/state/use-checkout-highlight"
+import type { BillingRequiredField } from "@lib/util/checkout-readiness"
 import React, { useMemo } from "react"
 import AddressSelect from "../address-select"
 import CountrySelect from "../country-select"
+import { anchorProps } from "../field-anchor"
 
 /** Sentinel option value that switches the colonia dropdown to free text. */
 const COLONIA_OTHER = "__other__"
@@ -98,6 +101,17 @@ const ShippingAddress = ({
 
   const showColoniaSelect = colonias.length > 0 && !coloniaManual
 
+  /**
+   * Which of these controls the refused CTA is complaining about.
+   *
+   * Empty until the customer has actually pressed and been refused, so a
+   * pristine form is never opened with six inputs already ringed in red. See
+   * `selectHighlightedAnchors`.
+   */
+  const isHighlighted = useCheckoutHighlight()
+  const anchor = (field: `shipping.${BillingRequiredField}` | "email" | "phone" | "colonia") =>
+    anchorProps(field, isHighlighted(field))
+
   return (
     <>
       {customer && (addressesInRegion?.length || 0) > 0 && (
@@ -130,6 +144,7 @@ const ShippingAddress = ({
           onBlur={handleBlur}
           required
           data-testid="shipping-first-name-input"
+          {...anchor("shipping.first_name")}
         />
         <Input
           label="Apellido"
@@ -140,6 +155,7 @@ const ShippingAddress = ({
           onBlur={handleBlur}
           required
           data-testid="shipping-last-name-input"
+          {...anchor("shipping.last_name")}
         />
         <Input
           label="Dirección"
@@ -150,6 +166,7 @@ const ShippingAddress = ({
           onBlur={handleBlur}
           required
           data-testid="shipping-address-input"
+          {...anchor("shipping.address_1")}
         />
         <Input
           label="Empresa"
@@ -172,6 +189,7 @@ const ShippingAddress = ({
           onBlur={handleBlur}
           required
           data-testid="shipping-postal-code-input"
+          {...anchor("shipping.postal_code")}
         />
         <div className="flex flex-col w-full">
           {showColoniaSelect ? (
@@ -189,6 +207,7 @@ const ShippingAddress = ({
               }}
               required
               data-testid="shipping-address-2-select"
+              {...anchor("colonia")}
             >
               {colonias.map((colonia) => (
                 <option key={colonia} value={colonia}>
@@ -207,6 +226,7 @@ const ShippingAddress = ({
               onBlur={handleBlur}
               required
               data-testid="shipping-address-2-input"
+              {...anchor("colonia")}
             />
           )}
           {cpStatus === "loading" && (
@@ -229,6 +249,7 @@ const ShippingAddress = ({
           onBlur={handleBlur}
           required
           data-testid="shipping-city-input"
+          {...anchor("shipping.city")}
         />
         <Input
           label="Estado / Provincia"
@@ -239,6 +260,7 @@ const ShippingAddress = ({
           onBlur={handleBlur}
           required
           data-testid="shipping-province-input"
+          {...anchor("shipping.province")}
         />
         <CountrySelect
           name="shipping_address.country_code"
@@ -251,6 +273,7 @@ const ShippingAddress = ({
           }}
           required
           data-testid="shipping-country-select"
+          {...anchor("shipping.country_code")}
         />
       </div>
       <div className="my-8">
@@ -274,6 +297,7 @@ const ShippingAddress = ({
           onBlur={handleBlur}
           required
           data-testid="shipping-email-input"
+          {...anchor("email")}
         />
         {/*
          * Required: Skydropx PRO marks `phone` as Required on `address_to` for
@@ -297,6 +321,7 @@ const ShippingAddress = ({
           onBlur={handleBlur}
           required
           data-testid="shipping-phone-input"
+          {...anchor("phone")}
         />
       </div>
     </>

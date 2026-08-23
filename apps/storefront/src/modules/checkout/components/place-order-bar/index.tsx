@@ -1,7 +1,6 @@
 "use client"
 
 import { convertToLocale } from "@lib/util/money"
-import ErrorMessage from "@modules/checkout/components/error-message"
 import MissingItemsList from "@modules/checkout/components/missing-items-list"
 import PlaceOrderButton from "@modules/checkout/components/payment-button"
 import { useCheckoutState } from "@modules/checkout/state/checkout-context"
@@ -47,13 +46,21 @@ const PlaceOrderBar = ({ variant }: { variant: "inline" | "sticky" }) => {
          * The BUTTON is desktop-only. Below `small` the sticky bar is the CTA,
          * and two `Realizar pedido` buttons on one screen would contradict S2.
          */}
-        <div className="hidden small:block">
-          {button}
-          <ErrorMessage
-            error={view.error}
-            data-testid="place-order-error-message"
-          />
-        </div>
+        {/*
+         * No `ErrorMessage` beside the button any more, in either variant.
+         *
+         * Every message `state.error` can hold is a PAYMENT verdict — a
+         * decline, a total that moved, a return from a failed 3DS — and the
+         * payment modal renders all of them. Keeping the red line meant the
+         * customer read the same sentence twice: once in the dialog, and again
+         * underneath the button when they dismissed it.
+         *
+         * The other thing it used to carry, step 0's refusal, was a duplicate
+         * of a different kind: that string is the first entry of the itemized
+         * list rendered two elements below, from the same catalogue. It is now
+         * not written to `state.error` at all.
+         */}
+        <div className="hidden small:block">{button}</div>
 
         {/*
          * EVERY unmet requirement, in catalogue order (2c.15) — at EVERY
@@ -139,11 +146,6 @@ const PlaceOrderBar = ({ variant }: { variant: "inline" | "sticky" }) => {
        * how one condition acquires two vocabularies.
        */}
       {button}
-
-      <ErrorMessage
-        error={view.error}
-        data-testid="place-order-sticky-error-message"
-      />
 
       {/*
        * ONE line, not the whole list (D9): a fixed bar on a small viewport

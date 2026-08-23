@@ -5,6 +5,7 @@ import {
   billingDraftIsComplete,
   buildBillingIncompleteMessage,
   canPlaceOrder,
+  getMissingFieldAnchors,
   getMissingOrderRequirements,
   isOpenpayOffered,
   isOpenpayProviderId,
@@ -1920,4 +1921,206 @@ describe("canPlaceOrder", () => {
       )
     }
   )
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * `getMissingFieldAnchors` — the same catalogue, addressed rather than worded
+ * ---------------------------------------------------------------------------
+ *
+ * The CTA is no longer disabled when something is missing; it refuses, and the
+ * refusal has to take the customer somewhere. These anchors are that
+ * destination — they are queried by `place-order-focus` to scroll and focus,
+ * and matched by `useCheckoutHighlight` to ring.
+ *
+ * The property under test throughout is AGREEMENT with the message catalogue.
+ * A ring around a field the sentence does not mention, or a sentence with no
+ * ring, is a disagreement the customer can see and cannot resolve — they can
+ * only conclude the form is broken.
+ */
+describe("getMissingFieldAnchors", () => {
+  const anchors = (value: OrderReadinessInput) => getMissingFieldAnchors(value)
+
+  it("returns nothing for a cart that is ready", () => {
+    expect(anchors(input())).toEqual([])
+  })
+
+  /**
+   * The single-control codes point at the single control. `phone` and `colonia`
+   * exist as separate codes precisely so the customer is told which one input
+   * to fix rather than being sent to re-read a correct address — the anchors
+   * have to keep that promise or the split bought nothing.
+   */
+  it("points single-field codes at their own control", () => {
+    expect(anchors(input({ email: "" }))).toContain("email")
+    expect(anchors(withAddress({ phone: "" }))).toContain("phone")
+    expect(anchors(withAddress({ address_2: "" }))).toContain("colonia")
+  })
+
+  /**
+   * ## The one place the anchors are deliberately MORE specific than the message
+   *
+   * `shipping_address` is one sentence — "Completa tu dirección de envío." —
+   * because seven field names in a sentence is a wall rather than help. Ringing
+   * the whole block would have the opposite problem: it tells the customer to
+   * re-read six fields that are already correct.
+   *
+   * So the code expands, and only to the fields that are actually absent.
+   */
+  it("expands the address code to the absent fields only", () => {
+    const result = anchors(withAddress({ city: "", province: "" }))
+
+    expect(result).toEqual(["shipping.city", "shipping.province"])
+    expect(result).not.toContain("shipping.first_name")
+    expect(result).not.toContain("shipping.address_1")
+  })
+
+  /**
+   * `phone` and `address_2` have their own codes and must NOT be swept into the
+   * address expansion — that would ring them twice and, worse, would ring them
+   * under a sentence that does not name them.
+   */
+  it("keeps phone and colonia out of the address expansion", () => {
+    const result = anchors(withAddress({ first_name: "", phone: "" }))
+
+    expect(result).toEqual(["phone", "shipping.first_name"])
+  })
+
+  /**
+   * The two billing codes are mutually exclusive and mean different things.
+   * `billing_address` is "nothing has been typed", so singling out a field
+   * would be arbitrary and every input is named. `billing_address_incomplete`
+   * names a subset, and the anchors have to be exactly that subset — the
+   * customer reads "falta ciudad y estado" and must see those two lit up, not a
+   * seven-input form in red.
+   */
+  it("rings the whole billing form only when nothing has been typed", () => {
+    const untouched = anchors(
+      input({ hasBillingAddress: false, billingMissingFields: undefined })
+    )
+
+    expect(untouched).toEqual([
+      "billing.first_name",
+      "billing.last_name",
+      "billing.address_1",
+      "billing.postal_code",
+      "billing.city",
+      "billing.province",
+      "billing.country_code",
+    ])
+  })
+
+  it("rings only the named billing fields when some were typed", () => {
+    const partial = anchors(
+      input({
+        hasBillingAddress: false,
+        billingMissingFields: ["city", "province"],
+      })
+    )
+
+    expect(partial).toEqual(["billing.city", "billing.province"])
+  })
+
+  /**
+   * Both shipping-method codes share one anchor. They are different sentences —
+   * "elige un método" versus "vuelve a elegirlo, cambiaste el CP" — but the same
+   * destination, because in both cases the customer's job is to pick a radio in
+   * the same section.
+   */
+  it("sends both shipping-method codes to the same section", () => {
+    expect(anchors(input({ hasShippingMethod: false }))).toEqual([
+      "shipping_method",
+    ])
+    expect(
+      anchors(
+        input({
+          selectionSignature: "old",
+          currentQuoteSignature: "new",
+        })
+      )
+    ).toEqual(["shipping_method"])
+  })
+
+  it("addresses the payment codes", () => {
+    expect(anchors(input({ selectedPaymentProviderId: null }))).toEqual([
+      "payment_method",
+    ])
+    expect(
+      anchors(
+        input({
+          selectedPaymentProviderId: "pp_openpay_openpay",
+          paymentDetailsComplete: false,
+        })
+      )
+    ).toEqual(["card_details"])
+  })
+
+  /**
+   * `cart_empty` short-circuits the catalogue, and the anchors have to
+   * short-circuit with it. Ringing a phone field on a checkout whose cart is
+   * empty is noise dressed up as help.
+   */
+  it("short-circuits on an empty cart, like the catalogue does", () => {
+    expect(anchors(input({ itemCount: 0, email: "", hasShippingMethod: false })))
+      .toEqual(["cart"])
+  })
+
+  /**
+   * ## The invariant that keeps the ring and the sentence honest
+   *
+   * Derived from `getMissingOrderRequirements` rather than re-deciding the
+   * conditions, so the two can never disagree about WHETHER something is
+   * missing. Asserted as a property over a spread of broken carts, because the
+   * failure mode is a code somebody adds to the catalogue and forgets to give a
+   * destination — which produces a sentence the customer cannot act on.
+   */
+  it("produces an anchor for every code, and none without one", () => {
+    const scenarios: OrderReadinessInput[] = [
+      input({ email: "" }),
+      withAddress({ phone: "" }),
+      withAddress({ address_2: "" }),
+      withAddress({ first_name: "", city: "" }),
+      input({ hasBillingAddress: false }),
+      input({ hasBillingAddress: false, billingMissingFields: ["city"] }),
+      input({ hasShippingMethod: false }),
+      input({ selectionSignature: "old", currentQuoteSignature: "new" }),
+      input({ selectedPaymentProviderId: null }),
+      input({
+        selectedPaymentProviderId: "pp_openpay_openpay",
+        paymentDetailsComplete: false,
+      }),
+      input({ itemCount: 0 }),
+    ]
+
+    for (const scenario of scenarios) {
+      const missing = getMissingOrderRequirements(scenario)
+      const destinations = getMissingFieldAnchors(scenario)
+
+      expect(missing.length).toBeGreaterThan(0)
+      expect(destinations.length).toBeGreaterThan(0)
+    }
+  })
+
+  /**
+   * Order is the catalogue's, which is page position — so the FIRST anchor is
+   * the first thing to fix going down the form. `selectFocusAnchor` scrolls to
+   * exactly this one, and scrolling to any other sends the customer past work
+   * they still have to do.
+   */
+  it("runs in catalogue order, so the first entry is the next fix", () => {
+    const result = anchors(
+      input({
+        email: "",
+        shippingAddress: { ...READY.shippingAddress, phone: "", city: "" },
+        selectedPaymentProviderId: null,
+      })
+    )
+
+    expect(result).toEqual([
+      "email",
+      "phone",
+      "shipping.city",
+      "payment_method",
+    ])
+  })
 })

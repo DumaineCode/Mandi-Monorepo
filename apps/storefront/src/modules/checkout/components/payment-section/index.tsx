@@ -11,8 +11,11 @@ import {
   useCheckoutActions,
   useCheckoutState,
 } from "@modules/checkout/state/checkout-context"
-import { Heading, Text } from "@modules/common/components/ui"
+import { useCheckoutHighlight } from "@modules/checkout/state/use-checkout-highlight"
+import { clx, Heading, Text } from "@modules/common/components/ui"
 import { useCallback, useState } from "react"
+
+import { HIGHLIGHT_CLASS } from "../field-anchor"
 
 /**
  * "Pago" — the payment method, chosen without touching the network (task 2c.1).
@@ -61,6 +64,7 @@ const PaymentSection = ({
   availablePaymentMethods: HttpTypes.StorePaymentProvider[]
 }) => {
   const state = useCheckoutState()
+  const isHighlighted = useCheckoutHighlight()
   const { dispatch } = useCheckoutActions()
 
   /**
@@ -95,7 +99,28 @@ const PaymentSection = ({
 
   return (
     <section
-      className="rounded-large border border-line bg-paper p-6 small:p-8"
+      /*
+       * Two anchors on one element, and they are genuinely different
+       * complaints: `payment_method` is "you have not chosen how to pay" and
+       * `card_details` is "the card form is incomplete". They share a target
+       * because the card fields render INSIDE the selected method's row, so
+       * both land the customer in the same place — but the codes stay separate
+       * upstream so the sentence they read is the right one.
+       *
+       * `data-checkout-anchor` can only hold one value, and it holds whichever
+       * of the two is currently being complained about. `payment_method` first:
+       * it is the earlier code in the catalogue and the two are mutually
+       * exclusive anyway — there are no card details to complete until a method
+       * is chosen.
+       */
+      className={clx(
+        "rounded-large border border-line bg-paper p-6 small:p-8",
+        (isHighlighted("payment_method") || isHighlighted("card_details")) &&
+          HIGHLIGHT_CLASS
+      )}
+      data-checkout-anchor={
+        isHighlighted("card_details") ? "card_details" : "payment_method"
+      }
       data-testid="payment-section"
     >
       <Heading

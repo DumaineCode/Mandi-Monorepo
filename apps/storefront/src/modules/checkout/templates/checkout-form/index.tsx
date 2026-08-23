@@ -5,7 +5,9 @@ import CheckoutUnavailable from "@modules/checkout/components/checkout-unavailab
 import ContactAddressSection from "@modules/checkout/components/contact-address-section"
 import LegalNotice from "@modules/checkout/components/legal-notice"
 import PaymentSection from "@modules/checkout/components/payment-section"
+import PaymentStatusModal from "@modules/checkout/components/payment-status-modal"
 import PlaceOrderBar from "@modules/checkout/components/place-order-bar"
+import PlaceOrderFocus from "@modules/checkout/components/place-order-focus"
 import ShippingSection from "@modules/checkout/components/shipping-section"
 import { useCheckoutCart } from "@modules/checkout/state/checkout-context"
 import { Text } from "@modules/common/components/ui"
@@ -139,11 +141,22 @@ export default function CheckoutForm({
       {/*
        * The CTA renders unconditionally, INCLUDING when the payment list could
        * not be fetched. A checkout that hides its purchase button leaves the
-       * customer with nothing to read; one that shows it disabled beside `Elige
-       * un método de pago.` has told them exactly where they are.
+       * customer with nothing to read; one that shows it live beside `Elige un
+       * método de pago.` — and rings the Pago section when they press it — has
+       * told them exactly where they are.
        */}
       <PlaceOrderBar variant="inline" />
       <PlaceOrderBar variant="sticky" />
+
+      {/*
+       * Both render nothing. They are mounted HERE, once, rather than inside
+       * `PlaceOrderBar` — which renders twice, at every viewport, because only
+       * its CSS differs between variants. Two copies of the scroll effect would
+       * race each other on every refusal, and two modals would mount two
+       * dialogs over the same state.
+       */}
+      <PlaceOrderFocus />
+      <PaymentStatusModal />
     </div>
   )
 }
