@@ -7,9 +7,8 @@ import {
 import useToggleState from "@lib/hooks/use-toggle-state"
 import { PencilSquare as Edit, Trash } from "@medusajs/icons"
 import { HttpTypes } from "@medusajs/types"
-import CountrySelect from "@modules/checkout/components/country-select"
 import { SubmitButton } from "@modules/checkout/components/submit-button"
-import Input from "@modules/common/components/input"
+import AddressForm from "@modules/account/components/address-form"
 import Modal from "@modules/common/components/modal"
 import { Button, Heading, Text, clx } from "@modules/common/components/ui"
 import Spinner from "@modules/common/icons/spinner"
@@ -136,94 +135,23 @@ const EditAddress: React.FC<EditAddressProps> = ({
         <form action={formAction}>
           <input type="hidden" name="addressId" value={address.id} />
           <Modal.Body>
-            <div className="grid w-full grid-cols-1 gap-y-3">
-              <div className="grid grid-cols-1 gap-3 xsmall:grid-cols-2">
-                <Input
-                  label="Nombre"
-                  name="first_name"
-                  required
-                  autoComplete="given-name"
-                  defaultValue={address.first_name || undefined}
-                  data-testid="first-name-input"
-                />
-                <Input
-                  label="Apellidos"
-                  name="last_name"
-                  required
-                  autoComplete="family-name"
-                  defaultValue={address.last_name || undefined}
-                  data-testid="last-name-input"
-                />
-              </div>
-              <Input
-                label="Empresa (opcional)"
-                name="company"
-                autoComplete="organization"
-                defaultValue={address.company || undefined}
-                data-testid="company-input"
-              />
-              <Input
-                label="Calle y número"
-                name="address_1"
-                required
-                autoComplete="address-line1"
-                defaultValue={address.address_1 || undefined}
-                data-testid="address-1-input"
-              />
-              <Input
-                label="Interior, departamento, etc. (opcional)"
-                name="address_2"
-                autoComplete="address-line2"
-                defaultValue={address.address_2 || undefined}
-                data-testid="address-2-input"
-              />
-              <div className="grid grid-cols-1 gap-3 xsmall:grid-cols-[144px_1fr]">
-                <Input
-                  label="Código postal"
-                  name="postal_code"
-                  required
-                  autoComplete="postal-code"
-                  defaultValue={address.postal_code || undefined}
-                  data-testid="postal-code-input"
-                />
-                <Input
-                  label="Ciudad"
-                  name="city"
-                  required
-                  autoComplete="locality"
-                  defaultValue={address.city || undefined}
-                  data-testid="city-input"
-                />
-              </div>
-              <Input
-                label="Estado"
-                name="province"
-                autoComplete="address-level1"
-                defaultValue={address.province || undefined}
-                data-testid="state-input"
-              />
-              <CountrySelect
-                name="country_code"
-                region={region}
-                required
-                autoComplete="country"
-                defaultValue={address.country_code || undefined}
-                data-testid="country-select"
-              />
-              <Input
-                label="Teléfono"
-                name="phone"
-                type="tel"
-                autoComplete="tel"
-                defaultValue={address.phone || undefined}
-                data-testid="phone-input"
-              />
+            {/*
+             * `Modal.Body` is a ROW flex (`flex justify-center`), so the fields
+             * and the error banner have to share one column child or the banner
+             * renders beside the form instead of under it.
+             */}
+            <div className="flex w-full flex-col">
+              <AddressForm region={region} address={address} />
+              {formState.error && (
+                <div
+                  className="py-2 text-small-regular text-rose-500"
+                  role="alert"
+                  data-testid="address-error"
+                >
+                  {formState.error}
+                </div>
+              )}
             </div>
-            {formState.error && (
-              <div className="text-rose-500 text-small-regular py-2">
-                {formState.error}
-              </div>
-            )}
           </Modal.Body>
           <Modal.Footer>
             <div className="mt-6 flex w-full flex-col-reverse gap-3 xsmall:w-auto xsmall:flex-row">

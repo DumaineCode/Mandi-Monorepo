@@ -6,6 +6,7 @@ import Input from "@modules/common/components/input"
 import NativeSelect from "@modules/common/components/native-select"
 import { Container } from "@modules/common/components/ui"
 import { MX_PHONE_PATTERN, MX_PHONE_TITLE } from "@lib/util/phone"
+import { COLONIA_OTHER, POSTAL_CODE_HINTS } from "@lib/util/address-form"
 import {
   useCheckoutActions,
   useCheckoutState,
@@ -17,9 +18,6 @@ import React, { useMemo } from "react"
 import AddressSelect from "../address-select"
 import CountrySelect from "../country-select"
 import { anchorProps } from "../field-anchor"
-
-/** Sentinel option value that switches the colonia dropdown to free text. */
-const COLONIA_OTHER = "__other__"
 
 /**
  * The contact + shipping-address form. PURELY PRESENTATIONAL.
@@ -229,14 +227,19 @@ const ShippingAddress = ({
               {...anchor("colonia")}
             />
           )}
+          {/*
+           * Copy imported, not inlined. The account address book shows the same
+           * two states, and two hand-written copies of the same sentence is how
+           * one of them ends up saying something different.
+           */}
           {cpStatus === "loading" && (
-            <p className="mt-1 txt-small text-ink-muted">
-              Buscando código postal…
+            <p className="mt-1 txt-small text-ink-muted" role="status">
+              {POSTAL_CODE_HINTS.loading}
             </p>
           )}
           {cpStatus === "not_found" && (
-            <p className="mt-1 txt-small text-ink-muted">
-              No encontramos ese código postal. Completa los datos a mano.
+            <p className="mt-1 txt-small text-ink-muted" role="status">
+              {POSTAL_CODE_HINTS.notFound}
             </p>
           )}
         </div>
