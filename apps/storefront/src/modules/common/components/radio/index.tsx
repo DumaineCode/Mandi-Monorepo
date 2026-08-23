@@ -1,36 +1,43 @@
-const Radio = ({ checked, 'data-testid': dataTestId }: { checked: boolean, 'data-testid'?: string }) => {
+/**
+ * The radio dot rendered inside a larger, already-interactive option row.
+ *
+ * ## Why it is `aria-hidden` and not a control
+ *
+ * Its only consumer is `checkout/components/address-select`, whose rows are
+ * Headless UI `Listbox.Option`s — i.e. already `role="option"` inside a
+ * `role="listbox"`, with selection announced by `aria-selected`. Rendering a
+ * `role="radio"` inside an option announced a second, contradictory widget to
+ * a screen-reader user: a radio group that does not exist, inside a listbox
+ * that does. `payment-container` hit the same defect and dropped this component
+ * outright rather than nest one control in another.
+ *
+ * So this is now what it always visually was — an indicator. The parent option
+ * owns the semantics; this owns the dot. It is also no longer a `<button>`,
+ * because a button inside an option is a second tab stop and a click target
+ * that swallows the row's own click.
+ */
+const Radio = ({
+  checked,
+  "data-testid": dataTestId,
+}: {
+  checked: boolean
+  "data-testid"?: string
+}) => {
   return (
-    <>
-      <button
-        type="button"
-        role="radio"
-        /**
-         * The state, not the literal `"true"` this shipped with (task 2c.35).
-         *
-         * A hard-coded `aria-checked="true"` tells a screen-reader user that
-         * every option in the group is selected, which is worse than telling
-         * them nothing. `payment-container` stopped using this component
-         * altogether — its option is already a `role="radio"` and nesting one
-         * inside another is its own defect — but `address-select` still renders
-         * it, so fixing only the caller would have left the bug live.
-         */
-        aria-checked={checked}
-        data-state={checked ? "checked" : "unchecked"}
-        className="group relative flex h-5 w-5 items-center justify-center outline-none"
-        data-testid={dataTestId || 'radio-button'}
-      >
-        <div className="shadow-borders-base group-hover:shadow-borders-strong-with-shadow bg-ui-bg-base group-data-[state=checked]:bg-ui-bg-interactive group-data-[state=checked]:shadow-borders-interactive group-focus:!shadow-borders-interactive-with-focus group-disabled:!bg-ui-bg-disabled group-disabled:!shadow-borders-base flex h-[14px] w-[14px] items-center justify-center rounded-full transition-all">
-          {checked && (
-            <span
-              data-state={checked ? "checked" : "unchecked"}
-              className="group flex items-center justify-center"
-            >
-              <div className="bg-ui-bg-base shadow-details-contrast-on-bg-interactive group-disabled:bg-ui-fg-disabled rounded-full group-disabled:shadow-none h-1.5 w-1.5"></div>
-            </span>
-          )}
-        </div>
-      </button>
-    </>
+    <span
+      aria-hidden="true"
+      data-state={checked ? "checked" : "unchecked"}
+      className="mt-1 flex h-5 w-5 shrink-0 items-center justify-center"
+      data-testid={dataTestId || "radio-button"}
+    >
+      <span
+        className={
+          checked
+            ? "flex h-[18px] w-[18px] items-center justify-center rounded-full border-[5px] border-coral bg-paper transition-colors"
+            : "flex h-[18px] w-[18px] items-center justify-center rounded-full border border-line bg-paper transition-colors"
+        }
+      />
+    </span>
   )
 }
 
