@@ -92,7 +92,19 @@ const ProfileBillingAddress: React.FC<MyInformationProps> = ({
 
   return (
     <form action={formAction} onReset={() => clearState()} className="w-full">
-      <input type="hidden" name="addressId" value={billingAddress?.id} />
+      {/*
+       * `?? ""`, for the same reason `address-select` needs `?? null`: a
+       * customer with no billing address yet renders this as
+       * `value={undefined}`, which React reads as an UNCONTROLLED input. The
+       * moment they save one the value becomes a string and React warns that
+       * the input changed from uncontrolled to controlled — and, worse, warns
+       * about it on the very screen that just succeeded.
+       *
+       * `updateCustomerAddress` already rejects a blank `addressId` with a
+       * customer-facing message, and the empty case routes to
+       * `addCustomerAddress`, which ignores this field entirely.
+       */}
+      <input type="hidden" name="addressId" value={billingAddress?.id ?? ""} />
       <AccountInfo
         label="Dirección de facturación"
         currentInfo={currentInfo}
