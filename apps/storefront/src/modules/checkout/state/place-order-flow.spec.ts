@@ -1,7 +1,10 @@
 import type { HttpTypes } from "@medusajs/types"
 import { describe, expect, it, vi } from "vitest"
 
-import { PLACE_ORDER_MESSAGES } from "@lib/util/place-order"
+import {
+  PAYMENT_FAILURE_MESSAGES,
+  PLACE_ORDER_MESSAGES,
+} from "@lib/util/place-order"
 
 import {
   checkoutReducer,
@@ -1725,5 +1728,98 @@ describe("the billing-address deadlock is closed (A5)", () => {
       "Falta tu dirección de facturación."
     )
     expect(h.backendCalls()).toEqual([])
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * Nothing the provider said reaches the customer
+ * ---------------------------------------------------------------------------
+ *
+ * The backend classifies an Openpay failure into `payment_failed:<token>` and
+ * this side owns the Spanish. These tests are the storefront half of that
+ * contract, and they are written as PROPERTIES over every failure door rather
+ * than case by case — because the way this regresses is somebody adding a
+ * fourth door, not somebody editing one of the three.
+ *
+ * What it replaces: `Openpay error 3001: The card was declined`, rendered
+ * verbatim on a Mexican storefront, at the moment of highest abandonment risk.
+ */
+describe("the customer never reads the provider's words", () => {
+  /**
+   * The happy path of the new mechanism: a token in, this storefront's own
+   * sentence out.
+   */
+  it("renders the Spanish for a classified decline", async () => {
+    const h = harness({
+      placeOrder: async () => {
+        throw new Error("payment_failed:insufficient_funds")
+      },
+    })
+
+    const outcome = await h.flow.place()
+
+    expect(outcome.status === "failed" && outcome.error).toBe(
+      PAYMENT_FAILURE_MESSAGES.insufficient_funds
+    )
+    expect(h.readState().error).toBe(
+      PAYMENT_FAILURE_MESSAGES.insufficient_funds
+    )
+  })
+
+  /**
+   * Every door into `state.error` from a failed attempt, fed the exact string
+   * that used to leak.
+   *
+   * `syncAddresses` is in this list deliberately: it does NOT go through
+   * `messageFrom`, and it was the reason the filter had to move from there onto
+   * `settleFailed`. A gate that covers the `catch` blocks and not the
+   * discriminated result is a gate with a door left open.
+   */
+  const LEAK = "Openpay error 3001: The card was declined"
+
+  const doors: [string, Parameters<typeof harness>[0]][] = [
+    ["tokenize", { tokenize: async () => { throw new Error(LEAK) } }],
+    [
+      "syncAddresses",
+      { syncAddresses: async () => ({ ok: false as const, error: LEAK }) },
+    ],
+    [
+      "initiatePaymentSession",
+      { initiatePaymentSession: async () => { throw new Error(LEAK) } },
+    ],
+    ["placeOrder", { placeOrder: async () => { throw new Error(LEAK) } }],
+  ]
+
+  it.each(doors)("suppresses a raw provider error from %s", async (_, options) => {
+    const h = harness(options)
+
+    const outcome = await h.flow.place()
+
+    expect(outcome.status).toBe("failed")
+
+    const shown = h.readState().error ?? ""
+
+    expect(shown).not.toContain("3001")
+    expect(shown.toLowerCase()).not.toContain("openpay")
+    expect(shown).not.toContain("declined")
+    expect(shown).toBe(PLACE_ORDER_MESSAGES.generic)
+  })
+
+  /**
+   * The filter has to be NARROW, or it eats the copy that is worth showing.
+   * `deviceSessionMissing` in particular tells the customer to wait a moment
+   * rather than to change cards, and replacing it with the generic apology
+   * would send them looking for a second card over a script that had not
+   * finished loading.
+   */
+  it("leaves the storefront's own copy alone", async () => {
+    const h = harness({ deviceSessionId: null })
+
+    const outcome = await h.flow.place()
+
+    expect(outcome.status === "failed" && outcome.error).toBe(
+      PLACE_ORDER_MESSAGES.deviceSessionMissing
+    )
   })
 })

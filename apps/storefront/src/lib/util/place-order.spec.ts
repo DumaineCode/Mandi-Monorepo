@@ -5,7 +5,10 @@ import { MISSING_REQUIREMENT_MESSAGES } from "./checkout-readiness"
 import {
   buildOpenpaySessionData,
   hasTotalChanged,
+  PAYMENT_FAILURE_MESSAGES,
+  PAYMENT_FAILURE_PREFIX,
   PLACE_ORDER_MESSAGES,
+  resolvePaymentFailureMessage,
   resolvePaymentTail,
   selectCheckoutEntryError,
   selectMercadoPagoInitPoint,
@@ -637,5 +640,151 @@ describe("selectCheckoutEntryError", () => {
 
     expect(message).toContain("no se completó")
     expect(message).not.toMatch(/no se (te )?(realizó|hizo|cobró)/i)
+  })
+})
+
+/**
+ * ---------------------------------------------------------------------------
+ * The decline catalogue — the last gate before a provider's words reach a
+ * shopper
+ * ---------------------------------------------------------------------------
+ *
+ * Until this existed, `messageFrom` passed `Error.message` through verbatim and
+ * the backend built that message out of Openpay's own error body. So the single
+ * most-read failure string in the checkout was `Openpay error 3001: The card
+ * was declined` — English, with an internal error number in it, on a Mexican
+ * storefront, at the moment of highest abandonment risk.
+ *
+ * The tests below are mostly about what must NOT come out.
+ */
+describe("resolvePaymentFailureMessage", () => {
+  it("turns a classified token into this storefront's own Spanish", () => {
+    expect(
+      resolvePaymentFailureMessage(`${PAYMENT_FAILURE_PREFIX}insufficient_funds`)
+    ).toBe(PAYMENT_FAILURE_MESSAGES.insufficient_funds)
+
+    expect(
+      resolvePaymentFailureMessage(`${PAYMENT_FAILURE_PREFIX}card_expired`)
+    ).toBe(PAYMENT_FAILURE_MESSAGES.card_expired)
+  })
+
+  /**
+   * The backend and this file enumerate the token set separately — they are in
+   * different apps and cannot import from each other. A token added there and
+   * forgotten here must DEGRADE, not break: the customer gets the generic
+   * apology instead of a blank message or the raw identifier.
+   */
+  it("falls back to the generic apology for a token it does not know", () => {
+    expect(
+      resolvePaymentFailureMessage(`${PAYMENT_FAILURE_PREFIX}brand_new_reason`)
+    ).toBe(PLACE_ORDER_MESSAGES.generic)
+
+    expect(resolvePaymentFailureMessage(PAYMENT_FAILURE_PREFIX)).toBe(
+      PLACE_ORDER_MESSAGES.generic
+    )
+  })
+
+  /**
+   * ## The belt to the token's braces
+   *
+   * The backend is supposed to classify every authorization failure, but there
+   * are other paths into `messageFrom` — a future throw site, a provider error
+   * surfaced by Medusa itself — and the cost of one of them leaking is a
+   * shopper reading English and an error code. Anything still shaped like a raw
+   * provider envelope is suppressed here regardless of who produced it.
+   */
+  it("suppresses a raw provider error rather than showing it", () => {
+    for (const leak of [
+      "Openpay error 3001: The card was declined",
+      "openpay error 1002: The api key or merchant id are invalid",
+      "Mercado Pago error 2062: invalid card_token_id",
+      "MercadoPago error: something went wrong",
+    ]) {
+      expect(resolvePaymentFailureMessage(leak)).toBe(
+        PLACE_ORDER_MESSAGES.generic
+      )
+    }
+  })
+
+  /**
+   * The suppression is NARROW on purpose. Our own copy is specific and
+   * actionable, and a broad "looks technical" rule would replace every one of
+   * those sentences with the generic apology — losing the instruction that makes
+   * them worth showing.
+   */
+  it("passes the storefront's own sentences straight through", () => {
+    for (const ours of [
+      PLACE_ORDER_MESSAGES.totalChanged,
+      PLACE_ORDER_MESSAGES.cardIncomplete,
+      PLACE_ORDER_MESSAGES.deviceSessionMissing,
+      PLACE_ORDER_MESSAGES.addressSyncFailed,
+      MISSING_REQUIREMENT_MESSAGES.phone,
+      "No pudimos completar tu pago. Tu tarjeta fue rechazada o el pago no se autorizó. Puedes intentar de nuevo o con otra tarjeta.",
+    ]) {
+      expect(resolvePaymentFailureMessage(ours)).toBe(ours)
+    }
+  })
+})
+
+describe("PAYMENT_FAILURE_MESSAGES", () => {
+  /**
+   * ## `4001` is not `3003`, and the copy is where that distinction is kept
+   *
+   * Openpay's `4001` ("not enough funds in the openpay account") is about the
+   * MERCHANT's balance. The backend maps it to `merchant_config`, and this
+   * assertion is the other half of that guarantee: `merchant_config`'s sentence
+   * must not mention the customer's card or their funds, because the customer's
+   * card is fine and the problem is ours.
+   */
+  it("never blames the customer's card for a merchant-side failure", () => {
+    const message = PAYMENT_FAILURE_MESSAGES.merchant_config
+
+    expect(message).not.toMatch(/tarjeta/i)
+    expect(message).not.toMatch(/fondos/i)
+    // And it says the thing the customer most needs to know.
+    expect(message).toMatch(/no se hizo ning[úu]n cargo/i)
+  })
+
+  /**
+   * `1006` means the order was already processed — the charge very probably
+   * went through. Its copy must not invite the retry that turns one order into
+   * two.
+   */
+  it("does not invite a retry on an already-processed order", () => {
+    expect(PAYMENT_FAILURE_MESSAGES.duplicate_order).toMatch(/revisa tu correo/i)
+  })
+
+  /**
+   * Mexican Spanish, `tú` imperative — the same contract as
+   * {@link PLACE_ORDER_MESSAGES}. A voseo string reads as perfectly good
+   * Spanish in review and only the customer notices it is the wrong country's,
+   * which is why this is a test and not a convention.
+   */
+  it("is written in Mexican Spanish, never voseo", () => {
+    for (const message of Object.values(PAYMENT_FAILURE_MESSAGES)) {
+      /**
+       * Only the ACCENTED forms. Voseo puts the stress on the final syllable —
+       * `intentá`, `revisá`, `esperá` — where Mexican `tú` is `intenta`,
+       * `revisa`, `espera`. A character class of `[áa]` would flag the correct
+       * copy, which is how a lint like this ends up deleted rather than obeyed.
+       */
+      expect(message).not.toMatch(
+        /\b(intentá|revisá|usá|esperá|llamá|escribinos|podés|tenés|elegí|completá)\b/i
+      )
+      // Each one has to say what to do next, so none of them may be empty.
+      expect(message.trim().length).toBeGreaterThan(20)
+    }
+  })
+
+  /**
+   * The property the whole mechanism exists for, asserted over the catalogue
+   * rather than case by case: nothing a customer can read carries a provider
+   * name or an error number.
+   */
+  it("contains no provider name and no error code", () => {
+    for (const message of Object.values(PAYMENT_FAILURE_MESSAGES)) {
+      expect(message.toLowerCase()).not.toContain("openpay")
+      expect(message).not.toMatch(/\b[1-4]\d{3}\b/)
+    }
   })
 })

@@ -449,7 +449,22 @@ describe("OpenpayPaymentProviderService", () => {
       expect(init.headers).not.toHaveProperty("X-Forwarded-For")
     })
 
-    it("throws a MedusaError carrying the Openpay error code on decline (OP-3)", async () => {
+    /**
+     * ## The message on this error is READ BY THE SHOPPER
+     *
+     * Medusa puts a `PAYMENT_AUTHORIZATION_ERROR` message on the cart-completion
+     * response, and the storefront renders `Error.message` verbatim. This test
+     * used to assert `stringContaining("3001")`, which is exactly backwards: it
+     * PINNED the leak. The string it was guarding —
+     * `Openpay error 3001: The card was declined` — was the single most-read
+     * failure sentence in the checkout, in English, with an internal error
+     * number in it.
+     *
+     * The error now carries a classified token. The Spanish lives in the
+     * storefront's own catalogue, where that app's specs sweep it for register
+     * and language; this side only decides WHICH failure it was.
+     */
+    it("throws a classified token, never the Openpay code or description", async () => {
       fetchMock.mockResolvedValue(
         jsonResponse(
           {
@@ -467,7 +482,71 @@ describe("OpenpayPaymentProviderService", () => {
       ).rejects.toMatchObject({
         constructor: MedusaError,
         type: MedusaError.Types.PAYMENT_AUTHORIZATION_ERROR,
-        message: expect.stringContaining("3001"),
+        message: "payment_failed:card_declined",
+      })
+    })
+
+    /**
+     * The code did not disappear — it moved to the log, which is now the ONLY
+     * record of it. A decline nobody can diagnose is not an improvement over a
+     * decline the customer had to read.
+     */
+    it("logs the code and description it no longer transmits", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(
+          {
+            error_code: 3003,
+            description: "The card doesn't have sufficient funds",
+            http_code: 402,
+          },
+          402
+        )
+      )
+      container.logger.error.mockClear()
+      const service = makeService()
+
+      await expect(
+        service.authorizePayment({ data: { ...baseSessionData } })
+      ).rejects.toMatchObject({ message: "payment_failed:insufficient_funds" })
+
+      const logged = container.logger.error.mock.calls
+        .map(([message]) => String(message))
+        .join("\n")
+
+      expect(logged).toContain("3003")
+      expect(logged).toContain("insufficient_funds")
+      // The description too: support needs the provider's own words, and this
+      // line is the only place they still exist.
+      expect(logged).toContain("sufficient funds")
+    })
+
+    /**
+     * The OTHER leak, and the one with more volume behind it: a charge that
+     * came back 2xx in a failed status. It threw
+     * `Openpay charge ch_x is failed: <english>` — our internal charge id, in
+     * front of the customer.
+     *
+     * There is no `error_code` on a charge body, so there is nothing to
+     * classify and the token is the unclassified default.
+     */
+    it("does not leak the charge id or provider text on a failed charge", async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse({
+          id: "ch_failed_01",
+          status: "failed",
+          amount: 150.5,
+          currency: "MXN",
+          order_id: `${SESSION_ID}-1`,
+          error_message: "The card was declined by the bank",
+        })
+      )
+      const service = makeService()
+
+      await expect(
+        service.authorizePayment({ data: { ...baseSessionData } })
+      ).rejects.toMatchObject({
+        type: MedusaError.Types.PAYMENT_AUTHORIZATION_ERROR,
+        message: "payment_failed:card_declined",
       })
     })
 

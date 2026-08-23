@@ -7,6 +7,7 @@ import {
   buildOpenpaySessionData,
   hasTotalChanged,
   PLACE_ORDER_MESSAGES,
+  resolvePaymentFailureMessage,
   resolvePaymentTail,
   selectMercadoPagoInitPoint,
   selectOpenpayRedirectUrl,
@@ -551,12 +552,33 @@ export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
     }
   }
 
+  /**
+   * The order was ATTEMPTED and did not go through.
+   *
+   * ## Every failure message passes the same gate, here
+   *
+   * `resolvePaymentFailureMessage` could have gone into `messageFrom`, which is
+   * where the provider's English was arriving from. That would have covered the
+   * three `catch` blocks and nothing else — leaving `synced.error`, a string
+   * `syncCheckoutAddresses` builds out of `describeError(...)` on an HTTP
+   * failure, going straight to the customer unfiltered. Same class of leak,
+   * different door.
+   *
+   * Putting the gate on the single function that DISPATCHES a failure makes the
+   * property structural rather than remembered: there is no path to
+   * `state.error` from a failed attempt that does not come through this line.
+   * Applying it to the storefront's own constants costs nothing — they are
+   * neither tokens nor provider envelopes, so they pass through untouched — and
+   * applying it twice is idempotent for the same reason.
+   */
   const settleFailed = (error: string): PlaceOrderOutcome => {
+    const message = resolvePaymentFailureMessage(error)
+
     // One action for both halves of "show the reason and give the button back"
     // (task 2c.11), rather than a flag each of the three tails has to remember
     // to reset. A tail that forgets is a button that spins forever.
-    deps.dispatch({ type: "PLACE_ORDER_SETTLED", error })
-    return { status: "failed", error }
+    deps.dispatch({ type: "PLACE_ORDER_SETTLED", error: message })
+    return { status: "failed", error: message }
   }
 
   const buildSessionData = (
@@ -613,11 +635,27 @@ export function createPlaceOrderFlow(deps: PlaceOrderDeps): PlaceOrderFlow {
 /**
  * The customer-facing text for a thrown error.
  *
- * Backend messages reach here already curated — `placeOrder` throws
- * `cartRes.error.message` or its own Spanish decline copy — so passing them
- * through is deliberate: "tu tarjeta fue rechazada" is more useful than a
- * generic apology. Anything that is not an `Error` falls back to the generic
- * string rather than stringifying an object at the customer.
+ * ## The claim this docstring used to make was false
+ *
+ * It said backend messages "reach here already curated" and that passing them
+ * through was deliberate, illustrating the point with `"tu tarjeta fue
+ * rechazada"`. That sentence is `cart.ts`'s FALLBACK — the one used when Medusa
+ * hands back no reason at all. When Medusa did supply a reason, which is the
+ * common case for a decline, it was the payment provider's:
+ * `Openpay error 3001: The card was declined`. So the single most-read failure
+ * string in the checkout was English with an internal error number in it, and
+ * the docstring asserting otherwise is why nobody noticed.
+ *
+ * `settleFailed` is now the gate — every string this function returns goes
+ * through `resolvePaymentFailureMessage` there, which turns the backend's
+ * classified token into this storefront's own Spanish and suppresses anything
+ * still shaped like a raw provider error. The gate is on the DISPATCHER rather
+ * than here so it also covers `synced.error`, which does not come through this
+ * function and was leaking by the same mechanism.
+ *
+ * What is left here is the narrower job the name promises: get a string out of
+ * an unknown throw. Anything that is not an `Error` falls back to the generic
+ * message rather than stringifying an object at the customer.
  */
 const messageFrom = (error: unknown): string =>
   error instanceof Error && error.message

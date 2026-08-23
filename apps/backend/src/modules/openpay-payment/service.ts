@@ -41,6 +41,7 @@ import {
   type CredentialSource,
 } from "../../lib/provider-credentials"
 import { OpenpayClient } from "./client"
+import { classifyOpenpayFailure, toPaymentFailureMessage } from "./decline"
 import {
   OpenpayApiError,
   OpenpayCharge,
@@ -52,6 +53,17 @@ import {
 type WebhookLogger = {
   info: (message: string) => void
   warn: (message: string) => void
+  /**
+   * Optional because this type describes what the SERVICE needs, and the test
+   * doubles that satisfy it predate the need. Medusa's own logger has it.
+   *
+   * It became necessary when declines stopped carrying their reason to the
+   * customer: with the response reduced to a classified token, the log is the
+   * only place the Openpay `error_code`, the charge id and the provider's own
+   * description still exist. A support request about a failed payment is
+   * answerable from here or not at all.
+   */
+  error?: (message: string) => void
 }
 
 /**
@@ -625,25 +637,72 @@ class OpenpayPaymentProviderService extends AbstractPaymentProvider<OpenpayOptio
             redirect_url: charge.payment_method?.url ?? data.redirect_url,
           },
         }
-      default:
+      /**
+       * A charge that came back 2xx in a FAILED status — the ordinary decline,
+       * and by volume the single most-read failure in the checkout.
+       *
+       * This used to throw `Openpay charge trq_xxx is failed: <english>`, which
+       * the storefront rendered verbatim: the shopper was shown our internal
+       * charge id and the processor's English. There is no `error_code` on a
+       * charge body, so there is nothing to classify — the token is the
+       * unclassified default, which is `card_declined`, which is both true and
+       * actionable for a charge the processor refused.
+       *
+       * The id, the status and the provider's text all go to the log, because
+       * this line is now the only record of which charge was refused and why.
+       */
+      default: {
+        const detail =
+          charge.error_message ?? charge.description ?? "authorization failed"
+
+        this.logger_?.error?.(
+          `Openpay charge ${charge.id} is ${charge.status}: ${detail}`
+        )
+
         throw new MedusaError(
           MedusaError.Types.PAYMENT_AUTHORIZATION_ERROR,
-          `Openpay charge ${charge.id} is ${charge.status}: ${
-            charge.error_message ?? charge.description ?? "authorization failed"
-          }`
+          toPaymentFailureMessage(null)
         )
+      }
     }
   }
 
+  /**
+   * ## Two audiences, and only one of them may see Openpay's own words
+   *
+   * A `PAYMENT_AUTHORIZATION_ERROR` raised from `authorizePayment` travels all
+   * the way to the shopper: Medusa surfaces it on the cart-completion response
+   * and the storefront renders `Error.message` verbatim. So that branch emits a
+   * classified TOKEN and nothing else — no code, no English description, no
+   * charge id. See `./decline.ts`.
+   *
+   * Every other `type` — today only the `UNEXPECTED_STATE` that `refundPayment`
+   * passes — is an OPERATOR path reached from Medusa Admin, where the provider's
+   * own text is the useful thing and there is no shopper to leak it to. It keeps
+   * the detailed message.
+   *
+   * The detail reaches the log either way, and it has to: with the token in the
+   * response, this line is now the only place the actual `error_code` is
+   * recorded, and support cannot diagnose a decline they cannot see.
+   */
   private translateApiError(
     error: unknown,
     type: string = MedusaError.Types.PAYMENT_AUTHORIZATION_ERROR
   ): Error {
     if (error instanceof OpenpayApiError) {
-      return new MedusaError(
-        type,
-        `Openpay error ${error.errorCode ?? error.httpStatus}: ${error.description}`
+      const detail = `Openpay error ${error.errorCode ?? error.httpStatus}: ${error.description}`
+
+      if (type !== MedusaError.Types.PAYMENT_AUTHORIZATION_ERROR) {
+        return new MedusaError(type, detail)
+      }
+
+      const token = classifyOpenpayFailure(error.errorCode)
+
+      this.logger_?.error?.(
+        `${detail} (http ${error.httpStatus}) -> ${token ?? "unclassified"}`
       )
+
+      return new MedusaError(type, toPaymentFailureMessage(token))
     }
     return error instanceof Error ? error : new Error(String(error))
   }
