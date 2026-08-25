@@ -70,10 +70,7 @@ const BestSellers = async ({ countryCode }: { countryCode: string }) => {
     <section className="mx-auto max-w-[1180px] px-6 pb-2.5 pt-14">
       <div className="mb-6 flex items-end justify-between gap-4">
         <div>
-          <p className="font-mono text-xs uppercase tracking-[0.14em] text-coral">
-            02 — Top ventas
-          </p>
-          <h2 className="mt-2 font-bricolage text-[32px] font-extrabold leading-none tracking-[-0.03em] small:text-[42px]">
+          <h2 className="font-blusans text-[32px] font-semibold leading-none tracking-[-0.03em] small:text-[42px]">
             Los más pedidos
           </h2>
         </div>

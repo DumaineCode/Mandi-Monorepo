@@ -210,10 +210,7 @@ const ReviewsCarousel = () => {
     <section className="mx-auto max-w-[1180px] px-6 pb-2.5 pt-14">
       <div className="mb-6 flex items-end justify-between gap-4">
         <div>
-          <p className="font-mono text-xs uppercase tracking-[0.14em] text-coral">
-            04 — Reseñas
-          </p>
-          <h2 className="mt-2 font-bricolage text-[32px] font-extrabold leading-none tracking-[-0.03em] small:text-[42px]">
+          <h2 className="font-blusans text-[32px] font-semibold leading-none tracking-[-0.03em] small:text-[42px]">
             Lo que dicen nuestros clientes
           </h2>
         </div>
