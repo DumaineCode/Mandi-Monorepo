@@ -181,7 +181,7 @@ export const HERO_SLIDES: HeroSlide[] = [
         ],
       ],
       align: "center",
-      position: { left: "50%", top: "18.06%" },
+      position: { left: "50%", top: "10%" },
       fontSize: "4.32vw",
       highlight: "lilac",
     },
