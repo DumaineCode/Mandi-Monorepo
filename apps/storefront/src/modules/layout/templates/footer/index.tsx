@@ -143,7 +143,7 @@ export default async function Footer() {
         {/* Bottom bar */}
         <div className="mt-8 flex flex-wrap items-center justify-between gap-x-8 gap-y-4 border-t border-[#36322b] pt-5 font-mono text-[11px] text-cream-soft">
           <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-            <span>© {currentYear} Mando Oficial</span>
+            <span>© {currentYear} Mandi</span>
             {/* Preserved region/language selector — logic & data untouched.
                 Only the trigger buttons are recolored for the dark footer; the
                 dropdown panel keeps its own bg-white/text-black so the country
