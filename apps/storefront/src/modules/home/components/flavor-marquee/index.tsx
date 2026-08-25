@@ -1,7 +1,10 @@
+import { BiCoffeeTogo } from "react-icons/bi"
+
 // Flavor marquee under the hero (ref wireframe lines 123-129). Full-bleed
-// coral band, scrolling uppercase flavors separated by ✦. The set is rendered
-// twice so the translateX(-50%) loop is seamless; per-item horizontal padding
-// (px-[22px], not gap) keeps each half symmetric. Duplicate set is aria-hidden.
+// coral band, scrolling uppercase flavors separated by a coffee-cup icon.
+// The set is rendered twice so the translateX(-50%) loop is seamless;
+// per-item horizontal padding (px-[22px], not gap) keeps each half symmetric.
+// Duplicate set is aria-hidden.
 const FLAVORS = [
   "Taro",
   "Matcha",
@@ -12,23 +15,26 @@ const FLAVORS = [
   "Coco",
 ] as const
 
-// Build one half: flavor + ✦ separator after each, matching the reference.
-const ITEMS = FLAVORS.flatMap((flavor) => [flavor, "✦"])
+// Renders one item followed by its own separator span, matching the
+// reference layout.
+const renderFlavorHalf = (idPrefix: string) =>
+  FLAVORS.map((flavor) => (
+    <span key={`${idPrefix}-${flavor}`} className="flex items-center">
+      <span className="px-[22px]">{flavor}</span>
+      <span aria-hidden className="flex items-center px-[22px]">
+        <BiCoffeeTogo />
+      </span>
+    </span>
+  ))
 
 const FlavorMarquee = () => {
   return (
     <div className="overflow-hidden bg-coral text-coral-foreground">
       <div className="flex w-max animate-[scrollx_22s_linear_infinite] py-3 font-bricolage text-[22px] font-extrabold uppercase motion-reduce:animate-none">
-        {ITEMS.map((item, i) => (
-          <span key={`a-${i}`} className="px-[22px]">
-            {item}
-          </span>
-        ))}
-        {ITEMS.map((item, i) => (
-          <span key={`b-${i}`} aria-hidden className="px-[22px]">
-            {item}
-          </span>
-        ))}
+        {renderFlavorHalf("primary")}
+        <span aria-hidden className="flex">
+          {renderFlavorHalf("dup")}
+        </span>
       </div>
     </div>
   )
