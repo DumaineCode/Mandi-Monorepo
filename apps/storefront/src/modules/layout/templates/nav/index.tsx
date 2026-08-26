@@ -1,6 +1,7 @@
 import { Suspense } from "react"
 
 import { listCategories } from "@lib/data/categories"
+import { retrieveCustomer } from "@lib/data/customer"
 import { listLocales } from "@lib/data/locales"
 import { getLocale } from "@lib/data/locale-actions"
 import { listRegions } from "@lib/data/regions"
@@ -13,12 +14,17 @@ import SideMenu from "@modules/layout/components/side-menu"
 import NavShell from "./nav-shell"
 
 export default async function Nav() {
-  const [regions, locales, currentLocale, categories] = await Promise.all([
-    listRegions().then((regions: StoreRegion[]) => regions),
-    listLocales(),
-    getLocale(),
-    listCategories(),
-  ])
+  // `retrieveCustomer` is already read by the (main) layout in the same render
+  // pass and is fetch-cached, so reading it here only decides the side-menu CTA
+  // copy — it does not add a round trip.
+  const [regions, locales, currentLocale, categories, customer] =
+    await Promise.all([
+      listRegions().then((regions: StoreRegion[]) => regions),
+      listLocales(),
+      getLocale(),
+      listCategories(),
+      retrieveCustomer().catch(() => null),
+    ])
 
   // Only root categories are rendered at the top level. Children are surfaced
   // via dropdowns, so filtering here avoids duplicating them in the header.
@@ -52,6 +58,7 @@ export default async function Nav() {
           regions={regions}
           locales={locales}
           currentLocale={currentLocale}
+          isLoggedIn={!!customer}
         />
       }
     />

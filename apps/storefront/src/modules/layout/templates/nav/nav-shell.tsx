@@ -49,8 +49,14 @@ const NavShell = ({ categories, cart, sideMenu }: NavShellProps) => {
   return (
     <div className={shell}>
       <header className={header}>
-        {/* top level — account/cart pinned right, logo centred over the bar */}
-        <div className="content-container relative flex h-24 w-full items-center justify-end">
+        {/*
+          Top level — three anchors: hamburger left (mobile only), logo centred
+          over the bar, account/cart right. The left slot collapses to nothing on
+          desktop, so `justify-between` still pins the right group to the edge.
+        */}
+        <div className="content-container relative flex h-24 w-full items-center justify-between">
+          <div className="flex items-center small:hidden">{sideMenu}</div>
+
           <LocalizedClientLink
             href="/"
             className="absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 items-center"
@@ -79,7 +85,6 @@ const NavShell = ({ categories, cart, sideMenu }: NavShellProps) => {
               </LocalizedClientLink>
             </div>
             <div className={cartSlot}>{cart}</div>
-            <div className="flex items-center small:hidden">{sideMenu}</div>
           </div>
         </div>
 
