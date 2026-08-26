@@ -139,24 +139,26 @@ const Item = ({ item, type = "full", currencyCode }: ItemProps) => {
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-2">
-          <QtyStepper
-            quantity={item.quantity}
-            onIncrease={handleIncrease}
-            onDecrease={handleDecrease}
-            disabled={busy}
-            size="sm"
-            aria-label={`Cantidad de ${item.product_title}`}
-          />
-          {busy && <Spinner />}
-        </div>
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <div className="font-bricolage text-[18px] font-bold text-ink">
+            <LineItemPrice
+              item={item}
+              style="tight"
+              currencyCode={currencyCode}
+            />
+          </div>
 
-        <div className="w-[88px] shrink-0 text-right font-bricolage text-[18px] font-bold text-ink">
-          <LineItemPrice
-            item={item}
-            style="tight"
-            currencyCode={currencyCode}
-          />
+          <div className="flex items-center gap-2">
+            <QtyStepper
+              quantity={item.quantity}
+              onIncrease={handleIncrease}
+              onDecrease={handleDecrease}
+              disabled={busy}
+              size="sm"
+              aria-label={`Cantidad de ${item.product_title}`}
+            />
+            {busy && <Spinner />}
+          </div>
         </div>
       </div>
 

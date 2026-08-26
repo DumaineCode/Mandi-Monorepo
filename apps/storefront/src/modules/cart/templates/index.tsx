@@ -34,7 +34,7 @@ const CartTemplate = ({
             href="/store"
             className="text-[15px] text-ink-soft transition-colors hover:text-coral motion-reduce:transition-none"
           >
-            ← Seguir comprando
+            Seguir comprando
           </LocalizedClientLink>
         </div>
 

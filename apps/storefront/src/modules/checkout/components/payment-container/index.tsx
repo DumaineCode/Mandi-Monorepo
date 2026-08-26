@@ -42,8 +42,23 @@ const PaymentContainer: React.FC<PaymentContainerProps> = ({
         }
       )}
     >
-      <div className="flex items-center justify-between gap-x-3">
-        <div className="flex items-center gap-x-4">
+      {/*
+       * Stacked below `xsmall`, side-by-side above it.
+       *
+       * The brand marks in the icon slot are a fixed ~180px wide (four badges
+       * at 24px tall, the Carnet one twice as wide as the rest). On a 375px
+       * viewport, once the row padding and the radio indicator are taken out,
+       * the copy column is left with under 50px — so the badges used to spill
+       * past the card's right border instead of shrinking. Nothing here CAN
+       * shrink: the marks stop being recognisable, which is the entire reason
+       * they're on the row.
+       *
+       * So on narrow screens the badges get their own line under the copy,
+       * indented to the text column (18px indicator + 16px gap) so they read
+       * as belonging to the method rather than floating loose in the card.
+       */}
+      <div className="flex flex-col gap-y-3 xsmall:flex-row xsmall:items-center xsmall:justify-between xsmall:gap-x-3 xsmall:gap-y-0">
+        <div className="flex min-w-0 items-center gap-x-4">
           {/*
            * Decorative, and it has to be (task 2c.35).
            *
@@ -78,7 +93,7 @@ const PaymentContainer: React.FC<PaymentContainerProps> = ({
             <PaymentTest className="hidden small:block" />
           )}
         </div>
-        <span className="justify-self-end shrink-0 text-ui-fg-base">
+        <span className="flex shrink-0 items-center ps-[34px] text-ui-fg-base xsmall:ps-0">
           {paymentInfoMap[paymentProviderId]?.icon}
         </span>
       </div>

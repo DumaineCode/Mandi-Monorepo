@@ -34,8 +34,12 @@ const CARD_BRANDS = [
   { file: "carnet", label: "Carnet" },
 ] as const
 
+// `flex-wrap` is the last line of defence, not the main one: the checkout row
+// already moves this whole group onto its own line below `xsmall`. It matters
+// at ~320px, where even a full-width line can't hold all four marks — there the
+// group breaks instead of pushing past the card border.
 export const CardBrandLogos = ({ size = 24 }: { size?: number }) => (
-  <span className="flex items-center gap-x-1">
+  <span className="flex flex-wrap items-center gap-x-1 gap-y-1">
     {CARD_BRANDS.map((brand) => (
       <PaymentLogo
         key={brand.file}
