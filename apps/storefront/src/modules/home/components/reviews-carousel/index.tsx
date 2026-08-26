@@ -24,7 +24,7 @@ const REVIEWS: Review[] = [
     location: "Guadalajara, JAL",
     date: "12 de mayo de 2026",
     rating: 5,
-    text: "Excelente atención de parte de Karlita en pedidos, llevo ya 5 años comprándoles y a mis clientes les encanta el producto :)",
+    text: "Excelente atención de parte de David en pedidos, llevo ya 5 años comprándoles y a mis clientes les encanta el producto :)",
   },
   {
     name: "Adriana García",
@@ -45,7 +45,7 @@ const REVIEWS: Review[] = [
     location: "Puebla, PUE",
     date: "8 de enero de 2026",
     rating: 5,
-    text: "Cambiamos toda nuestra barra de frappés a Mando. El color y el sabor venden solos, mis ventas de bebidas frías subieron muchísimo.",
+    text: "Cambiamos toda nuestra barra de frappés a Mandi. El color y el sabor venden solos, mis ventas de bebidas frías subieron muchísimo.",
   },
   {
     name: "Diego Herrera",

@@ -1,8 +1,13 @@
-import LocalizedClientLink from "@modules/common/components/localized-client-link"
-
 // Wholesale CTA band (ref wireframe lines 204-214). Teal card with a decorative
 // translucent circle bleeding off the top-right corner. Stacks on mobile,
 // becomes a row on `small` (>=1024px).
+const WHOLESALE_WHATSAPP_NUMBER = "5215539440646"
+const WHOLESALE_WHATSAPP_MESSAGE =
+  "Hola, tengo una cafetería y quiero información sobre precios de mayoreo."
+const WHOLESALE_WHATSAPP_URL = `https://wa.me/${WHOLESALE_WHATSAPP_NUMBER}?text=${encodeURIComponent(
+  WHOLESALE_WHATSAPP_MESSAGE
+)}`
+
 const WholesaleBand = () => {
   return (
     <section className="mx-auto max-w-[1180px] px-6 pb-2.5 pt-10 small:pt-14">
@@ -23,12 +28,14 @@ const WholesaleBand = () => {
             Asesoría de carta incluida.
           </p>
         </div>
-        <LocalizedClientLink
-          href="/store"
+        <a
+          href={WHOLESALE_WHATSAPP_URL}
+          target="_blank"
+          rel="noopener noreferrer"
           className="relative inline-flex shrink-0 items-center justify-center self-start whitespace-nowrap rounded-xl bg-ink px-7 py-4 font-semibold text-white transition-colors hover:bg-ink/90 small:self-auto"
         >
           Quiero mayoreo
-        </LocalizedClientLink>
+        </a>
       </div>
     </section>
   )
