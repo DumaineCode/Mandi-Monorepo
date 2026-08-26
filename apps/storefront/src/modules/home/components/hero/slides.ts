@@ -30,10 +30,27 @@ export type HeroText = {
   lines: HeroTextSegment[][]
   /** How `position.left` is interpreted, and how the copy is set. */
   align: HeroTextAlign
+  /**
+   * Narrow-viewport anchoring override; falls back to `align`.
+   *
+   * Optional because it usually matches, but it CANNOT be derived: the two
+   * artworks are different compositions, not one composition at two sizes. The
+   * wide frame has room to set a headline ragged-right beside the product,
+   * where the narrow frame stacks the copy above it and wants it centred.
+   */
+  alignMobile?: HeroTextAlign
   /** Block origin as % of the frame — mirrors where the designer placed it. */
   position: { left: string; top: string }
-  /** Optional narrow-viewport override; falls back to `position`. */
-  positionMobile?: { left: string; top: string }
+  /**
+   * Block origin as % of the NARROW frame. Required, not optional.
+   *
+   * The two artworks have different aspect ratios and different compositions,
+   * so a wide-frame percentage carries no meaning on the narrow one — reusing
+   * it would drop the headline on top of the product photography. Every slide
+   * has to state where its copy sits in ITS narrow artwork, and a new slide
+   * that omits it is a type error rather than a silent mis-registration.
+   */
+  positionMobile: { left: string; top: string }
   /**
    * Headline size for THIS slide, measured off the artwork and expressed in
    * `vw`. The hero is full-bleed, so 1vw of the artwork is 1vw of the viewport:
@@ -42,11 +59,15 @@ export type HeroText = {
    */
   fontSize: string
   /**
-   * Optional narrow-viewport size override. Without one the component derives a
-   * legibility floor from `fontSize` (see `MOBILE_FONT_SIZE_FACTOR`), because a
-   * linear `vw` size that is right at 2560px is unreadable on a 390px phone.
+   * Narrow-viewport size, measured off the narrow artwork. Required, and for
+   * the same reason as `positionMobile`.
+   *
+   * This used to be optional, with the component scaling `fontSize` up by a
+   * blanket factor as a legibility stopgap while no narrow artwork existed.
+   * The artwork exists now, so the guess is gone: `vw` sizes measured against a
+   * 12:5 frame do not describe type on a 7:6 one.
    */
-  fontSizeMobile?: string
+  fontSizeMobile: string
   /** Highlighter swipe colour for this slide's `highlight` segments. */
   highlight: HeroHighlightColor
 }
@@ -57,6 +78,16 @@ export type HeroSlide = {
    * Base artwork: background + product photography, WITHOUT the headline.
    */
   image: string
+  /**
+   * The same slide re-composed for the narrow frame — ART DIRECTION, not a
+   * resize. The product photography is re-laid-out to clear a band of empty
+   * background at the top, which is where the narrow headline goes.
+   *
+   * This is why it is a separate asset rather than a `sizes` hint: no amount of
+   * scaling turns a 12:5 composition into a 7:6 one, and cropping the wide art
+   * to a phone would cut the products in half.
+   */
+  imageMobile: string
   /**
    * The headline, as real text. This is the data that used to be frozen inside
    * a bitmap overlay: the words, their line breaks and their placement all used
@@ -90,6 +121,18 @@ export type HeroSlide = {
  */
 export const HERO_ARTWORK = { width: 2400, height: 1000 } as const
 
+/**
+ * Intrinsic size of EVERY narrow-viewport hero artwork (1400x1200, 7:6), and
+ * the source of the narrow frame's aspect ratio.
+ *
+ * Everything said about `HERO_ARTWORK` applies here, against its own frame.
+ * The two ratios are far apart on purpose — that gap is the whole point of
+ * shipping a second export instead of letting one image cover both — which
+ * also means a `positionMobile` percentage and a `position` percentage are
+ * measurements of DIFFERENT frames and are never interchangeable.
+ */
+export const HERO_ARTWORK_MOBILE = { width: 1400, height: 1200 } as const
+
 const OPCION_1_LINES: HeroTextSegment[][] = [
   [
     { kind: "plain", text: "Somos la " },
@@ -107,11 +150,18 @@ export const HERO_SLIDES: HeroSlide[] = [
   {
     id: "opcion-1",
     image: "/hero/slide-1.webp",
+    imageMobile: "/hero/slide-1-mobile.webp",
     text: {
       lines: OPCION_1_LINES,
       align: "left",
+      // The one slide whose anchoring actually flips: the wide art sets this
+      // headline ragged-right in the empty left third, the narrow art stacks
+      // it centred above the two tubs.
+      alignMobile: "center",
       position: { left: "6.45%", top: "58.13%" },
+      positionMobile: { left: "50%", top: "8%" },
       fontSize: "3.36vw",
+      fontSizeMobile: "7.5vw",
       highlight: "lilac",
     },
     alt: "Botes de polvo Mandi sabor Cookies & Cream y Taro",
@@ -120,6 +170,7 @@ export const HERO_SLIDES: HeroSlide[] = [
   {
     id: "ice-frutal",
     image: "/hero/slide-2.webp",
+    imageMobile: "/hero/slide-2-mobile.webp",
     text: {
       lines: [
         [
@@ -134,7 +185,9 @@ export const HERO_SLIDES: HeroSlide[] = [
       ],
       align: "center",
       position: { left: "50%", top: "40.28%" },
+      positionMobile: { left: "50%", top: "8%" },
       fontSize: "3.63vw",
+      fontSizeMobile: "7.5vw",
       highlight: "yellow",
     },
     alt: "Botes de polvo Mandi Ice Frutal sabor Dragon Fruit y Blueberry",
@@ -143,6 +196,7 @@ export const HERO_SLIDES: HeroSlide[] = [
   {
     id: "tisana-frutal",
     image: "/hero/slide-3.webp",
+    imageMobile: "/hero/slide-3-mobile.webp",
     text: {
       lines: [
         [{ kind: "plain", text: "Llena tus bebidas de" }],
@@ -158,7 +212,11 @@ export const HERO_SLIDES: HeroSlide[] = [
       ],
       align: "center",
       position: { left: "50%", top: "49.72%" },
+      // Sits highest of the five: this is the only three-line headline whose
+      // longest line is 20 characters, so it needs the extra band.
+      positionMobile: { left: "50%", top: "6%" },
       fontSize: "4.06vw",
+      fontSizeMobile: "7vw",
       highlight: "pink",
     },
     alt: "Bolsas de tisana frutal Mandi sabor Mango Maracuyá y Fresa Mango",
@@ -167,6 +225,7 @@ export const HERO_SLIDES: HeroSlide[] = [
   {
     id: "envases",
     image: "/hero/slide-4.webp",
+    imageMobile: "/hero/slide-4-mobile.webp",
     text: {
       lines: [
         [
@@ -182,7 +241,9 @@ export const HERO_SLIDES: HeroSlide[] = [
       ],
       align: "center",
       position: { left: "50%", top: "10%" },
+      positionMobile: { left: "50%", top: "6%" },
       fontSize: "4.32vw",
+      fontSizeMobile: "7vw",
       highlight: "lilac",
     },
     alt: "Envases Mandi vacíos: frasco transparente, bote negro y frasco de boca ancha",
@@ -191,6 +252,7 @@ export const HERO_SLIDES: HeroSlide[] = [
   {
     id: "syrope-soda",
     image: "/hero/slide-5.webp",
+    imageMobile: "/hero/slide-5-mobile.webp",
     text: {
       lines: [
         [
@@ -205,7 +267,12 @@ export const HERO_SLIDES: HeroSlide[] = [
       ],
       align: "center",
       position: { left: "50%", top: "51.11%" },
+      // Two lines instead of three, so the block is short — but the bottles
+      // reach higher into the narrow frame than any other product, which is
+      // what keeps this one from going higher than the tisana slide.
+      positionMobile: { left: "50%", top: "8%" },
       fontSize: "4.02vw",
+      fontSizeMobile: "6.5vw",
       highlight: "blue",
     },
     alt: "Botellas de jarabe Mandi Syrope Soda Italiana sabor Manzana Verde y Dragon Fruit",

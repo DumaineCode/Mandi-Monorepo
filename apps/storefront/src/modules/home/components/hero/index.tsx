@@ -1,28 +1,29 @@
 "use client"
 
-import Image from "next/image"
 import type { CSSProperties } from "react"
 import { useCallback, useEffect, useState } from "react"
 
 import LocalizedClientLink from "@modules/common/components/localized-client-link"
 
 import type { HeroHighlightColor, HeroText, HeroTextSegment } from "./slides"
-import { HERO_ARTWORK, HERO_SLIDES } from "./slides"
+import { HERO_ARTWORK, HERO_ARTWORK_MOBILE, HERO_SLIDES } from "./slides"
 
 const AUTOPLAY_MS = 6500
 
 /**
- * Fallback multiplier for the narrow-viewport headline size.
+ * Viewport width at which the hero swaps artwork, frame ratio and headline
+ * metrics — the `small` breakpoint, restated as a media query.
  *
- * The desktop sizes are linear `vw` values measured off a 2560px canvas, which
- * collapse to single digits on a phone (3.36vw of a 390px viewport is 13px).
- * Until narrow artwork exists we scale the measured value up by this factor and
- * apply it below the `small` breakpoint, mirroring how `positionMobile` works.
+ * It has to be ONE number. The artwork swap happens in a `<source media>`,
+ * which CSS classes cannot express, while the headline placement happens in
+ * `small:` utilities, which a media string cannot express. If the two ever
+ * disagree, a range of viewport widths gets one artwork with the OTHER
+ * artwork's headline percentages — the exact silent mis-registration
+ * `slides.ts` warns about, with nothing failing at build time.
  *
- * PROVISIONAL: replace this with real per-slide `fontSizeMobile` values once the
- * mobile artwork is delivered. It is a legibility stopgap, not a design decision.
+ * Keep in sync with `screens.small` in `tailwind.config.js`.
  */
-const MOBILE_FONT_SIZE_FACTOR = 2.2
+const WIDE_FRAME_MEDIA = "(min-width: 1024px)"
 
 /**
  * Slide highlight colour -> background utility.
@@ -160,24 +161,33 @@ const HeroSegment = ({
  * the longer lines would reflow — silently breaking the authored line breaks.
  */
 const HeroHeadline = ({ text }: { text: HeroText }) => {
-  const mobile = text.positionMobile ?? text.position
   const isCentered = text.align === "center"
-  const fontSizeMobile =
-    text.fontSizeMobile ?? `calc(${text.fontSize} * ${MOBILE_FONT_SIZE_FACTOR})`
+  const isCenteredMobile = (text.alignMobile ?? text.align) === "center"
+
+  // Anchoring is per breakpoint, so BOTH states of both utilities have to be
+  // written out — `translate-x-0` and `text-left` are not no-ops here, they are
+  // what cancels the narrow frame's centring on the wide one. Leaving them
+  // implicit (the old `isCentered ? "..." : ""`) works only while a slide is
+  // centred on both frames; slide 1 is centred on one and ragged on the other,
+  // and an unset utility would carry the narrow anchoring into the wide layout.
+  const anchorClass = isCenteredMobile ? "-translate-x-1/2" : "translate-x-0"
+  const anchorClassWide = isCentered
+    ? "small:-translate-x-1/2"
+    : "small:translate-x-0"
+  const alignClass = isCenteredMobile ? "text-center" : "text-left"
+  const alignClassWide = isCentered ? "small:text-center" : "small:text-left"
 
   return (
     <div
-      className={`absolute left-[var(--hero-text-left-mobile)] top-[var(--hero-text-top-mobile)] w-max small:left-[var(--hero-text-left)] small:top-[var(--hero-text-top)] ${
-        isCentered ? "-translate-x-1/2" : ""
-      }`}
+      className={`absolute left-[var(--hero-text-left-mobile)] top-[var(--hero-text-top-mobile)] w-max small:left-[var(--hero-text-left)] small:top-[var(--hero-text-top)] ${anchorClass} ${anchorClassWide}`}
       style={
         {
           "--hero-text-left": text.position.left,
           "--hero-text-top": text.position.top,
-          "--hero-text-left-mobile": mobile.left,
-          "--hero-text-top-mobile": mobile.top,
+          "--hero-text-left-mobile": text.positionMobile.left,
+          "--hero-text-top-mobile": text.positionMobile.top,
           "--hero-text-size": text.fontSize,
-          "--hero-text-size-mobile": fontSizeMobile,
+          "--hero-text-size-mobile": text.fontSizeMobile,
         } as CSSProperties
       }
     >
@@ -185,9 +195,7 @@ const HeroHeadline = ({ text }: { text: HeroText }) => {
           block's total height, which is what decides whether a three-line
           headline still lands on its measured `top`. */}
       <h1
-        className={`animate-hero-text-in font-blusans text-[length:var(--hero-text-size-mobile)] font-black leading-[1.0] text-hero-headline motion-reduce:animate-none small:text-[length:var(--hero-text-size)] ${
-          isCentered ? "text-center" : "text-left"
-        }`}
+        className={`animate-hero-text-in font-blusans text-[length:var(--hero-text-size-mobile)] font-black leading-[1.0] text-hero-headline motion-reduce:animate-none small:text-[length:var(--hero-text-size)] ${alignClass} ${alignClassWide}`}
         style={{ letterSpacing: HEADLINE_TRACKING }}
       >
         {text.lines.map((line, lineIndex) => (
@@ -243,6 +251,7 @@ const Hero = () => {
   }, [hasMultiple, paused, slides.length])
 
   const ratio = `${HERO_ARTWORK.width} / ${HERO_ARTWORK.height}`
+  const ratioMobile = `${HERO_ARTWORK_MOBILE.width} / ${HERO_ARTWORK_MOBILE.height}`
 
   return (
     <section
@@ -257,11 +266,27 @@ const Hero = () => {
       {/* Full-bleed: no max-width, no padding, no rounding.
           The frame is the artwork's own ratio, so the height falls out of the
           viewport width and NOTHING is ever cropped — which keeps the headline
-          percentages honest (see `slides.ts`). */}
+          percentages honest (see `slides.ts`).
+
+          TWO ratios, swapped at the same breakpoint as the artwork. A single
+          ratio would crop whichever artwork it does not match, and cropping is
+          precisely what invalidates the percentages: they were measured against
+          the whole frame.
+
+          The ratios go in through CSS VARIABLES rather than an arbitrary class
+          built from the constants, for the reason spelled out above
+          `HIGHLIGHT_ROTATION` — Tailwind only reads source text, so
+          `aspect-[${ratio}]` generates nothing. The utilities below are literal
+          and the numbers ride in on `style`, so both survive the build. */}
       <div className="w-full">
         <div
-          className="relative w-full overflow-hidden"
-          style={{ aspectRatio: ratio }}
+          className="relative aspect-[var(--hero-ratio-mobile)] w-full overflow-hidden small:aspect-[var(--hero-ratio)]"
+          style={
+            {
+              "--hero-ratio": ratio,
+              "--hero-ratio-mobile": ratioMobile,
+            } as CSSProperties
+          }
         >
           {slides.map((slide, index) => {
             const isActive = index === active
@@ -274,14 +299,39 @@ const Hero = () => {
               // entering and the one leaving. The other four keep their DOM,
               // their decoded image and their finished animations.
               <div key={`${slide.id}-${isActive}`} className="absolute inset-0">
-                <Image
-                  src={slide.image}
-                  alt={slide.alt}
-                  fill
-                  priority={index === 0}
-                  sizes="100vw"
-                  className="animate-hero-media-in object-cover motion-reduce:animate-none"
-                />
+                {/* ART DIRECTION, so `<picture>` rather than `next/image`.
+                    The two exports are different COMPOSITIONS at different
+                    ratios, not one image at two sizes, and `next/image` has no
+                    way to express that: `sizes` only ever picks a width of the
+                    SAME source.
+
+                    The alternative — two `<Image>`s toggled with `hidden` —
+                    was rejected because `display: none` does not stop a
+                    download. A phone would fetch the wide artwork too, on top
+                    of its own, and it would do so while competing with the LCP
+                    element for bandwidth. `<source media>` makes the browser
+                    commit to exactly one file before it requests anything.
+
+                    Losing the optimiser costs little here: these are static,
+                    pre-compressed WebP exports sized for the frame, so the
+                    optimiser would mostly be re-encoding WebP as WebP. */}
+                <picture>
+                  <source media={WIDE_FRAME_MEDIA} srcSet={slide.image} />
+                  {/* Intrinsic `width`/`height` are deliberately omitted: the
+                      two candidates have different intrinsic sizes, so either
+                      pair would be a lie about the other. There is no layout
+                      shift to guard against anyway — the frame's height comes
+                      from its own aspect ratio, not from the image. */}
+                  {/* eslint-disable-next-line @next/next/no-img-element -- art direction requires <picture>; see above */}
+                  <img
+                    src={slide.imageMobile}
+                    alt={slide.alt}
+                    decoding="async"
+                    loading={index === 0 ? "eager" : "lazy"}
+                    fetchPriority={index === 0 ? "high" : undefined}
+                    className="absolute inset-0 h-full w-full animate-hero-media-in object-cover motion-reduce:animate-none"
+                  />
+                </picture>
                 <HeroHeadline text={slide.text} />
               </div>
             )
