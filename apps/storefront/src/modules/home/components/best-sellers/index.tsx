@@ -78,7 +78,7 @@ const BestSellers = async ({ countryCode }: { countryCode: string }) => {
           href="/store"
           className="shrink-0 whitespace-nowrap border-b-2 border-coral pb-0.5 text-[15px] text-ink transition-colors hover:text-coral"
         >
-          Ver todos →
+          Ver todos
         </LocalizedClientLink>
       </div>
 

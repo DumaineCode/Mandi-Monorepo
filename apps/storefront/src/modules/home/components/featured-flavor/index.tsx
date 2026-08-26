@@ -113,7 +113,7 @@ const FeaturedFlavor = async ({ countryCode }: { countryCode: string }) => {
               href={`/products/${product.handle}`}
               className="inline-flex items-center justify-center rounded-xl bg-ink px-6 py-3 text-[15px] font-semibold text-white transition-colors hover:bg-ink/90"
             >
-              Ver producto →
+              Ver producto
             </LocalizedClientLink>
           </div>
         </div>

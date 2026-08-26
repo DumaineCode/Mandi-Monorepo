@@ -27,7 +27,7 @@ const Summary = ({ cart }: SummaryProps) => {
         data-testid="checkout-button"
         className="flex h-12 w-full items-center justify-center rounded-xl bg-coral font-semibold text-coral-foreground transition-colors hover:bg-coral-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2 focus-visible:ring-offset-paper motion-reduce:transition-none"
       >
-        Ir a pagar →
+        Ir a pagar
       </LocalizedClientLink>
 
       <p className="mt-3 text-center font-mono text-[11px] text-ink-muted">

@@ -51,10 +51,14 @@ const NavShell = ({ categories, cart, sideMenu }: NavShellProps) => {
       <header className={header}>
         {/*
           Top level — three anchors: hamburger left (mobile only), logo centred
-          over the bar, account/cart right. The left slot collapses to nothing on
-          desktop, so `justify-between` still pins the right group to the edge.
+          over the bar, account/cart right.
+
+          The justification MUST flip at `small`. Above it the hamburger slot is
+          `display: none`, which leaves the account/cart group as the only flex
+          item — and `space-between` puts a lone item at flex-start, not at the
+          end. So desktop needs an explicit `justify-end`.
         */}
-        <div className="content-container relative flex h-24 w-full items-center justify-between">
+        <div className="content-container relative flex h-24 w-full items-center justify-between small:justify-end">
           <div className="flex items-center small:hidden">{sideMenu}</div>
 
           <LocalizedClientLink

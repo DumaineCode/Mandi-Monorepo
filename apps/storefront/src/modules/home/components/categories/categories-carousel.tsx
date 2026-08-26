@@ -151,7 +151,7 @@ const CategoriesCarousel = ({ categories }: Props) => {
             href="/store"
             className="hidden whitespace-nowrap border-b-2 border-coral pb-0.5 text-[15px] text-ink transition-colors hover:text-coral small:inline-block"
           >
-            Ver todo el catálogo →
+            Ver todo el catálogo
           </LocalizedClientLink>
 
           <div className="hidden items-center gap-2 small:flex">
@@ -271,7 +271,7 @@ const CategoriesCarousel = ({ categories }: Props) => {
         className="mt-6 flex justify-center border-coral text-[15px] text-ink small:hidden"
       >
         <span className="border-b-2 border-coral pb-0.5">
-          Ver todo el catálogo →
+          Ver todo el catálogo
         </span>
       </LocalizedClientLink>
     </section>

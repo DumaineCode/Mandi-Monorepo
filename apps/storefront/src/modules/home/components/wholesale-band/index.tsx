@@ -27,7 +27,7 @@ const WholesaleBand = () => {
           href="/store"
           className="relative inline-flex shrink-0 items-center justify-center self-start whitespace-nowrap rounded-xl bg-ink px-7 py-4 font-semibold text-white transition-colors hover:bg-ink/90 small:self-auto"
         >
-          Quiero mayoreo →
+          Quiero mayoreo
         </LocalizedClientLink>
       </div>
     </section>
