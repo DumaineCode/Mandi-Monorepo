@@ -38,13 +38,25 @@ export default async function ProductPreview({
   return (
     <div
       data-testid="product-wrapper"
-      className="group relative overflow-hidden rounded-2xl border border-line bg-paper transition-all duration-200 hover:-translate-y-[3px] hover:border-ink motion-reduce:transition-none motion-reduce:hover:translate-y-0"
+      className="group relative flex h-full flex-row overflow-hidden rounded-2xl border border-line bg-paper transition-all duration-200 hover:-translate-y-[3px] hover:border-ink motion-reduce:transition-none motion-reduce:hover:translate-y-0 xsmall:flex-col"
     >
+      {/* The card only changes ORIENTATION across breakpoints: below 512px it is
+          a horizontal list row (image left, everything else right); from 512px
+          up the same children stack into the vertical grid card. The inner
+          content order never changes, so there is a single layout to reason
+          about.
+
+          Image and copy are two separate links rather than one wrapper, because
+          a single wrapper cannot put the image on one side of a flex row and
+          the copy on the other. The image link is aria-hidden/tabIndex -1 so
+          assistive tech and keyboard users get exactly ONE link per card. */}
       <LocalizedClientLink
         href={`/products/${product.handle}`}
-        className="block"
+        className="w-[38%] shrink-0 self-stretch xsmall:w-full"
+        tabIndex={-1}
+        aria-hidden
       >
-        <div className="relative aspect-square overflow-hidden">
+        <div className="relative h-full min-h-[132px] overflow-hidden xsmall:aspect-square xsmall:h-auto xsmall:min-h-0">
           {product.thumbnail || product.images?.length ? (
             <Thumbnail
               thumbnail={product.thumbnail}
@@ -64,9 +76,21 @@ export default async function ProductPreview({
             />
           )}
         </div>
-        <div className="px-[15px] pb-1.5 pt-3.5">
+      </LocalizedClientLink>
+
+      <div className="flex min-w-0 flex-1 flex-col p-3 xsmall:p-0">
+        {/* The link GROWS (flex-1) and the price inside it takes the slack with
+            mt-auto, so price and CTA stay glued as one bottom-anchored pair.
+            Leftover height lands under the title instead of between them —
+            these products have no description, so without this the gap opened
+            exactly where it read as broken. It also aligns prices AND CTAs
+            across a grid row when titles wrap to different heights. */}
+        <LocalizedClientLink
+          href={`/products/${product.handle}`}
+          className="flex flex-1 flex-col xsmall:px-[15px] xsmall:pb-1.5 xsmall:pt-3.5"
+        >
           <div
-            className="font-bricolage text-base font-bold leading-[1.15]"
+            className="font-bricolage text-base font-bold leading-[1.15] line-clamp-2"
             data-testid="product-title"
           >
             {product.title}
@@ -76,22 +100,19 @@ export default async function ProductPreview({
               {tag}
             </div>
           ) : null}
-        </div>
-      </LocalizedClientLink>
-
-      {/* Bottom block: price on its own row, full-width quick-add below.
-          Kept OUTSIDE the link so quick-add never navigates. */}
-      <div className="px-[15px] pb-4 pt-2">
-        <LocalizedClientLink
-          href={`/products/${product.handle}`}
-          className="block font-bricolage text-lg font-bold text-ink"
-          tabIndex={-1}
-          aria-hidden
-        >
-          {cheapestPrice ? cheapestPrice.calculated_price : ""}
+          {cheapestPrice ? (
+            <div
+              className="mt-auto pt-2 font-bricolage text-xl font-bold leading-none text-ink xsmall:pt-2.5 xsmall:text-2xl"
+              data-testid="product-price"
+            >
+              {cheapestPrice.calculated_price}
+            </div>
+          ) : null}
         </LocalizedClientLink>
+
+        {/* Quick-add lives OUTSIDE the link so it never navigates. */}
         {variantId ? (
-          <div className="mt-3">
+          <div className="pt-3 xsmall:px-[15px] xsmall:pb-4 xsmall:pt-2.5">
             <QuickAddButton
               variantId={variantId}
               countryCode={countryCode}

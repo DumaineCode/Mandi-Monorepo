@@ -82,7 +82,7 @@ const BestSellers = async ({ countryCode }: { countryCode: string }) => {
         </LocalizedClientLink>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 small:grid-cols-2 large:grid-cols-4">
+      <div className="grid grid-cols-1 gap-4 xsmall:grid-cols-2 large:grid-cols-4">
         {products.map((product) => {
           const variantId = product.variants?.[0]?.id
           const cartLine = variantId

@@ -82,7 +82,9 @@ export default function QuickAddButton({
     })
   }
 
-  // No quantity yet → full-width coral "+" trigger button.
+  // No quantity yet → full-width coral "Agregar al carrito" button.
+  // The label is no longer truncated on mobile: the card is a horizontal row
+  // below 512px, so the copy column is ~145px wide even on a 320px phone.
   if (displayQty <= 0) {
     return (
       <button
@@ -91,19 +93,21 @@ export default function QuickAddButton({
         disabled={isPending}
         aria-label="Agregar al carrito"
         className={clx(
-          "flex h-11 w-full items-center justify-center rounded-xl bg-coral text-xl font-semibold text-coral-foreground",
+          "flex h-11 w-full items-center justify-center rounded-xl bg-coral text-sm font-semibold text-coral-foreground",
           "transition-[background-color,transform] duration-200 hover:bg-coral-hover",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-2 focus-visible:ring-offset-paper",
           "motion-safe:active:scale-[0.98] disabled:opacity-60",
           "motion-reduce:transition-none"
         )}
       >
-        +
+        Agregar al carrito
       </button>
     )
   }
 
-  // Has quantity → full-width stepper bar [−] · qty · [+].
+  // Has quantity → the trigger expands in place into the cart bar.
+  // At exactly 1 the left control DELETES the line rather than decrementing,
+  // so it renders a trash icon: same action Amazon uses, made honest.
   return (
     <QtyStepper
       quantity={displayQty}
@@ -111,6 +115,8 @@ export default function QuickAddButton({
       onDecrease={handleDecrease}
       disabled={isPending}
       size="md"
+      decreaseVariant={displayQty <= 1 ? "remove" : "minus"}
+      label={`${displayQty} en el carrito`}
     />
   )
 }

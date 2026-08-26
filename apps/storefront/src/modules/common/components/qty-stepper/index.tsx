@@ -1,6 +1,9 @@
 "use client"
 
+import type { ReactNode } from "react"
+
 import { clx } from "@modules/common/components/ui"
+import Trash from "@modules/common/icons/trash"
 
 type QtyStepperProps = {
   /** Current quantity to display. */
@@ -18,6 +21,19 @@ type QtyStepperProps = {
    * - "md": fuller bar with coral "+" accent for the catalog quick-add control.
    */
   size?: "sm" | "md"
+  /**
+   * Center content for the "md" bar. Defaults to the raw quantity. Lets the
+   * caller render richer copy ("2 en el carrito") without this component
+   * knowing anything about carts.
+   */
+  label?: ReactNode
+  /**
+   * What the left control DOES on the "md" bar:
+   * - "minus": decrements (default).
+   * - "remove": removes the line entirely — renders a trash icon so a
+   *   destructive action is never disguised as a decrement.
+   */
+  decreaseVariant?: "minus" | "remove"
   /** Optional className for the outer container. */
   className?: string
   /** Accessible label describing what is being counted (e.g. product title). */
@@ -44,15 +60,20 @@ export default function QtyStepper({
   onDecrease,
   disabled = false,
   size = "sm",
+  label,
+  decreaseVariant = "minus",
   className,
   "aria-label": ariaLabel,
 }: QtyStepperProps) {
   if (size === "md") {
-    // Catalog quick-add bar: full-width, coral "+" accent.
+    // Catalog quick-add bar: full-width outlined coral pill signalling
+    // "this is already in your cart", with the +/− controls at the edges.
+    const isRemove = decreaseVariant === "remove"
+
     return (
       <div
         className={clx(
-          "flex h-11 w-full items-center justify-between rounded-xl border border-line bg-paper p-1",
+          "flex h-11 w-full items-center justify-between rounded-xl border-[1.5px] border-coral bg-paper p-1",
           "transition-[opacity] duration-200 motion-reduce:transition-none",
           { "opacity-70": disabled },
           className
@@ -62,7 +83,7 @@ export default function QtyStepper({
           type="button"
           onClick={onDecrease}
           disabled={disabled}
-          aria-label="Disminuir cantidad"
+          aria-label={isRemove ? "Quitar del carrito" : "Disminuir cantidad"}
           className={clx(
             "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-lg text-ink",
             "transition-colors hover:bg-cream hover:text-coral disabled:opacity-60",
@@ -70,14 +91,14 @@ export default function QtyStepper({
             "motion-reduce:transition-none"
           )}
         >
-          −
+          {isRemove ? <Trash size={17} /> : "−"}
         </button>
         <span
           aria-live="polite"
           aria-label={ariaLabel}
-          className="flex-1 text-center font-bricolage text-base font-bold tabular-nums text-ink"
+          className="min-w-0 flex-1 truncate px-1 text-center font-bricolage text-sm font-bold tabular-nums text-ink"
         >
-          {quantity}
+          {label ?? quantity}
         </span>
         <button
           type="button"
@@ -85,9 +106,9 @@ export default function QtyStepper({
           disabled={disabled}
           aria-label="Aumentar cantidad"
           className={clx(
-            "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-coral text-lg text-coral-foreground",
-            "transition-colors hover:bg-coral-hover disabled:opacity-60",
-            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral focus-visible:ring-offset-1 focus-visible:ring-offset-paper",
+            "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-lg text-ink",
+            "transition-colors hover:bg-cream hover:text-coral disabled:opacity-60",
+            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral",
             "motion-reduce:transition-none"
           )}
         >

@@ -91,7 +91,7 @@ const FeaturedFlavor = async ({ countryCode }: { countryCode: string }) => {
           )}
         </div>
 
-        <div className="flex flex-col justify-center p-9 small:p-11">
+        <div className="flex flex-col justify-center p-6 small:p-11">
           <p className="font-mono text-xs uppercase tracking-[0.14em] text-coral">
             Sabor del mes
           </p>
@@ -103,7 +103,10 @@ const FeaturedFlavor = async ({ countryCode }: { countryCode: string }) => {
               {description}
             </p>
           ) : null}
-          <div className="flex items-center gap-4">
+          {/* gap-x/gap-y + flex-wrap so the CTA drops to its own row instead of
+              being squeezed on narrow phones; whitespace-nowrap keeps the label
+              from breaking into "Ver / producto". */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
             {cheapestPrice ? (
               <span className="font-bricolage text-[28px] font-bold">
                 {cheapestPrice.calculated_price}
@@ -111,7 +114,7 @@ const FeaturedFlavor = async ({ countryCode }: { countryCode: string }) => {
             ) : null}
             <LocalizedClientLink
               href={`/products/${product.handle}`}
-              className="inline-flex items-center justify-center rounded-xl bg-ink px-6 py-3 text-[15px] font-semibold text-white transition-colors hover:bg-ink/90"
+              className="inline-flex min-h-11 items-center justify-center whitespace-nowrap rounded-xl bg-ink px-5 py-3 text-[15px] font-semibold text-white transition-colors hover:bg-ink/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink focus-visible:ring-offset-2 focus-visible:ring-offset-paper small:px-6"
             >
               Ver producto
             </LocalizedClientLink>

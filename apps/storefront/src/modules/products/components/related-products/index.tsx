@@ -52,7 +52,7 @@ export default async function RelatedProducts({
         Combínalo con…
       </h3>
 
-      <ul className="grid grid-cols-2 gap-4 medium:grid-cols-4">
+      <ul className="grid grid-cols-1 gap-4 xsmall:grid-cols-2 medium:grid-cols-4">
         {products.map((product) => (
           <li key={product.id}>
             <Product
