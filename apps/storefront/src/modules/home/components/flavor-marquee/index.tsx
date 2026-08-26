@@ -20,8 +20,8 @@ const FLAVORS = [
 const renderFlavorHalf = (idPrefix: string) =>
   FLAVORS.map((flavor) => (
     <span key={`${idPrefix}-${flavor}`} className="flex items-center">
-      <span className="px-[22px]">{flavor}</span>
-      <span aria-hidden className="flex items-center px-[22px]">
+      <span className="px-[18px]">{flavor}</span>
+      <span aria-hidden className="flex items-center px-[18px]">
         <BiCoffeeTogo />
       </span>
     </span>
@@ -30,7 +30,7 @@ const renderFlavorHalf = (idPrefix: string) =>
 const FlavorMarquee = () => {
   return (
     <div className="overflow-hidden bg-coral text-coral-foreground">
-      <div className="flex w-max animate-[scrollx_22s_linear_infinite] py-3 font-bricolage text-[22px] font-extrabold uppercase motion-reduce:animate-none">
+      <div className="flex w-max animate-[scrollx_22s_linear_infinite] py-2 font-bricolage text-lg font-extrabold uppercase motion-reduce:animate-none small:text-xl">
         {renderFlavorHalf("primary")}
         <span aria-hidden className="flex">
           {renderFlavorHalf("dup")}
