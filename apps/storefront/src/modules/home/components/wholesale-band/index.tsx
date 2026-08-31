@@ -1,7 +1,7 @@
 // Wholesale CTA band (ref wireframe lines 204-214). Teal card with a decorative
 // translucent circle bleeding off the top-right corner. Stacks on mobile,
 // becomes a row on `small` (>=1024px).
-const WHOLESALE_WHATSAPP_NUMBER = "5215539440646"
+const WHOLESALE_WHATSAPP_NUMBER = "5215529130187"
 const WHOLESALE_WHATSAPP_MESSAGE =
   "Hola, tengo una cafetería y quiero información sobre precios de mayoreo."
 const WHOLESALE_WHATSAPP_URL = `https://wa.me/${WHOLESALE_WHATSAPP_NUMBER}?text=${encodeURIComponent(

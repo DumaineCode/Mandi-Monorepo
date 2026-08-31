@@ -6,6 +6,7 @@ import { retrieveCustomer } from "@lib/data/customer"
 import { getBaseURL } from "@lib/util/env"
 import AnnouncementTicker from "@modules/home/components/announcement-ticker"
 import CartMismatchBanner from "@modules/layout/components/cart-mismatch-banner"
+import WhatsappFloatButton from "@modules/layout/components/whatsapp-float-button"
 import Footer from "@modules/layout/templates/footer"
 import Nav from "@modules/layout/templates/nav"
 import FreeShippingNudgeLoader from "@modules/shipping/components/free-shipping-price-nudge/nudge-loader"
@@ -44,6 +45,7 @@ export default async function PageLayout(props: { children: React.ReactNode }) {
       )}
       {props.children}
       <Footer />
+      <WhatsappFloatButton />
     </>
   )
 }
