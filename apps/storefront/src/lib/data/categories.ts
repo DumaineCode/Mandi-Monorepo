@@ -27,6 +27,29 @@ const CATEGORY_REVALIDATE_SECONDS = 300
 const CATEGORY_FIELDS =
   "+metadata, *category_children, *products, *parent_category, *parent_category.parent_category"
 
+/**
+ * Merchant-controlled display order.
+ *
+ * Without an explicit `order`, the store route hands back whatever Postgres
+ * happens to return, which is not a defined order at all — the header, the
+ * footer and the home carousel could each render the same categories in a
+ * different sequence, and that sequence could change after an unrelated write.
+ *
+ * `rank` is Medusa's own sibling-ordering column, already part of the store
+ * route's default field set, and the Admin dashboard edits it by drag and drop
+ * (Categories -> Edit ranking). Sorting by it here means merchants reorder the
+ * storefront from Admin instead of asking for a deploy, and every consumer of
+ * this function inherits the same order for free.
+ *
+ * It is a DEFAULT, not a lock: `...query` is spread afterwards, so a caller
+ * that needs a different sort still wins.
+ *
+ * Note that `rank` is nullable, and Postgres sorts NULLs last on an ascending
+ * sort. An unranked category therefore drifts to the end rather than to the
+ * front — harmless, but it is why an unranked category is not a bug report.
+ */
+const CATEGORY_ORDER = "rank"
+
 export const listCategories = async (query?: Record<string, unknown>) => {
   const next = {
     ...(await getCacheOptions("categories")),
@@ -42,6 +65,7 @@ export const listCategories = async (query?: Record<string, unknown>) => {
         query: {
           fields: CATEGORY_FIELDS,
           limit,
+          order: CATEGORY_ORDER,
           ...query,
         },
         next,
