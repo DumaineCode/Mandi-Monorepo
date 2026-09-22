@@ -11,6 +11,7 @@ import {
 import { HttpTypes } from "@medusajs/types"
 import LocalizedClientLink from "@modules/common/components/localized-client-link"
 import Image from "next/image"
+import { startCategoryAutoplay } from "./category-autoplay"
 
 /**
  * Horizontal category carousel. Client component because it needs live scroll
@@ -57,6 +58,7 @@ const CARD_WIDTH =
 const SCROLL_EPSILON = 4
 
 const CategoriesCarousel = ({ categories }: Props) => {
+  const sectionRef = useRef<HTMLElement>(null)
   const trackRef = useRef<HTMLDivElement>(null)
   const [pages, setPages] = useState<CarouselPage[]>([])
   const [active, setActive] = useState(0)
@@ -93,7 +95,17 @@ const CategoriesCarousel = ({ categories }: Props) => {
 
     const nextPages = computeCarouselPages(offsets, maxScroll, perPage)
 
-    setPages(nextPages)
+    // Keep the autoplay lifecycle stable during scroll events (including swipes).
+    setPages((current) =>
+      current.length === nextPages.length &&
+      current.every(
+        (page, index) =>
+          page.scrollLeft === nextPages[index].scrollLeft &&
+          page.cardIndex === nextPages[index].cardIndex
+      )
+        ? current
+        : nextPages
+    )
     setActive(activePageIndex(nextPages, track.scrollLeft))
     setCanPrev(track.scrollLeft > SCROLL_EPSILON)
     setCanNext(track.scrollLeft < maxScroll - SCROLL_EPSILON)
@@ -113,6 +125,24 @@ const CategoriesCarousel = ({ categories }: Props) => {
       window.removeEventListener("resize", readScrollState)
     }
   }, [readScrollState])
+
+  useEffect(() => {
+    const section = sectionRef.current
+    const track = trackRef.current
+    if (
+      !section ||
+      !track ||
+      pages.length < 2 ||
+      typeof IntersectionObserver === "undefined"
+    ) {
+      return
+    }
+
+    return startCategoryAutoplay(section, track, () => {
+      const next = (activePageIndex(pages, track.scrollLeft) + 1) % pages.length
+      track.scrollTo({ left: pages[next].scrollLeft, behavior: "smooth" })
+    })
+  }, [pages])
 
   const scrollToPage = (index: number) => {
     const track = trackRef.current
@@ -138,7 +168,10 @@ const CategoriesCarousel = ({ categories }: Props) => {
   }
 
   return (
-    <section className="mx-auto max-w-[1180px] px-6 pb-2.5 pt-16">
+    <section
+      ref={sectionRef}
+      className="mx-auto max-w-[1180px] px-6 pb-2.5 pt-16"
+    >
       <div className="mb-6 flex items-end justify-between gap-4">
         <div>
           <h2 className="font-blusans text-[32px] font-semibold leading-none tracking-[-0.03em] small:text-[42px]">
