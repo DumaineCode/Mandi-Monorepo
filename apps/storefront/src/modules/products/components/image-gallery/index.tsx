@@ -35,7 +35,7 @@ const ImageGallery = ({ images }: ImageGalleryProps) => {
       className={clx(
         "grid w-full max-w-[580px] items-start gap-2 small:gap-3",
         validImages.length > 1
-          ? "grid-cols-[72px_minmax(0,1fr)] small:grid-cols-[88px_minmax(0,1fr)]"
+          ? "grid-cols-1 small:grid-cols-[88px_minmax(0,1fr)]"
           : "grid-cols-1"
       )}
     >
@@ -43,7 +43,7 @@ const ImageGallery = ({ images }: ImageGalleryProps) => {
       <div
         className={clx(
           "relative row-start-1 aspect-square w-full max-w-[480px] overflow-hidden rounded-[20px] bg-cream",
-          validImages.length > 1 && "col-start-2"
+          validImages.length > 1 && "small:col-start-2"
         )}
       >
         <Image
@@ -60,9 +60,9 @@ const ImageGallery = ({ images }: ImageGalleryProps) => {
 
       {/* Thumbnails (only when more than one image) */}
       {validImages.length > 1 && (
-        <div className="relative col-start-1 row-start-1 min-h-0 self-stretch">
+        <div className="relative col-start-1 row-start-2 min-h-0 min-w-0 max-w-[480px] self-stretch small:row-start-1">
           <div
-            className="absolute inset-0 flex flex-col gap-2 overflow-y-auto overscroll-contain p-1 small:gap-3"
+            className="flex gap-2 overflow-x-auto overscroll-x-contain snap-x snap-mandatory p-1 small:absolute small:inset-0 small:flex-col small:gap-3 small:overflow-x-hidden small:overflow-y-auto small:overscroll-contain small:snap-none"
             role="group"
             aria-label="Miniaturas"
           >
@@ -74,7 +74,7 @@ const ImageGallery = ({ images }: ImageGalleryProps) => {
                 aria-label={`Ver imagen ${index + 1}`}
                 aria-current={index === safeIndex}
                 className={clx(
-                  "relative h-12 w-12 shrink-0 overflow-hidden rounded-xl border-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink motion-reduce:transition-none small:h-16 small:w-16",
+                  "relative h-12 w-12 shrink-0 snap-start overflow-hidden rounded-xl border-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ink motion-reduce:transition-none small:h-16 small:w-16",
                   index === safeIndex ? "border-ink" : "border-line hover:border-ink-muted"
                 )}
               >
