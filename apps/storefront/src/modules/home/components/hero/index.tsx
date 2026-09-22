@@ -8,7 +8,16 @@ import LocalizedClientLink from "@modules/common/components/localized-client-lin
 import type { HeroHighlightColor, HeroText, HeroTextSegment } from "./slides"
 import { HERO_ARTWORK, HERO_ARTWORK_MOBILE, HERO_SLIDES } from "./slides"
 
-const AUTOPLAY_MS = 6500
+/**
+ * Dwell time per slide — the single knob for the carousel's cadence.
+ *
+ * It is a compromise, not a maximum-speed setting. Lower reads livelier and
+ * gets more of the catalogue in front of someone who never scrolls, but the
+ * headlines run to three lines, and a slide that rotates before they can be
+ * read delivers nothing at all. This sits near the floor of "still readable",
+ * so shortening it further starts trading comprehension for motion.
+ */
+const AUTOPLAY_MS = 4000
 
 /**
  * Viewport width at which the hero swaps artwork, frame ratio and headline
@@ -258,8 +267,17 @@ const Hero = () => {
       aria-roledescription={hasMultiple ? "carousel" : undefined}
       aria-label={hasMultiple ? "Destacados" : undefined}
       className="relative w-full"
-      onMouseEnter={() => setPaused(true)}
-      onMouseLeave={() => setPaused(false)}
+      // FOCUS pauses, HOVER does not — and that asymmetry is deliberate.
+      //
+      // Hover-pause was removed: the hero is meant to keep rotating under the
+      // cursor, and on a full-bleed section the pointer rests inside it for
+      // most of the time anyone spends at the top of the page, which froze the
+      // carousel for the majority of visits.
+      //
+      // Focus-pause stays because it is not a nicety, it is the only way a
+      // keyboard user can USE this slide: tabbing onto the slide's link and
+      // having it rotate away mid-press means the target they aimed at is no
+      // longer the one they activate. Removing these two would strand them.
       onFocusCapture={() => setPaused(true)}
       onBlurCapture={() => setPaused(false)}
     >
@@ -332,7 +350,11 @@ const Hero = () => {
                     className="absolute inset-0 h-full w-full animate-hero-media-in object-cover motion-reduce:animate-none"
                   />
                 </picture>
-                <HeroHeadline text={slide.text} />
+                {/* Only slides that carry copy get a headline layer. A slide
+                    with the wordmark composited into its artwork has no `text`
+                    (see `slides.ts`), and rendering an empty block over it
+                    would double the brand name. */}
+                {slide.text ? <HeroHeadline text={slide.text} /> : null}
               </div>
             )
 

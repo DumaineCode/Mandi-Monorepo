@@ -97,8 +97,19 @@ export type HeroSlide = {
    * `position` is expressed in PERCENTAGES of the frame, never in pixels, so
    * the block tracks the artwork at any viewport width — exactly like the
    * baked-in overlay did, but with selectable type.
+   *
+   * OPTIONAL, because a slide can be one whose artwork IS the message. A brand
+   * lockup carries the wordmark composited into the export itself, so there is
+   * no headline left to overlay — layering HTML type on top would simply print
+   * the same words twice, once as pixels and once as text. Omitting `text` is
+   * therefore a deliberate "this artwork speaks for itself" declaration, not a
+   * field someone forgot to fill in.
+   *
+   * It stays all-or-nothing: a slide that DOES carry copy still has to state
+   * the full `HeroText`, both frames' positions and both frames' sizes
+   * included, for the mis-registration reasons spelled out on those fields.
    */
-  text: HeroText
+  text?: HeroText
   /** Description of the base artwork for assistive tech. */
   alt: string
   /** Optional destination. When set, the whole slide becomes a link. */
@@ -147,6 +158,20 @@ const OPCION_1_LINES: HeroTextSegment[][] = [
 
 // Assets live in `public/hero/`.
 export const HERO_SLIDES: HeroSlide[] = [
+  // No `text`: the wordmark is composited into both artworks, so an HTML
+  // headline here would set the brand name a second time on top of itself.
+  //
+  // That makes `alt` the ONLY machine-readable carrier of this slide's
+  // message — nothing else on it is text. So it transcribes the lockup
+  // (the wordmark and its descriptor line) rather than describing the photo
+  // behind it, which is backdrop and carries no information of its own.
+  {
+    id: "marca",
+    image: "/hero/brand.webp",
+    imageMobile: "/hero/brand-mobile.webp",
+    alt: "Mandi — insumos, alimentos y bebidas para tu cafetería",
+    href: "/store",
+  },
   {
     id: "opcion-1",
     image: "/hero/slide-1.webp",
