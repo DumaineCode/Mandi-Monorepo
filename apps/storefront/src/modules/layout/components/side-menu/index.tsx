@@ -1,6 +1,7 @@
 "use client"
 
 import { Fragment, useState } from "react"
+import { usePathname } from "next/navigation"
 
 import {
   Dialog,
@@ -54,6 +55,7 @@ const SideMenu = ({
   isLoggedIn = false,
 }: SideMenuProps) => {
   const [open, setOpen] = useState(false)
+  const isRecipesPage = usePathname().endsWith("/recetas")
   const close = () => setOpen(false)
 
   const countryToggleState = useToggleState()
@@ -188,6 +190,21 @@ const SideMenu = ({
                         </li>
                       )
                     })}
+                    <li>
+                      <LocalizedClientLink
+                        href="/recetas"
+                        onClick={close}
+                        aria-current={isRecipesPage ? "page" : undefined}
+                        className={clx(
+                          primaryLink,
+                          "rounded py-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cream",
+                          isRecipesPage && "underline underline-offset-8"
+                        )}
+                        data-testid="mobile-recipes-link"
+                      >
+                        Recetas
+                      </LocalizedClientLink>
+                    </li>
                   </ul>
                 </nav>
 

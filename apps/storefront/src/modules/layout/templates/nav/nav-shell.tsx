@@ -5,6 +5,7 @@ import React from "react"
 import { ChevronDownMini, User } from "@medusajs/icons"
 import { HttpTypes } from "@medusajs/types"
 import Image from "next/image"
+import { usePathname } from "next/navigation"
 import LocalizedClientLink from "@modules/common/components/localized-client-link"
 import { clx } from "@modules/common/components/ui"
 
@@ -30,6 +31,7 @@ type NavShellProps = {
  * typographic voice.
  */
 const NavShell = ({ categories, cart, sideMenu }: NavShellProps) => {
+  const isRecipesPage = usePathname().endsWith("/recetas")
   // ---- style maps ---------------------------------------------------------
   const shell = "sticky top-0 inset-x-0 z-50"
 
@@ -159,6 +161,18 @@ const NavShell = ({ categories, cart, sideMenu }: NavShellProps) => {
                 </div>
               )
             })}
+            <LocalizedClientLink
+              href="/recetas"
+              aria-current={isRecipesPage ? "page" : undefined}
+              className={clx(
+                navLink,
+                "shrink-0 rounded py-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-cream",
+                isRecipesPage && "text-cream underline underline-offset-8"
+              )}
+              data-testid="nav-recipes-link"
+            >
+              Recetas
+            </LocalizedClientLink>
           </nav>
         </div>
       </header>
