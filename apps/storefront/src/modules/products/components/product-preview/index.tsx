@@ -2,12 +2,13 @@ import { getProductPrice } from "@lib/util/get-product-price"
 import { HttpTypes } from "@medusajs/types"
 import LocalizedClientLink from "@modules/common/components/localized-client-link"
 import QuickAddButton from "@modules/products/components/quick-add"
+import FavoriteButton from "@modules/products/components/favorite-button"
 import Thumbnail from "../thumbnail"
 
 // Catalog product card (ref wireframe Tienda C, CATÁLOGO lines 294-306).
 // Matches the home best-sellers card pattern: rounded-2xl, border-line, bg-paper,
 // hover -translate-y / hover:border-ink. The whole card links to the product page
-// EXCEPT the quick-add control, which is a sibling interactive island that must NOT
+// EXCEPT the quick-add and favorite controls, which are sibling islands that must NOT
 // navigate (kept outside the link, like the home card).
 export default async function ProductPreview({
   product,
@@ -77,6 +78,10 @@ export default async function ProductPreview({
           )}
         </div>
       </LocalizedClientLink>
+
+      <div className="absolute left-2 top-2 z-10 xsmall:left-auto xsmall:right-2">
+        <FavoriteButton productId={product.id} title={product.title} />
+      </div>
 
       <div className="flex min-w-0 flex-1 flex-col p-3 xsmall:p-0">
         {/* The link GROWS (flex-1) and the price inside it takes the slack with

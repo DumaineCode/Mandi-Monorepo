@@ -2,6 +2,7 @@ import React, { Suspense } from "react"
 
 import ImageGallery from "@modules/products/components/image-gallery"
 import ProductActions from "@modules/products/components/product-actions"
+import FavoriteButton from "@modules/products/components/favorite-button"
 import RelatedProducts from "@modules/products/components/related-products"
 import ProductInfo from "@modules/products/templates/product-info"
 import SkeletonRelatedProducts from "@modules/skeletons/templates/skeleton-related-products"
@@ -85,6 +86,14 @@ const ProductTemplate: React.FC<ProductTemplateProps> = ({
               >
                 <ProductActionsWrapper id={product.id} region={region} />
               </Suspense>
+            </div>
+
+            <div className="mt-3">
+              <FavoriteButton
+                productId={product.id}
+                title={product.title}
+                showLabel
+              />
             </div>
 
             {/* Description */}
