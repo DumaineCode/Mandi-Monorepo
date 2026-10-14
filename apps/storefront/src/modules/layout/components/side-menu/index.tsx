@@ -55,7 +55,9 @@ const SideMenu = ({
   isLoggedIn = false,
 }: SideMenuProps) => {
   const [open, setOpen] = useState(false)
-  const isRecipesPage = usePathname().endsWith("/recetas")
+  const pathname = usePathname()
+  const isRecipesPage = pathname.endsWith("/recetas")
+  const isDevelopmentsPage = pathname.endsWith("/desarrollos")
   const close = () => setOpen(false)
 
   const countryToggleState = useToggleState()
@@ -203,6 +205,28 @@ const SideMenu = ({
                         data-testid="mobile-recipes-link"
                       >
                         Recetas
+                      </LocalizedClientLink>
+                    </li>
+                    <li>
+                      <LocalizedClientLink
+                        href="/desarrollos"
+                        onClick={close}
+                        aria-current={isDevelopmentsPage ? "page" : undefined}
+                        className={clx(
+                          "flex min-h-11 items-center justify-between gap-3 rounded-2xl border border-teal px-4 py-3 transition-colors hover:bg-teal hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal",
+                          isDevelopmentsPage ? "bg-teal text-ink" : "text-teal"
+                        )}
+                        data-testid="mobile-developments-link"
+                      >
+                        <span>
+                          <span className="block font-blusans text-xl">
+                            Desarrollos
+                          </span>
+                          <span className="mt-1 block font-hanken text-sm">
+                            Bebidas a tu medida
+                          </span>
+                        </span>
+                        <span aria-hidden="true">↗</span>
                       </LocalizedClientLink>
                     </li>
                   </ul>

@@ -31,7 +31,9 @@ type NavShellProps = {
  * typographic voice.
  */
 const NavShell = ({ categories, cart, sideMenu }: NavShellProps) => {
-  const isRecipesPage = usePathname().endsWith("/recetas")
+  const pathname = usePathname()
+  const isRecipesPage = pathname.endsWith("/recetas")
+  const isDevelopmentsPage = pathname.endsWith("/desarrollos")
   // ---- style maps ---------------------------------------------------------
   const shell = "sticky top-0 inset-x-0 z-50"
 
@@ -172,6 +174,17 @@ const NavShell = ({ categories, cart, sideMenu }: NavShellProps) => {
               data-testid="nav-recipes-link"
             >
               Recetas
+            </LocalizedClientLink>
+            <LocalizedClientLink
+              href="/desarrollos"
+              aria-current={isDevelopmentsPage ? "page" : undefined}
+              className={clx(
+                "inline-flex min-h-11 shrink-0 items-center gap-3 rounded-full border border-teal px-5 py-2 font-blusans text-base transition-colors hover:bg-teal hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal",
+                isDevelopmentsPage ? "bg-teal text-ink" : "text-teal"
+              )}
+              data-testid="nav-developments-link"
+            >
+              Desarrollos <span aria-hidden="true">↗</span>
             </LocalizedClientLink>
           </nav>
         </div>
