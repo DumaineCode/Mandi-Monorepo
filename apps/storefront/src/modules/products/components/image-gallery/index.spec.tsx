@@ -29,7 +29,7 @@ describe("ImageGallery", () => {
     expect(html).toContain('aria-label="Ver imagen 1" aria-current="true"')
     expect(html).toContain('aria-label="Ver imagen 2" aria-current="false"')
     expect(html).toContain("focus-visible:ring-2")
-    expect(html.match(/object-fit:contain/g)).toHaveLength(3)
+    expect(html.match(/object-fit:contain/g)).toHaveLength(4)
     expect(html).not.toContain("object-fit:cover")
   })
 

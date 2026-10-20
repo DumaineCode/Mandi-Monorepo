@@ -11,6 +11,7 @@ type ImageGalleryProps = {
 
 const ImageGallery = ({ images }: ImageGalleryProps) => {
   const [activeIndex, setActiveIndex] = useState(0)
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null)
 
   const validImages = images.filter((image) => !!image.url)
 
@@ -28,7 +29,10 @@ const ImageGallery = ({ images }: ImageGalleryProps) => {
   }
 
   const safeIndex = Math.min(activeIndex, validImages.length - 1)
-  const activeImage = validImages[safeIndex]
+  const displayIndex =
+    hoverIndex !== null && hoverIndex < validImages.length
+      ? hoverIndex
+      : safeIndex
 
   return (
     <div
@@ -46,16 +50,24 @@ const ImageGallery = ({ images }: ImageGalleryProps) => {
           validImages.length > 1 && "small:col-start-2"
         )}
       >
-        <Image
-          key={activeImage.id}
-          src={activeImage.url as string}
-          priority
-          className="absolute inset-0"
-          alt={`Imagen del producto ${safeIndex + 1}`}
-          fill
-          sizes="(min-width: 512px) 480px, 100vw"
-          style={{ objectFit: "contain" }}
-        />
+        {/* All images stay mounted so switching is instant (no re-download). */}
+        {validImages.map((image, index) => (
+          <Image
+            key={image.id}
+            src={image.url as string}
+            priority={index === 0}
+            loading={index === 0 ? undefined : "eager"}
+            className={clx(
+              "absolute inset-0",
+              index === displayIndex ? "opacity-100" : "pointer-events-none opacity-0"
+            )}
+            aria-hidden={index !== displayIndex}
+            alt={`Imagen del producto ${index + 1}`}
+            fill
+            sizes="(min-width: 512px) 480px, 100vw"
+            style={{ objectFit: "contain" }}
+          />
+        ))}
       </div>
 
       {/* Thumbnails (only when more than one image) */}
@@ -65,12 +77,14 @@ const ImageGallery = ({ images }: ImageGalleryProps) => {
             className="flex gap-2 overflow-x-auto overscroll-x-contain snap-x snap-mandatory p-1 small:absolute small:inset-0 small:flex-col small:gap-3 small:overflow-x-hidden small:overflow-y-auto small:overscroll-contain small:snap-none"
             role="group"
             aria-label="Miniaturas"
+            onMouseLeave={() => setHoverIndex(null)}
           >
             {validImages.map((image, index) => (
               <button
                 key={image.id}
                 type="button"
                 onClick={() => setActiveIndex(index)}
+                onMouseEnter={() => setHoverIndex(index)}
                 aria-label={`Ver imagen ${index + 1}`}
                 aria-current={index === safeIndex}
                 className={clx(
@@ -80,6 +94,7 @@ const ImageGallery = ({ images }: ImageGalleryProps) => {
               >
                 <Image
                   src={image.url as string}
+                  loading="eager"
                   alt=""
                   fill
                   sizes="(min-width: 1024px) 64px, 48px"
