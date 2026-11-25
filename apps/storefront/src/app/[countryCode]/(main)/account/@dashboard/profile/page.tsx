@@ -9,8 +9,8 @@ import { listRegions } from "@lib/data/regions"
 import { retrieveCustomer } from "@lib/data/customer"
 
 export const metadata: Metadata = {
-  title: "Mis datos | MANDO",
-  description: "Consulta y actualiza los datos de tu cuenta MANDO.",
+  title: "Mis datos | MANDI",
+  description: "Consulta y actualiza los datos de tu cuenta MANDI.",
 }
 
 export default async function Profile() {

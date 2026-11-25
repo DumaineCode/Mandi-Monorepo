@@ -12,7 +12,7 @@ import TrustBadges from "@modules/home/components/trust-badges"
 import WholesaleBand from "@modules/home/components/wholesale-band"
 
 export const metadata: Metadata = {
-  title: "Mando Oficial — Polvos, jarabes y más para tu cafetería",
+  title: "Mandi Oficial — Polvos, jarabes y más para tu cafetería",
   description:
     "Tienda de insumos para frappés y bebidas: polvos, jarabes, botes y popotes. Envío nacional en 24 h.",
 }

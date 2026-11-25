@@ -21,7 +21,7 @@ const AccountLayout: React.FC<AccountLayoutProps> = ({
           <>
             <header className="mb-5 overflow-hidden rounded-[22px] bg-ink px-6 py-8 text-cream small:px-10 small:py-10">
               <p className="mb-3 font-mono text-xs uppercase tracking-[0.2em] text-cream-muted">
-                Tu cuenta MANDO
+                Tu cuenta MANDI
               </p>
               <h1 className="font-bricolage text-3xl font-extrabold tracking-[-0.03em] small:text-4xl">
                 Hola, {customer.first_name || "qué gusto verte"}

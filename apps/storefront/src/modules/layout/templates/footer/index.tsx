@@ -19,7 +19,10 @@ import PaymentBadges from "@modules/layout/components/payment-badges";
  */
 const PHONE_DISPLAY = "55 2913 0187";
 const TEL_HREF = "tel:+525529130187";
-const EMAIL = "mandioficial.comercial@gmail.com";
+const EMAILS = [
+  "comercial@mandioficial.com",
+  "mandioficial.comercial@gmail.com",
+];
 
 /**
  * Social profiles. Only real, reachable profiles belong here — an icon that
@@ -64,7 +67,7 @@ export default async function Footer() {
           <LocalizedClientLink href="/" className="inline-flex items-center">
             <Image
               src="/Logo_Crema_trim.png"
-              alt="MANDO Oficial"
+              alt="MANDI Oficial"
               width={802}
               height={220}
               className="h-8 w-auto"
@@ -77,10 +80,16 @@ export default async function Footer() {
               {PHONE_DISPLAY}
             </a>
 
-            <a href={`mailto:${EMAIL}`} className={contactLinkClass}>
-              <FaEnvelope className="h-4 w-4 shrink-0" aria-hidden="true" />
-              {EMAIL}
-            </a>
+            {EMAILS.map((email) => (
+              <a
+                key={email}
+                href={`mailto:${email}`}
+                className={contactLinkClass}
+              >
+                <FaEnvelope className="h-4 w-4 shrink-0" aria-hidden="true" />
+                {email}
+              </a>
+            ))}
 
             <ul className="flex items-center gap-2">
               {SOCIALS.map(({ label, href, Icon }) => (

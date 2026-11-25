@@ -18,7 +18,7 @@ const Register = ({ setCurrentView }: Props) => {
   return (
     <div className="flex w-full max-w-lg flex-col" data-testid="register-page">
       <p className="mb-3 font-mono text-xs uppercase tracking-[0.18em] text-ink-muted">
-        Únete a MANDO
+        Únete a MANDI
       </p>
       <h2 className="font-bricolage text-3xl font-extrabold tracking-[-0.03em] text-ink">
         Crea tu cuenta

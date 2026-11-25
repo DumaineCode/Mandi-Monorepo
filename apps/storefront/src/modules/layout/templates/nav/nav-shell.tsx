@@ -72,7 +72,7 @@ const NavShell = ({ categories, cart, sideMenu }: NavShellProps) => {
           >
             <Image
               src="/Logo_Crema_trim.png"
-              alt="MANDO Oficial"
+              alt="MANDI Oficial"
               width={802}
               height={220}
               priority

@@ -6,8 +6,8 @@ import { retrieveCustomer } from "@lib/data/customer"
 import { listOrders } from "@lib/data/orders"
 
 export const metadata: Metadata = {
-  title: "Mi cuenta | MANDO",
-  description: "Consulta la actividad y los datos de tu cuenta MANDO.",
+  title: "Mi cuenta | MANDI",
+  description: "Consulta la actividad y los datos de tu cuenta MANDI.",
 }
 
 export default async function OverviewTemplate() {

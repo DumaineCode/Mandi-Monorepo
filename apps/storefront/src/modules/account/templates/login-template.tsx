@@ -19,7 +19,7 @@ const LoginTemplate = () => {
         <section className="flex flex-col justify-between bg-ink p-7 text-cream small:p-10">
           <div>
             <p className="font-mono text-xs uppercase tracking-[0.2em] text-cream-muted">
-              Tu cuenta MANDO
+              Tu cuenta MANDI
             </p>
             <h1 className="mt-4 max-w-md font-bricolage text-4xl font-extrabold leading-[1.05] tracking-[-0.04em] small:text-5xl">
               Todo lo que compras, en un solo lugar.

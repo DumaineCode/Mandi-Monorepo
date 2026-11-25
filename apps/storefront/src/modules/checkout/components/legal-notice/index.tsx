@@ -26,7 +26,7 @@ const LegalNotice = () => (
   >
     Al hacer clic en Realizar pedido, confirmas que leíste, entendiste y aceptas
     nuestros Términos de uso, Términos de venta y Política de devoluciones, y
-    reconoces que leíste la Política de privacidad de MANDO.
+    reconoces que leíste la Política de privacidad de MANDI.
   </Text>
 )
 

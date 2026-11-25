@@ -7,7 +7,7 @@ import Divider from "@modules/common/components/divider"
 import TransferRequestForm from "@modules/account/components/transfer-request-form"
 
 export const metadata: Metadata = {
-  title: "Mis pedidos | MANDO",
+  title: "Mis pedidos | MANDI",
   description: "Consulta tus pedidos y revisa el estado de cada compra.",
 }
 

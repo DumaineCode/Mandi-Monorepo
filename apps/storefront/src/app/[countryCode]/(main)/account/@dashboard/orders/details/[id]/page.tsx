@@ -16,7 +16,7 @@ export async function generateMetadata(props: Props): Promise<Metadata> {
   }
 
   return {
-    title: `Pedido #${order.display_id} | MANDO`,
+    title: `Pedido #${order.display_id} | MANDI`,
     description: "Consulta los detalles de tu pedido.",
   }
 }

@@ -44,7 +44,7 @@ export default function CheckoutLayout({
             >
               <Image
                 src="/Logo_Crema_trim.png"
-                alt="MANDO Oficial"
+                alt="MANDI Oficial"
                 width={802}
                 height={220}
                 priority
@@ -108,7 +108,7 @@ export default function CheckoutLayout({
             className="flex justify-center [&_ul]:justify-center [&>div>div]:items-center [&>div>div]:text-center"
           />
           <p className="text-center text-small-regular font-hanken text-ink-muted">
-            © {year} MANDO · Pago 100% seguro
+            © {year} MANDI · Pago 100% seguro
           </p>
         </div>
       </div>

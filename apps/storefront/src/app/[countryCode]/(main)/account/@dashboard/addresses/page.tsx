@@ -7,7 +7,7 @@ import { getRegion } from "@lib/data/regions"
 import { retrieveCustomer } from "@lib/data/customer"
 
 export const metadata: Metadata = {
-  title: "Mis direcciones | MANDO",
+  title: "Mis direcciones | MANDI",
   description: "Consulta y administra tus direcciones de envío.",
 }
 
