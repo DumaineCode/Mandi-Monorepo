@@ -7,6 +7,7 @@ import { HttpTypes } from "@medusajs/types"
 import Image from "next/image"
 import { usePathname } from "next/navigation"
 import LocalizedClientLink from "@modules/common/components/localized-client-link"
+import DevelopmentsCup from "@modules/common/icons/developments-cup"
 import { clx } from "@modules/common/components/ui"
 
 type NavShellProps = {
@@ -179,12 +180,18 @@ const NavShell = ({ categories, cart, sideMenu }: NavShellProps) => {
               href="/desarrollos"
               aria-current={isDevelopmentsPage ? "page" : undefined}
               className={clx(
-                "inline-flex min-h-11 shrink-0 items-center gap-3 rounded-full border border-teal px-5 py-2 font-blusans text-base transition-colors hover:bg-teal hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal",
-                isDevelopmentsPage ? "bg-teal text-ink" : "text-teal"
+                "group inline-flex min-h-11 shrink-0 items-center gap-2.5 rounded-full bg-teal px-5 py-2 font-blusans text-base font-medium text-ink transition-all duration-300 ease-out hover:-translate-y-0.5 hover:bg-[#b5e2f0] hover:shadow-[0_8px_24px_-6px_rgba(155,213,231,0.65)] active:translate-y-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-teal motion-reduce:transition-none motion-reduce:hover:translate-y-0",
+                isDevelopmentsPage && "ring-2 ring-cream ring-offset-2 ring-offset-ink"
               )}
               data-testid="nav-developments-link"
             >
-              Desarrollos <span aria-hidden="true">↗</span>
+              Desarrollos
+              <DevelopmentsCup
+                aria-hidden="true"
+                size={22}
+                className="origin-bottom transition-transform duration-300 ease-out group-hover:-rotate-12 group-hover:scale-110 motion-reduce:transition-none motion-reduce:group-hover:transform-none"
+                sparkleClassName="transition-transform duration-300 ease-out group-hover:scale-150 group-hover:rotate-45 motion-reduce:transition-none motion-reduce:group-hover:transform-none"
+              />
             </LocalizedClientLink>
           </nav>
         </div>
