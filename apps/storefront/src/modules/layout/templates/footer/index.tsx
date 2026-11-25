@@ -20,7 +20,7 @@ import PaymentBadges from "@modules/layout/components/payment-badges";
 const PHONE_DISPLAY = "55 2913 0187";
 const TEL_HREF = "tel:+525529130187";
 const EMAILS = [
-  "comercial@mandioficial.com",
+  "comercial@mandimexico.com",
   "mandioficial.comercial@gmail.com",
 ];
 
