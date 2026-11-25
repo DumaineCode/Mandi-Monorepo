@@ -63,6 +63,7 @@ const spaceMono = Space_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL(getBaseURL()),
+  appleWebApp: { title: "Mandi" },
 }
 
 export default function RootLayout(props: { children: React.ReactNode }) {
