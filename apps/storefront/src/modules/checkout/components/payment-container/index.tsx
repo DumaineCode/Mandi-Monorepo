@@ -84,9 +84,12 @@ const PaymentContainer: React.FC<PaymentContainerProps> = ({
               {paymentInfoMap[paymentProviderId]?.title || paymentProviderId}
             </Text>
             {paymentInfoMap[paymentProviderId]?.caption && (
-              <Text className="txt-small text-ui-fg-subtle">
-                {paymentInfoMap[paymentProviderId]?.caption}
-              </Text>
+              <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1">
+                <Text className="txt-small text-ui-fg-subtle">
+                  {paymentInfoMap[paymentProviderId]?.caption}
+                </Text>
+                {paymentInfoMap[paymentProviderId]?.captionLogo}
+              </div>
             )}
           </div>
           {isManual(paymentProviderId) && isDevelopment && (

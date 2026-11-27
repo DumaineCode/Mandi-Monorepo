@@ -46,7 +46,7 @@ describe("paymentInfoMap — the offered providers", () => {
    *
    * Its tail does not call `placeOrder` — it navigates the browser to
    * `init_point`, a hosted Checkout Pro page on `mercadopago.com.mx`. Openpay's
-   * row carries `caption: "Procesado por Openpay · BBVA"` and its card fields
+   * row carries a "Procesado por" caption with the Openpay logo and its card fields
    * appear inline, so the customer can see what they are getting. Mercado
    * Pago's row had a title, a logo, and no caption at all — so a customer
    * pressing a button labelled *Realizar pedido* was silently sent to another
@@ -64,10 +64,12 @@ describe("paymentInfoMap — the offered providers", () => {
     expect(caption).toMatch(/sitio|página/i)
   })
 
-  it("says who processes an Openpay card payment", () => {
-    expect(paymentInfoMap[OPENPAY]?.caption).toBe(
-      "Procesado por Openpay · BBVA"
-    )
+  it("says who processes an Openpay card payment, with the official logo", () => {
+    const info = paymentInfoMap[OPENPAY]
+
+    expect(info?.caption).toBe("Procesado por")
+    expect(info?.caption).not.toMatch(/BBVA/)
+    expect(info?.captionLogo).toBeTruthy()
   })
 
   /**

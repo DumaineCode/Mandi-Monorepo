@@ -7,6 +7,7 @@ import { CreditCard } from "@medusajs/icons"
 import {
   CardBrandLogos,
   MercadoPagoLogo,
+  OpenpayLogo,
 } from "@modules/checkout/components/payment-logos"
 import Bancontact from "@modules/common/icons/bancontact"
 import Ideal from "@modules/common/icons/ideal"
@@ -22,6 +23,11 @@ export type PaymentInfo = {
    * to claim certifications that aren't ours.
    */
   caption?: string
+  /**
+   * Optional brand mark rendered inline right after `caption` (e.g. the
+   * official processor logo after "Procesado por").
+   */
+  captionLogo?: React.JSX.Element
 }
 
 /* Map of payment provider_id to their title and icon. Add in any payment providers you want to use. */
@@ -65,7 +71,10 @@ export const paymentInfoMap: Record<string, PaymentInfo> = {
   pp_openpay_openpay: {
     title: "Tarjeta de crédito/débito",
     icon: <CardBrandLogos />,
-    caption: "Procesado por Openpay · BBVA",
+    caption: "Procesado por",
+    // Official Openpay brand-kit mark; it already carries Openpay's approved
+    // "by BBVA" lockup, so the caption text no longer names BBVA itself.
+    captionLogo: <OpenpayLogo />,
   },
   pp_mercadopago_mercadopago: {
     title: "Mercado Pago",

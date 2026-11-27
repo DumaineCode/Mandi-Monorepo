@@ -91,3 +91,7 @@ export const CardBrandLogos = ({ size = 24 }: { size?: number }) => (
 export const MercadoPagoLogo = ({ size = 24 }: { size?: number }) => (
   <PaymentLogo file="mercadopago" label="Mercado Pago" size={size} />
 )
+
+export const OpenpayLogo = ({ size = 20 }: { size?: number }) => (
+  <PaymentLogo file="openpay" label="Openpay" size={size} />
+)
