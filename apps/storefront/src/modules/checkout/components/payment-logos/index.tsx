@@ -1,28 +1,65 @@
 // Brand logos rendered inside the checkout payment-method rows.
 //
-// The SVGs live in /public/payment-logos and are the SAME assets the footer
+// The assets live in /public/payment-logos and are the SAME files the footer
 // PaymentBadges uses — one source of truth for brand artwork. We only render
 // marks for methods/processors we actually accept, so nothing here claims a
 // relationship or certification we don't have.
+//
+// Visa, Mastercard, American Express, Carnet, Mercado Pago and Openpay are the
+// official marks from the Openpay brand kit, trimmed and exported as PNG at
+// 96px height (crisp at the 16–32px we render). OXXO is not in that kit and
+// stays an SVG.
 
 type PaymentLogoProps = {
   /** Filename (without extension) under /public/payment-logos. */
   file: string
   label: string
-  /** Rendered height in px. Checkout rows use 22–24. */
+  /** File extension of the asset. Defaults to the official PNG exports. */
+  ext?: "png" | "svg"
+  /** Rendered chip height in px. Checkout rows use 22–24. */
   size?: number
 }
 
-export const PaymentLogo = ({ file, label, size = 24 }: PaymentLogoProps) => (
-  <img
-    src={`/payment-logos/${file}.svg`}
-    alt={label}
-    title={label}
-    loading="lazy"
-    className="block w-auto rounded-[4px]"
-    style={{ height: size }}
-  />
-)
+// Every mark sits on the same white chip so the official artwork (which ships
+// on a white/transparent background) stays legible on the dark footer and
+// visually consistent next to each other.
+export const PaymentLogo = ({
+  file,
+  label,
+  ext = "png",
+  size = 24,
+}: PaymentLogoProps) => {
+  if (ext === "svg") {
+    return (
+      <img
+        src={`/payment-logos/${file}.svg`}
+        alt={label}
+        title={label}
+        loading="lazy"
+        className="block w-auto rounded-[4px]"
+        style={{ height: size }}
+      />
+    )
+  }
+
+  const padY = Math.max(2, Math.round(size * 0.16))
+  const padX = Math.max(3, Math.round(size * 0.28))
+
+  return (
+    <span
+      className="flex items-center rounded-[4px] bg-white ring-1 ring-black/10"
+      style={{ height: size, padding: `${padY}px ${padX}px` }}
+    >
+      <img
+        src={`/payment-logos/${file}.${ext}`}
+        alt={label}
+        title={label}
+        loading="lazy"
+        className="block h-full w-auto"
+      />
+    </span>
+  )
+}
 
 // Card brands accepted through Openpay. Shoppers recognise these instantly —
 // far more than the processor's own mark — which is why they carry the trust

@@ -2,19 +2,21 @@
 // actually accept (via Openpay / Mercado Pago) and the processors that provide
 // the real PCI-DSS security — we never claim certifications that aren't ours.
 //
-// Official card SVGs (visa/mastercard/amex) come from the `payment-icons`
-// package, copied into /public/payment-logos. The Mexican brands
-// (mercadopago/openpay/oxxo/carnet) are placeholders until the official brand-kit
-// SVGs are dropped in with the same filenames.
+// Visa, Mastercard, American Express, Carnet, Mercado Pago and Openpay use the
+// official marks from the Openpay brand kit (PNG in /public/payment-logos).
+// OXXO is not part of that kit and stays an SVG. Rendering goes through the
+// shared PaymentLogo so footer and checkout always show identical artwork.
 
-type Badge = { file: string; label: string };
+import { PaymentLogo } from "@modules/checkout/components/payment-logos";
+
+type Badge = { file: string; label: string; ext?: "png" | "svg" };
 
 const METHODS: Badge[] = [
   { file: "visa", label: "Visa" },
   { file: "mastercard", label: "Mastercard" },
   { file: "amex", label: "American Express" },
   { file: "carnet", label: "Carnet" },
-  { file: "oxxo", label: "OXXO" },
+  { file: "oxxo", label: "OXXO", ext: "svg" },
 ];
 
 const PROCESSORS: Badge[] = [
@@ -27,14 +29,7 @@ function BadgeRow({ badges, size }: { badges: Badge[]; size: number }) {
     <ul className="flex flex-wrap items-center gap-2">
       {badges.map((b) => (
         <li key={b.file}>
-          <img
-            src={`/payment-logos/${b.file}.svg`}
-            alt={b.label}
-            title={b.label}
-            loading="lazy"
-            className="block w-auto rounded-[4px]"
-            style={{ height: size }}
-          />
+          <PaymentLogo file={b.file} label={b.label} ext={b.ext} size={size} />
         </li>
       ))}
     </ul>

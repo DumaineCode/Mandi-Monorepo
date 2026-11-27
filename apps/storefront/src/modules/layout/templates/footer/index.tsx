@@ -1,5 +1,11 @@
 import Image from "next/image";
-import { FaEnvelope, FaInstagram, FaPhoneAlt, FaWhatsapp } from "react-icons/fa";
+import {
+  FaEnvelope,
+  FaInstagram,
+  FaMapMarkerAlt,
+  FaPhoneAlt,
+  FaWhatsapp,
+} from "react-icons/fa";
 
 import { listRegions } from "@lib/data/regions";
 import { listLocales } from "@lib/data/locales";
@@ -23,6 +29,13 @@ const EMAILS = [
   "comercial@mandimexico.com",
   "mandioficial.comercial@gmail.com",
 ];
+
+/** Business address, also linked to Google Maps for one-tap directions. */
+const ADDRESS_DISPLAY =
+  "Planetas 1, Col. El Rosario, C.P. 02100, Azcapotzalco, CDMX";
+const ADDRESS_HREF = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+  ADDRESS_DISPLAY
+)}`;
 
 /**
  * Social profiles. Only real, reachable profiles belong here — an icon that
@@ -91,6 +104,18 @@ export default async function Footer() {
               </a>
             ))}
 
+            <address className="not-italic">
+              <a
+                href={ADDRESS_HREF}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={contactLinkClass}
+              >
+                <FaMapMarkerAlt className="h-4 w-4 shrink-0" aria-hidden="true" />
+                {ADDRESS_DISPLAY}
+              </a>
+            </address>
+
             <ul className="flex items-center gap-2">
               {SOCIALS.map(({ label, href, Icon }) => (
                 <li key={label}>
@@ -129,6 +154,18 @@ export default async function Footer() {
               />
             </div>
             <span>Hecho en México 🇲🇽</span>
+            <LocalizedClientLink
+              href="/content/terms-of-use"
+              className="transition-colors hover:text-white"
+            >
+              Términos y condiciones
+            </LocalizedClientLink>
+            <LocalizedClientLink
+              href="/content/privacy-policy"
+              className="transition-colors hover:text-white"
+            >
+              Aviso de privacidad
+            </LocalizedClientLink>
           </div>
 
           <PaymentBadges labeled={false} size={16} />

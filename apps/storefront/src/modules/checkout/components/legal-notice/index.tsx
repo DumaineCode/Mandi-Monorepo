@@ -1,6 +1,11 @@
 "use client"
 
+import LocalizedClientLink from "@modules/common/components/localized-client-link"
 import { Text } from "@modules/common/components/ui"
+
+// The wording below is unchanged; only the document names became links to the
+// legal pages (all three "Términos" live in one Términos y condiciones page).
+const linkClass = "underline underline-offset-2 hover:text-ink"
 
 /**
  * The terms notice, directly above the inline CTA (settled decision 2, task
@@ -25,8 +30,15 @@ const LegalNotice = () => (
     data-testid="checkout-legal-notice"
   >
     Al hacer clic en Realizar pedido, confirmas que leíste, entendiste y aceptas
-    nuestros Términos de uso, Términos de venta y Política de devoluciones, y
-    reconoces que leíste la Política de privacidad de MANDI.
+    nuestros{" "}
+    <LocalizedClientLink href="/content/terms-of-use" className={linkClass}>
+      Términos de uso, Términos de venta y Política de devoluciones
+    </LocalizedClientLink>
+    , y reconoces que leíste la{" "}
+    <LocalizedClientLink href="/content/privacy-policy" className={linkClass}>
+      Política de privacidad
+    </LocalizedClientLink>{" "}
+    de MANDI.
   </Text>
 )
 
