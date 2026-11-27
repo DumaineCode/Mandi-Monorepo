@@ -88,19 +88,21 @@ const PaymentStatusModal = () => {
           {TITLES[phase]}
         </h2>
 
-        <p
-          className="mt-2 max-w-sm txt-medium text-ink-muted"
-          data-testid="payment-status-message"
-        >
-          {/*
-           * The failure BODY is `state.error`, which by the time it reaches
-           * here has been through `resolvePaymentFailureMessage` — so it is one
-           * of this storefront's own Spanish sentences, never the provider's
-           * English and never an error code. The fallback covers the
-           * theoretical case of a failure with no message attached.
-           */}
-          {phase === "failed" ? state.error ?? FAILED_FALLBACK : BODIES[phase]}
-        </p>
+        {/*
+         * No body on failure: the title alone is the message. `state.error`
+         * is deliberately NOT rendered here — in production builds Next.js
+         * replaces the message of an error thrown by a Server Action with a
+         * generic English "An error occurred in the Server Components render"
+         * string, which would otherwise reach the customer verbatim.
+         */}
+        {phase !== "failed" && (
+          <p
+            className="mt-2 max-w-sm txt-medium text-ink-muted"
+            data-testid="payment-status-message"
+          >
+            {BODIES[phase]}
+          </p>
+        )}
 
         {/*
          * A dismiss control ONLY on failure.
@@ -138,18 +140,10 @@ const TITLES: Record<PaymentModalPhase, string> = {
   succeeded: "¡Pago aprobado!",
 }
 
-/**
- * Only reachable if a failure arrives with no message attached, which the flow
- * does not do — every `settleFailed` path carries one. Present because the
- * alternative is an empty paragraph under a red cross, which tells the customer
- * their payment failed and refuses to say anything else.
- */
-const FAILED_FALLBACK = "Inténtalo de nuevo o usa otro método de pago."
-
 const BODIES: Record<PaymentModalPhase, string> = {
   hidden: "",
-  /** Unused — the `failed` phase reads `state.error`. @see FAILED_FALLBACK */
-  failed: FAILED_FALLBACK,
+  /** Unused — the `failed` phase renders no body. */
+  failed: "",
   /**
    * States that no charge has been made YET, and asks for the one thing the
    * customer can usefully do. It does not promise how long it will take: an
