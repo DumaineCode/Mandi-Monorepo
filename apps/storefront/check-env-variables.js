@@ -9,12 +9,12 @@ const requiredEnvs = [
   },
   {
     key: "NEXT_PUBLIC_BASE_URL",
-    // `getBaseURL()` (src/lib/util/env.ts) falls back to https://localhost:8000
-    // when this is unset, and Next INLINES NEXT_PUBLIC_* values at BUILD time.
-    // So an image built without it ships a bundle whose Openpay `return_url`
-    // and Mercado Pago `back_urls_base` both point at localhost: the customer
-    // completes 3DS or pays at Mercado Pago and lands nowhere, with the charge
-    // already taken. Failing the build is the only place this is still cheap.
+    // `getBaseURL()` (src/lib/util/env.ts) falls back to
+    // https://www.mandioficial.com when this is unset, and Next INLINES
+    // NEXT_PUBLIC_* values at BUILD time. So an image built without it ships a
+    // bundle whose Openpay `return_url` and Mercado Pago `back_urls_base` are
+    // pinned to production, whatever environment it runs in. Failing the build
+    // is the only place this is still cheap.
     description:
       "The public origin of this storefront, e.g. https://mandi.mx. Used to build the Openpay return_url and the Mercado Pago back_urls_base.",
   },

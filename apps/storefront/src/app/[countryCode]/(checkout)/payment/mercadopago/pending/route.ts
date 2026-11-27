@@ -1,5 +1,6 @@
 import { placeOrder } from "@lib/data/cart"
 import { getCartId } from "@lib/data/cookies"
+import { redirectTargetFrom, toPublicURL } from "@lib/util/public-redirect"
 import { NextRequest, NextResponse } from "next/server"
 
 /**
@@ -13,37 +14,38 @@ import { NextRequest, NextResponse } from "next/server"
  * later, webhook-driven. The order is NEVER marked paid on the redirect alone.
  */
 
-const isNextRedirectError = (err: unknown): boolean => {
-  const digest = (err as { digest?: unknown })?.digest
-  return typeof digest === "string" && digest.startsWith("NEXT_REDIRECT")
-}
-
-const statusRedirect = (request: NextRequest, countryCode: string) =>
+const statusRedirect = (countryCode: string) =>
   NextResponse.redirect(
-    new URL(`/${countryCode}/payment/mercadopago/status`, request.url)
+    toPublicURL(`/${countryCode}/payment/mercadopago/status`)
   )
 
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ countryCode: string }> }
 ) {
   const { countryCode } = await params
   const cartId = await getCartId()
 
   if (!cartId) {
-    return statusRedirect(request, countryCode)
+    return statusRedirect(countryCode)
   }
 
   try {
     await placeOrder(cartId)
   } catch (err) {
-    if (isNextRedirectError(err)) {
-      throw err
+    // placeOrder's success redirect, re-issued against the public origin
+    // instead of the bind address (`0.0.0.0:8000`).
+    const target = redirectTargetFrom(err)
+    if (target) {
+      return NextResponse.redirect(
+        toPublicURL(target.destination),
+        target.status
+      )
     }
     // Expected for a genuinely pending payment — the cart is preserved and the
     // webhook will complete the order when MP confirms the payment.
-    return statusRedirect(request, countryCode)
+    return statusRedirect(countryCode)
   }
 
-  return statusRedirect(request, countryCode)
+  return statusRedirect(countryCode)
 }

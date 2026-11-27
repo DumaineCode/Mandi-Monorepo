@@ -1,5 +1,6 @@
 import { placeOrder } from "@lib/data/cart"
 import { getCartId } from "@lib/data/cookies"
+import { redirectTargetFrom, toPublicURL } from "@lib/util/public-redirect"
 import { NextRequest, NextResponse } from "next/server"
 
 /**
@@ -18,18 +19,13 @@ import { NextRequest, NextResponse } from "next/server"
  * completes later, webhook-driven.
  */
 
-const isNextRedirectError = (err: unknown): boolean => {
-  const digest = (err as { digest?: unknown })?.digest
-  return typeof digest === "string" && digest.startsWith("NEXT_REDIRECT")
-}
-
-const pendingRedirect = (request: NextRequest, countryCode: string) =>
+const pendingRedirect = (countryCode: string) =>
   NextResponse.redirect(
-    new URL(`/${countryCode}/payment/mercadopago/status`, request.url)
+    toPublicURL(`/${countryCode}/payment/mercadopago/status`)
   )
 
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ countryCode: string }> }
 ) {
   const { countryCode } = await params
@@ -38,16 +34,21 @@ export async function GET(
   if (!cartId) {
     // Cart cookie already cleared → the order most likely completed on a prior
     // visit or via webhook. Send the customer to the pending/status page.
-    return pendingRedirect(request, countryCode)
+    return pendingRedirect(countryCode)
   }
 
   try {
     await placeOrder(cartId)
   } catch (err) {
     // On success placeOrder redirects via next/navigation redirect(), which
-    // throws NEXT_REDIRECT — re-throw so Next issues the real redirect.
-    if (isNextRedirectError(err)) {
-      throw err
+    // throws NEXT_REDIRECT. Re-issue it against the public origin: re-throwing
+    // would let Next resolve it against the bind address (`0.0.0.0:8000`).
+    const target = redirectTargetFrom(err)
+    if (target) {
+      return NextResponse.redirect(
+        toPublicURL(target.destination),
+        target.status
+      )
     }
 
     // Payment not confirmed yet (async method still pending, or completion
@@ -59,10 +60,10 @@ export async function GET(
           ? `${err.constructor.name} (${err.name})`
           : `non-Error thrown (${typeof err})`)
     )
-    return pendingRedirect(request, countryCode)
+    return pendingRedirect(countryCode)
   }
 
   // placeOrder returned without redirecting: the cart did not complete into an
   // order yet (payment pending) — show the pending experience.
-  return pendingRedirect(request, countryCode)
+  return pendingRedirect(countryCode)
 }

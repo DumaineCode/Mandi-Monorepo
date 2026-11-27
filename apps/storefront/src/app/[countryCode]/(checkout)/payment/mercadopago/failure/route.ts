@@ -1,3 +1,4 @@
+import { toPublicURL } from "@lib/util/public-redirect"
 import { NextRequest, NextResponse } from "next/server"
 
 /**
@@ -16,13 +17,16 @@ import { NextRequest, NextResponse } from "next/server"
  * instead of reading the return as a click that never registered. The value
  * must stay exactly `payment_failed` — that rule matches on the literal and
  * refuses anything else, because the query string is attacker-controlled.
+ *
+ * The target is built from the public origin, never `request.url`, which is
+ * the bind address (`0.0.0.0:8000`) behind the production proxy.
  */
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ countryCode: string }> }
 ) {
   const { countryCode } = await params
   return NextResponse.redirect(
-    new URL(`/${countryCode}/checkout?error=payment_failed`, request.url)
+    toPublicURL(`/${countryCode}/checkout?error=payment_failed`)
   )
 }

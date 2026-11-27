@@ -1,5 +1,6 @@
 import { placeOrder } from "@lib/data/cart"
 import { getCartId } from "@lib/data/cookies"
+import { redirectTargetFrom, toPublicURL } from "@lib/util/public-redirect"
 import { NextRequest, NextResponse } from "next/server"
 
 /**
@@ -33,18 +34,13 @@ import { NextRequest, NextResponse } from "next/server"
  * that rule matches on the literal and deliberately refuses anything else,
  * because the query string is attacker-controlled.
  */
-const failureRedirect = (request: NextRequest, countryCode: string) =>
+const failureRedirect = (countryCode: string) =>
   NextResponse.redirect(
-    new URL(`/${countryCode}/checkout?error=payment_failed`, request.url)
+    toPublicURL(`/${countryCode}/checkout?error=payment_failed`)
   )
 
-const isNextRedirectError = (err: unknown): boolean => {
-  const digest = (err as { digest?: unknown })?.digest
-  return typeof digest === "string" && digest.startsWith("NEXT_REDIRECT")
-}
-
 export async function GET(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ countryCode: string }> }
 ) {
   const { countryCode } = await params
@@ -52,17 +48,22 @@ export async function GET(
   const cartId = await getCartId()
 
   if (!cartId) {
-    return failureRedirect(request, countryCode)
+    return failureRedirect(countryCode)
   }
 
   try {
     await placeOrder(cartId)
   } catch (err) {
     // On success placeOrder redirects to the order confirmation page via
-    // next/navigation redirect(), which throws NEXT_REDIRECT. Re-throw so
-    // Next.js turns it into the actual redirect response.
-    if (isNextRedirectError(err)) {
-      throw err
+    // next/navigation redirect(), which throws NEXT_REDIRECT. Re-issue it
+    // against the public origin: re-throwing would let Next resolve the
+    // relative path against the bind address (`0.0.0.0:8000`).
+    const target = redirectTargetFrom(err)
+    if (target) {
+      return NextResponse.redirect(
+        toPublicURL(target.destination),
+        target.status
+      )
     }
 
     // Observability: log the failure class + cart id before redirecting.
@@ -77,10 +78,10 @@ export async function GET(
     // Charge not captured (declined, abandoned, or verification failed) —
     // send the customer back to the single-page checkout; the cart is intact
     // and the payment is retryable from the CTA.
-    return failureRedirect(request, countryCode)
+    return failureRedirect(countryCode)
   }
 
   // placeOrder returned without redirecting: the cart did not complete into
   // an order (payment still pending) — treat as a retryable failure.
-  return failureRedirect(request, countryCode)
+  return failureRedirect(countryCode)
 }
